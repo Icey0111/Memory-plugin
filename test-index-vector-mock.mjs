@@ -44,8 +44,12 @@ await globalThis.aetheriaUnifiedMemoryV54Interceptor([
 assert.equal(requests.length,1);
 assert.equal(requests[0].body.source,'transformers');
 assert.match(requests[0].body.searchText,/璃月/);
-assert.equal(prompts.length,1);
-assert.match(prompts[0][1],/<recalled_memories>/);
-assert.match(prompts[0][1],/星环学盟第三浮空港/);
+const reference=prompts.find(row=>row[0]==='aetheria_unified_memory_v5_4_reference');
+const current=prompts.find(row=>row[0]==='aetheria_unified_memory_v5_4_current_state');
+assert.ok(reference);
+assert.ok(current);
+assert.match(reference[1],/HISTORICAL MEMORY/);
+assert.match(reference[1],/星环学盟第三浮空港/);
+assert.equal(current[1],'','inject_current_state=false should leave current-state prompt empty');
 assert.equal(context.chatMetadata.aetheriaUnifiedMemoryV53.memories.m_event.recalled_count,1);
 console.log('PASS hybrid entity-bypass recalls exact named memory even when dense vector returns no hit');

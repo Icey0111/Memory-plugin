@@ -39,8 +39,9 @@ await globalThis.aetheriaUnifiedMemoryV54Interceptor([
 
 assert.ok(context.extensionSettings.aetheriaUnifiedMemoryV54,'v5.1 settings should migrate to v5.4');
 assert.ok(context.chatMetadata.aetheriaUnifiedMemoryV54,'v5.1 canonical store should migrate to v5.4');
-assert.equal(prompts.length,1);
-assert.match(prompts[0][1],/长期合作协议/);
+const reference=prompts.find(row=>row[0]==='aetheria_unified_memory_v5_4_reference');
+assert.ok(reference);
+assert.match(reference[1],/长期合作协议/);
 assert.equal(context.chatMetadata.aetheriaUnifiedMemoryV54.last_recall_debug?.dense_available,false);
 assert.ok((context.chatMetadata.aetheriaUnifiedMemoryV54.last_recall_debug?.lexical || []).length>0);
 console.log('PASS v5.1 metadata migrates and lexical recall falls back when Dense provider is unavailable');

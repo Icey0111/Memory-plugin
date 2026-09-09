@@ -11,3 +11,4 @@
 #aum-v54-settings h4 { margin: 0.8em 0 0.35em; }
 #aum-v54-settings small { display: block; opacity: 0.78; margin: 0.25em 0 0.55em; }
 #aum-v54-settings .aum-v54-disabled-option { opacity: 0.55; }
+#aum-v54-setting-preview-output { white-space: pre-wrap; max-height: 12rem; overflow: auto; }

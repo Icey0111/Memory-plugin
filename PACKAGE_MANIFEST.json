@@ -1,7 +1,7 @@
 {
-  "package": "aetheria-unified-memory-v5_4",
-  "version": "5.4.0",
-  "architecture": "autonomous after-AI extraction + canonical current truth + v5.2 hybrid recall + semantic Persona/Character/WorldInfo baseline hard gate",
+  "package": "aetheria-unified-memory-v5_5-dev",
+  "version": "5.5.0-dev.8",
+  "architecture": "v5.5-dev Iteration 08: v5.4 runtime + A..G plus I07/I08 hardening. Plugin-owned Setting Store/import/shared retrieval/context plane with per-entry incremental Setting Vector lifecycle, embedding-profile isolation, safe staging/verification, dual Reference/Current-State injection, post-runtime consistency, provenance stabilization, explicit role-private setting visibility, condition-aware chunking and scene-evidence expansion. Commit H live acceptance is next.",
   "reference_design": "LittleWhiteBox public docs/repository concepts; independent implementation",
   "baseline_policy": {
     "stable_vector_sources": [
@@ -18,31 +18,82 @@
     ],
     "does_not_scan_all_account_lorebooks": true
   },
+  "setting_import_policy": {
+    "two_phase_preview_commit": true,
+    "formats": [
+      "worldbook_json",
+      "titled_txt"
+    ],
+    "unknown_entry_fields_preserved": true,
+    "exact_source_text_preserved": true,
+    "duplicate_identity": "content_hash",
+    "explicit_role_private_schema": true,
+    "secret_fields": [
+      "secret",
+      "visibility",
+      "known_by",
+      "known_by_ids"
+    ]
+  },
+  "setting_index_policy": {
+    "scope": "world_id + active baseline revision + compatible active extension revisions",
+    "chat_id_in_collection_identity": false,
+    "structured_parent_linked_chunks": true,
+    "lexical_fallback_always_local": true,
+    "optional_vector_projection": true,
+    "derived_state_location": "extension settings",
+    "generation_retrieval_wired": true,
+    "generation_main_prompt_injection_wired": true,
+    "extractor_retrieval_wired": true,
+    "plugin_setting_baseline_dedup": true,
+    "retrieval_fusion": "lexical + optional dense -> RRF -> parent expansion -> entry dedup -> budget",
+    "incremental_per_entry_vector_diff": true,
+    "embedding_profile_in_collection_identity": true,
+    "safe_staging_verify_switch": true,
+    "purge_active_before_rebuild": false,
+    "retired_collection_auto_gc": false,
+    "state_schema_version": 2,
+    "condition_aware_chunking": true,
+    "role_private_retrieval_filter": true,
+    "failed_refresh_reuses_active_profile": true,
+    "provenance_origin_before_stamp": true
+  },
+  "context_injection_policy": {
+    "assembler": "context-assembler.js",
+    "reference_prompt_key": "aetheria_unified_memory_v5_4_reference",
+    "reference_role": "system",
+    "reference_default_depth": 4,
+    "reference_contains": [
+      "bounded constant/core setting",
+      "relevant setting",
+      "historical memory"
+    ],
+    "current_state_prompt_key": "aetheria_unified_memory_v5_4_current_state",
+    "current_state_role": "system",
+    "current_state_default_depth": 1,
+    "current_state_contains": [
+      "last completed turn active_state",
+      "active slots/current truth"
+    ],
+    "legacy_prompt_key_cleanup_only": "aetheria_unified_memory_v5_4",
+    "mutates_real_chat": false,
+    "quiet_impersonate_disable_chat_switch_cleanup": true,
+    "imported_instruction_text_is_data": true,
+    "quiet_allow_third_party_injection_setting": true,
+    "plugin_owned_quiet_always_cleared": true,
+    "scene_evidence_expansion": true,
+    "scene_evidence_cap_chars": 1200
+  },
   "files": [
     {
       "name": "ARCHITECTURE.md",
-      "sha256": "64f2286b537d05af10f6a0f31a4cb0f619145dcc5f9b871447988c1845d1c9ee",
-      "bytes": 6729
-    },
-    {
-      "name": "baseline-host.js",
-      "sha256": "1ffa647d08e6160caa7c5e3443769210779f738571c106b55914a3f6e8665af5",
-      "bytes": 6988
-    },
-    {
-      "name": "baseline-index.js",
-      "sha256": "d763578001e671b3dc2e814bde580e492c1038a47543cec0e3e856c85f71c475",
-      "bytes": 11077
+      "sha256": "5c23e42493d8e16eec4a61e2831dfe0013961762eaa96eda2dbc9e9742306b51",
+      "bytes": 15774
     },
     {
       "name": "CHANGELOG.md",
-      "sha256": "9c074b7c5599eb7c6bc41b21eba5311929f5ab1fde0355d847c0f1db156c25c7",
-      "bytes": 1511
-    },
-    {
-      "name": "index.js",
-      "sha256": "4409bbdfee7decb12ccf72a376db9ab98673e5657cfad5d06ec921b83bfc7246",
-      "bytes": 69127
+      "sha256": "1494b4c2da0d553b3950b12dbb10488c83c7e2c371ed27dd89a4e58474ab28ef",
+      "bytes": 16603
     },
     {
       "name": "LICENSE",
@@ -55,26 +106,6 @@
       "bytes": 2935
     },
     {
-      "name": "manifest.json",
-      "sha256": "e70a4b94d8ad43166386acdf8d0ffb9ed72e6b81dca49d655b652b6e9e842894",
-      "bytes": 433
-    },
-    {
-      "name": "memory-core.js",
-      "sha256": "9af9c5e9b0b838fec9895aab9806642c2cd931b2c512d4467ee08962ad0f4d35",
-      "bytes": 49458
-    },
-    {
-      "name": "memory-extractor.js",
-      "sha256": "e055f5416b3740a25d8390ff12a3440e1506ef986bdec71dc0b3974f6fc61f69",
-      "bytes": 9304
-    },
-    {
-      "name": "memory-op.schema.json",
-      "sha256": "091fb38e0d0c8ef2bf49a893dd5210850fe0fef069af1c69031d9aba218ab434",
-      "bytes": 4696
-    },
-    {
       "name": "MIGRATION_V52_TO_V53.md",
       "sha256": "05c46e51586907fe06a86bcd74a27676d35aeb5db3d963867b67548a7f44c0b7",
       "bytes": 1661
@@ -85,29 +116,164 @@
       "bytes": 1950
     },
     {
-      "name": "package.json",
-      "sha256": "480344860d4a81aa3d7401385d3302ea73b1a7d4d757f0f976749bb50c038161",
-      "bytes": 628
+      "name": "README.md",
+      "sha256": "76f279610e8cb97cb2021820c7d9cbf4bab126081cacf38a0b4c463e0f73ddfd",
+      "bytes": 14264
     },
     {
-      "name": "README.md",
-      "sha256": "830cad9db8d5e2b120fcf1c2cffaa14f4114a6a751ca774d43f564ab2f2457ef",
-      "bytes": 7242
+      "name": "TEST_PLAN.md",
+      "sha256": "c0a1b0ed1a6fba29be05fc803b884fa68bbc1060197baa27ae4390a12d939836",
+      "bytes": 15279
+    },
+    {
+      "name": "V55_ITERATION_01_REPORT.md",
+      "sha256": "17493e63764518cb1e18415249991b525057e4a6ffccbc870b7335cf202fd771",
+      "bytes": 3950
+    },
+    {
+      "name": "V55_ITERATION_02_REPORT.md",
+      "sha256": "af466ba473012b2979b16c3049e27444139cadf027cfdf80027626debf57ebda",
+      "bytes": 6547
+    },
+    {
+      "name": "V55_ITERATION_03_REPORT.md",
+      "sha256": "e4a42504bd22861dad5b566d3cba300792ffc189b0e501029e3da1ed0d92406b",
+      "bytes": 9991
+    },
+    {
+      "name": "V55_ITERATION_04_REPORT.md",
+      "sha256": "a0cbd8bba99c16098dcd632b1e6af6aa073a7c2230b2c7ba9506800518101efa",
+      "bytes": 12083
+    },
+    {
+      "name": "V55_ITERATION_05_REPORT.md",
+      "sha256": "5fe5fca551ea35f82608a81920a404cdabd1b0c61a20e8dc103841306eb39854",
+      "bytes": 10980
+    },
+    {
+      "name": "V55_ITERATION_06_REPORT.md",
+      "sha256": "63ea916059b4cc8717e7ea2e794333581c71919bbadbe8c6c5567b15042ac1a4",
+      "bytes": 9197
+    },
+    {
+      "name": "V55_ITERATION_07_REPORT.md",
+      "sha256": "2f0f12b0ccc1e9084446f19811497a6d8c47f9123c1a52ebfdbb504af8e5959a",
+      "bytes": 14586
+    },
+    {
+      "name": "V55_ITERATION_08_CHANGE_REPORT.md",
+      "sha256": "207f6b8b004805255a182b27702392096c0f10cb8450f63daf8dde9545edde23",
+      "bytes": 6243
+    },
+    {
+      "name": "baseline-host.js",
+      "sha256": "1ffa647d08e6160caa7c5e3443769210779f738571c106b55914a3f6e8665af5",
+      "bytes": 6988
+    },
+    {
+      "name": "baseline-index.js",
+      "sha256": "11d34d3c210e8c4cd8336d10089bcec515b74db62ce28dea6fb934ea12c6c767",
+      "bytes": 11823
+    },
+    {
+      "name": "context-assembler.js",
+      "sha256": "ad0bf0375257e0c42ce1a1a9ee09d0dc4419163ad4c0e7276be6e9f977203c42",
+      "bytes": 17029
+    },
+    {
+      "name": "index-v55.js",
+      "sha256": "fad1edc2b2625c6a9c3783055c27c9078e1cc6f46de8a0c062698d2535d333d1",
+      "bytes": 1337
+    },
+    {
+      "name": "index.js",
+      "sha256": "57346f092560a4cd7baf21723fb91f1218490c8b48437c3286e13054316839fb",
+      "bytes": 132066
+    },
+    {
+      "name": "manifest.json",
+      "sha256": "0581779657cccbf77d3949860e13f2fcbe0473d139e81a1d598f720948997552",
+      "bytes": 442
+    },
+    {
+      "name": "memory-core.js",
+      "sha256": "9af9c5e9b0b838fec9895aab9806642c2cd931b2c512d4467ee08962ad0f4d35",
+      "bytes": 49458
+    },
+    {
+      "name": "memory-extractor.js",
+      "sha256": "428da46f4a25b07b41a03c452a0a662caa44d4ae0824d9485aae1866673f923e",
+      "bytes": 9843
+    },
+    {
+      "name": "memory-op.schema.json",
+      "sha256": "091fb38e0d0c8ef2bf49a893dd5210850fe0fef069af1c69031d9aba218ab434",
+      "bytes": 4696
+    },
+    {
+      "name": "package.json",
+      "sha256": "014879b601c03eedd0864e2c3815b8a494108647c1e842ed24e677c0e0b8dc33",
+      "bytes": 2000
+    },
+    {
+      "name": "setting-importer.js",
+      "sha256": "296d694e986e1b33b06a519787c2a84042810324a4ec7cafb65df500bdbe8151",
+      "bytes": 12198
+    },
+    {
+      "name": "setting-index.js",
+      "sha256": "e01c998a9e812b9645012987495f83363e07436ab4ea482a1ae20062366bff40",
+      "bytes": 16884
+    },
+    {
+      "name": "setting-retriever.js",
+      "sha256": "b02ffca4549677843cec370a47aa62f28d46e32e810288ce447c85240f82d5f5",
+      "bytes": 17981
+    },
+    {
+      "name": "setting-schema.js",
+      "sha256": "db891c867a370d7f1f8479edfc6f335f88d3f00a00dfbb1d8059c06b00477414",
+      "bytes": 13958
+    },
+    {
+      "name": "setting-store.js",
+      "sha256": "b34d9696491954b439a6a924ce2a34a205f7b6f5ee1c3938559334c6de48b73f",
+      "bytes": 14254
     },
     {
       "name": "settings.html",
-      "sha256": "70e5476ff22aafc2283b07166dcaf1548d102256aa7b25907e6f684a860f2670",
-      "bytes": 9124
+      "sha256": "f58f258fcf98cbfa1b89b7be00b56fc5cb78e3aafdfacde9cd7dc498f6d92027",
+      "bytes": 14863
     },
     {
       "name": "style.css",
-      "sha256": "38717a7441c7f8847b8c1973fbf4b1463de5e42ecb4440dd3aeaa0eaf7f68a8d",
-      "bytes": 984
+      "sha256": "726ab848fac97b815a9dbcff737c78173bc01266631e47b211f6f8f7b12b32bb",
+      "bytes": 1078
+    },
+    {
+      "name": "test-baseline-calibration.mjs",
+      "sha256": "fc9ee5bfe4ec249ccb670c9212407c1f931458b5bab8d1623e71f149c9252007",
+      "bytes": 3040
     },
     {
       "name": "test-baseline-index.mjs",
       "sha256": "fdcd32c119667d1dce8827bb63d4a4a5be73f7102cb19a459113c56650abcfb5",
       "bytes": 4675
+    },
+    {
+      "name": "test-context-assembler.mjs",
+      "sha256": "a3a9f1bd78ab20dcc36cf35d07d7f08e2eaec700aa8c20365b63f4626cd65f76",
+      "bytes": 4200
+    },
+    {
+      "name": "test-context-injection-lifecycle.mjs",
+      "sha256": "fe1b24f03aac8ee08e536a92caa8aef7f795cd3881abb8fcd091615c2550a6f1",
+      "bytes": 3388
+    },
+    {
+      "name": "test-depth-normalization.mjs",
+      "sha256": "2973268901b279a6e0229149abd9770c8e58e8cc4aae1ca8780c1490537b24c0",
+      "bytes": 674
     },
     {
       "name": "test-index-autopilot-mock.mjs",
@@ -126,18 +292,18 @@
     },
     {
       "name": "test-index-migration-fallback.mjs",
-      "sha256": "b1b51745c98a773528836eda8ab134fc01f541a0f68a6d5e10a862c3f4447683",
-      "bytes": 2493
+      "sha256": "4274e9aecc765baa30f26e917a9fa096be12e923d061d6f83081e9519c478b7f",
+      "bytes": 2568
     },
     {
       "name": "test-index-mock.mjs",
-      "sha256": "5d0b39000ef078dac1ba74ed2628fe8a6176b5e5282f439bcf5873c3199f717a",
-      "bytes": 2507
+      "sha256": "c9db2c3f19103c5c7f190cf207776b9ea57ea689d8b6a60b60bfb3403a506c7e",
+      "bytes": 3376
     },
     {
       "name": "test-index-vector-mock.mjs",
-      "sha256": "26e09993bac1b4e888c4873a3487f232675419ac16fc1f441b74c168fe3d6826",
-      "bytes": 2884
+      "sha256": "bef8cfea30c0d1239cebb95dfb9dcda214f0165a1969f16b078f6f25b502c9ce",
+      "bytes": 3162
     },
     {
       "name": "test-memory-core.mjs",
@@ -146,23 +312,135 @@
     },
     {
       "name": "test-memory-extractor.mjs",
-      "sha256": "f39ae086201bf25c0b3d77ce8c7d3498157aff64d60020e3d004168d12695053",
-      "bytes": 2084
+      "sha256": "9353bb6899ef88bbfdbfe0a5cc1bf0d7f1b327bf7e2cc59e8457ac0726a5ed31",
+      "bytes": 2474
     },
     {
-      "name": "TEST_PLAN.md",
-      "sha256": "138c391283c27e4e47aed2f49144370fea63625b0d56d9335754b30f04984ed9",
-      "bytes": 2107
+      "name": "test-setting-chunk-conditions.mjs",
+      "sha256": "a24dcf07f7d9265fc46655b1fcfa83cb0c5c4eec4bf20927cbc09f54dff96684",
+      "bytes": 1197
     },
     {
-      "name": "v5.4_开发上下文恢复.md",
-      "sha256": "6e18dd75621c909b2633d4800dbca65e1969e696ee27df8d0981b50a50a8a423",
-      "bytes": 4973
+      "name": "test-setting-importer-host.mjs",
+      "sha256": "d39a3a149090e370525b123fe9dfb875debeb37fd21d58085c85bf038bb74c2f",
+      "bytes": 1653
     },
     {
-      "name": "v5.4_验收报告.txt",
+      "name": "test-setting-importer.mjs",
+      "sha256": "9aeaf5f8ec9e990d7891427ab7501caede01bcb7b6937c2e910775b9ff5e1906",
+      "bytes": 4802
+    },
+    {
+      "name": "test-setting-index-host.mjs",
+      "sha256": "c76f7c8022a4437d1612fccc365386fa15999ab2e35e72a354f090baa2ea53b4",
+      "bytes": 5868
+    },
+    {
+      "name": "test-setting-index-lifecycle-host.mjs",
+      "sha256": "a1ca85e9dc676c5c82c2ec525c779e009d999c4d4baf10e64b59105986bcbf56",
+      "bytes": 8666
+    },
+    {
+      "name": "test-setting-index-lifecycle.mjs",
+      "sha256": "a33e5b345792068e865d573e1b330de3d404248add1334c609e73e55748ff811",
+      "bytes": 3548
+    },
+    {
+      "name": "test-setting-index.mjs",
+      "sha256": "2eb0ad1b56fda3b95cba1d2bcef0bcb5b2ec5d5d4ada791627654e4462af8014",
+      "bytes": 4848
+    },
+    {
+      "name": "test-setting-retrieval-host.mjs",
+      "sha256": "985ab76f4c07d5b09e4b00631910f8d916142c116e0d3eb416c27ac348115852",
+      "bytes": 8789
+    },
+    {
+      "name": "test-setting-retrieval-vector-host.mjs",
+      "sha256": "6e389a81cc4948841cead5580b25e37877c2b816672b59b06cfbd189d7149a59",
+      "bytes": 3965
+    },
+    {
+      "name": "test-setting-retriever.mjs",
+      "sha256": "aac976fdab4739230839dbeda5c1163660a2f4f416afb7297ce7081322282240",
+      "bytes": 4856
+    },
+    {
+      "name": "test-setting-secret-visibility.mjs",
+      "sha256": "b1a516045d791521d945624d7ef21dd9c5e8bedbca9406893e329fec96e81a18",
+      "bytes": 4129
+    },
+    {
+      "name": "test-setting-store-host.mjs",
+      "sha256": "72d2d002fa84f03b7fa1dae2e0f562346040713f2bc8f9f386d73c926e1bc890",
+      "bytes": 1529
+    },
+    {
+      "name": "test-setting-store.mjs",
+      "sha256": "bcc90d3cd6c26d23d4b37bdce22ab1b011c8d7c999bf1b9256f95b875fa8e1f2",
+      "bytes": 4968
+    },
+    {
+      "name": "test-v55-consistency.mjs",
+      "sha256": "e8368c12a1e6d390fc6ab50fdf5699921795a97be717995a65700758e55a6c74",
+      "bytes": 2979
+    },
+    {
+      "name": "test-v55-entity-identity.mjs",
+      "sha256": "630e45f1503bae234d4208ae9d1b87340bc814617c66a34f3d3881691a4fd7f0",
+      "bytes": 2460
+    },
+    {
+      "name": "test-v55-finalizer.mjs",
+      "sha256": "79def25aae2d257bb072a547d1e7954ae6454dee8d10e6a511408ba8f5a1c8b7",
+      "bytes": 4476
+    },
+    {
+      "name": "test-v55-fullstack-cleanup.mjs",
+      "sha256": "ab0007b1dbf69f3696e26cb1c05ccf08ee71b5a53cb6ef7075a36e13f1abf4e2",
+      "bytes": 5257
+    },
+    {
+      "name": "test-v55-provenance.mjs",
+      "sha256": "3a696ce577e7e5db35fd53e76dae41a3358e7ccbf1ffd09ac0991a450a272c80",
+      "bytes": 1628
+    },
+    {
+      "name": "test-v55-runtime.mjs",
+      "sha256": "e75fd0b00a9decdce603ae507d32d683374bb452bbbd8c3d555d6236af2397d2",
+      "bytes": 3181
+    },
+    {
+      "name": "test-v55-scene-evidence.mjs",
+      "sha256": "a6c3d82b3cc2a6c7cb560bcb6e1c14f8121724423d1de5883bb018389e8e7c7c",
+      "bytes": 2701
+    },
+    {
+      "name": "v5.4_妤犲本鏁归幎銉ユ啞.txt",
       "sha256": "8993a3f071e82c45589c2572ea11fb85acfac713109bf7b89b5c2665b8b19833",
       "bytes": 4763
+    },
+    {
+      "name": "v55-consistency.js",
+      "sha256": "49fe84d412c33654a908819a944194c02c950e435de6e3088d185ac670f7e0d9",
+      "bytes": 6598
+    },
+    {
+      "name": "v55-finalizer.js",
+      "sha256": "2ae317dc288f39e55c1d61a7d7e65bdf8bc4bc0b60de7e2cdebe9022a682f404",
+      "bytes": 35393
+    },
+    {
+      "name": "v55-provenance.js",
+      "sha256": "eb48290bea4519e2d02869e8bf36323ebbc2b7027b7da13d428e1e347aa39345",
+      "bytes": 3956
+    },
+    {
+      "name": "v55-runtime.js",
+      "sha256": "1310b6185311d4cb6bf3787c1c122e955cc7962f2fb021af1d03895fd1001081",
+      "bytes": 25201
     }
-  ]
+  ],
+  "development_iteration": "v5.5-iteration-08",
+  "development_scope": "Iteration 08 closes the two I07 release-blocking defects (provenance origin order, quiet/impersonate/disabled prompt re-injection) and implements the remaining proposal items: explicit role-private setting schema + actor-filtered retrieval, condition/exception-aware chunking, baseline write-gate calibration samples and entity-disjoint guard, same-name entity disambiguation, failed-refresh reuse of the active vector profile, scene evidence expansion, depth null/blank normalization, third-party quiet policy and dead baseline-hint removal. Commit H real SillyTavern acceptance is next."
 }

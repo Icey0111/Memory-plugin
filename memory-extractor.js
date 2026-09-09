@@ -134,14 +134,26 @@ export function buildAutonomousExtractionPrompt({
     assistantText,
     recentContext = '',
     canonicalState = '',
-    baselineHint = '',
+    relevantSettingContext = '',
+    hostBaselineContext = '',
+    baselineHint = '', // compatibility with older callers
 } = {}) {
     const user = cleanString(userText, 12000);
     const assistant = cleanString(assistantText, 24000);
     const recent = cleanString(recentContext, 16000);
     const canonical = cleanString(canonicalState, 12000);
-    const baseline = cleanString(baselineHint, 16000);
+    const relevantSetting = cleanString(relevantSettingContext, 12000);
+    const hostBaseline = cleanString(hostBaselineContext, 8000);
+    const legacyBaseline = cleanString(baselineHint, 16000);
 
     return `你是一个后台记忆抽取器。你不参与角色扮演，不续写故事，不改变正文。\n\n你的唯一任务：分析“最新一组用户消息 + AI回复”，生成艾瑟瑞亚 Unified Memory v5.4 的机器记忆结果。\n\n【重要架构】\n1. 不区分短期记忆/长期记忆。\n2. event_summary = 只概括这一次回复真正发生了什么。\n3. active_state = 当前此刻仍成立、下一轮直接续写需要知道的动态状态。已完成、已恢复、已离开场景的状态不要保留。\n4. operations = 对统一记忆池的增量操作；不是全量快照。\n5. 只有未来具有回忆/状态价值的内容才写 operations。普通动作、一次性饮食过程、无后果小额消费通常不写。\n\n【Baseline Filter】\n角色卡、Persona、World Info/世界书中本来就存在且没有被剧情改变的事实，不得重复 add。\n例如：既有住址、专业、兴趣、基础性格、外貌、固有能力、既有宠物/契约、既有账号/A网络权限、世界规则。\n如果世界书早已存在事实 X，但本轮剧情真正新增的是“某角色现在知道/确认了 X”，写 knowledge（谁知道了什么），不要重新登记 X 作为世界事实。
-你的输出之后还会经过独立 Semantic Baseline 写入硬门；不要依赖硬门兜底，抽取阶段仍应主动避免基线重复。\n\n【证据原则】\noperations 必须能从最新用户消息或最新AI正文直接得到，或是对已有 active 状态的明确更新。\n传闻/猜测/计划分别使用 rumor/belief/inference/plan，不得升级为 fact。\n不要把模型因为看到系统提示/世界书而知道的事情，写成角色已经知道。\n\n【kind】\nevent / state / knowledge / belief / relation / commitment / ownership / intention / world_delta\n\n【op】\nadd / update / close / supersede / reinforce / invalidate / noop\n\n【slot】\n可更新状态尽量给稳定 slot，例如“平成.state.hunger”“平成.location.current”“平成.intention.east_street_dinner”。\n状态结束时优先 close target_slot。新事实推翻旧 belief/knowledge 时使用 supersede。\n\n【向量策略】\nindexable=true：值得未来语义召回的重要事件、关系、知识、承诺、重要失败/成功。\nindexable=false：当前状态、临时意图、低价值瞬时信息。\n不要为了凑数量创建记忆。\n\n【实体与主题】\nindexable=true 时尽量填写具体 entities/topics；text 必须自包含，使用真实名字，避免只写“她/那里/那个”。\n\n【当前 Canonical 状态摘要】\n${canonical || '（无）'}\n\n【最近上下文，仅用于消歧；不要把其中旧事件重新当成新事件】\n${recent || '（无）'}\n\n【Baseline 提示（若可用）】\n${baseline || `Persona: {{persona}}\nCharacter Description: {{description}}\nCharacter Personality: {{personality}}\nScenario: {{scenario}}\n当前激活的 World Info/世界书属于基线资料。`}\n\n【最新用户消息】\n${user || '（空）'}\n\n【最新AI正文】\n${assistant || '（空）'}\n\n只返回一个 JSON 对象，字段必须是：\n{\n  "event_summary": "...",\n  "active_state": "...",\n  "operations": [ ... ]\n}\n\n如果没有值得写入统一记忆池的变化，operations 返回：\n[{"op":"noop","reason":"本轮只有普通场景推进，没有值得进入统一记忆池的新变化。"}]`;
+你的输出之后还会经过独立 Semantic Baseline 写入硬门；不要依赖硬门兜底，抽取阶段仍应主动避免基线重复。\n\n【证据原则】\noperations 必须能从最新用户消息或最新AI正文直接得到，或是对已有 active 状态的明确更新。\n传闻/猜测/计划分别使用 rumor/belief/inference/plan，不得升级为 fact。\n不要把模型因为看到系统提示/世界书而知道的事情，写成角色已经知道。\n\n【kind】\nevent / state / knowledge / belief / relation / commitment / ownership / intention / world_delta\n\n【op】\nadd / update / close / supersede / reinforce / invalidate / noop\n\n【slot】\n可更新状态尽量给稳定 slot，例如“平成.state.hunger”“平成.location.current”“平成.intention.east_street_dinner”。\n状态结束时优先 close target_slot。新事实推翻旧 belief/knowledge 时使用 supersede。\n\n【向量策略】\nindexable=true：值得未来语义召回的重要事件、关系、知识、承诺、重要失败/成功。\nindexable=false：当前状态、临时意图、低价值瞬时信息。\n不要为了凑数量创建记忆。\n\n【实体与主题】\nindexable=true 时尽量填写具体 entities/topics；text 必须自包含，使用真实名字，避免只写“她/那里/那个”。\n\n【当前 Canonical 状态摘要】\n${canonical || '（无）'}\n\n【最近上下文，仅用于消歧；不要把其中旧事件重新当成新事件】\n${recent || '（无）'}\n\n【与本轮变化相关的插件世界设定】
+${relevantSetting || '（当前插件世界没有召回到相关设定；不要因此假定不存在其他基线事实。）'}
+
+【与本轮相关的 Host Baseline】
+${hostBaseline || legacyBaseline || `Persona / Character / Host World Info 若存在，仍属于基线资料；写入层会独立查询完整基线。`}
+
+注意：以上设定是客观参考数据，不等于场景中每个角色都知道。只有正文明确发生“某角色得知/确认”时，才能写 knowledge。
+
+【最新用户消息】\n${user || '（空）'}\n\n【最新AI正文】\n${assistant || '（空）'}\n\n只返回一个 JSON 对象，字段必须是：\n{\n  "event_summary": "...",\n  "active_state": "...",\n  "operations": [ ... ]\n}\n\n如果没有值得写入统一记忆池的变化，operations 返回：\n[{"op":"noop","reason":"本轮只有普通场景推进，没有值得进入统一记忆池的新变化。"}]`;
 }

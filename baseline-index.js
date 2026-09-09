@@ -168,8 +168,10 @@ export function baselineLexicalSimilarity(aInput, bInput) {
 const CHANGE_MARKERS = [
     '搬到', '搬离', '迁居', '改为', '改成', '转为', '变为', '不再', '失去', '获得', '新增', '新建',
     '首次', '解除', '终止', '签订', '离开', '改修', '转专业', '开始知道', '得知', '确认了', '发现了',
+    '卖掉', '卖出', '转让', '搬走', '去世', '离职', '辞职', '入学', '毕业', '结婚', '离婚', '破产',
+    '损坏', '毁掉', '放弃', '改名', '换了', '停止', '恢复',
     'moved to', 'moved from', 'changed to', 'switched to', 'no longer', 'lost ', 'gained ', 'newly ',
-    'learned that', 'discovered that', 'confirmed that', 'terminated', 'signed ',
+    'learned that', 'discovered that', 'confirmed that', 'terminated', 'signed ', 'sold ', 'quit ', 'graduated',
 ];
 
 export function hasExplicitChangeSignal(text) {
@@ -214,8 +216,13 @@ export function evaluateBaselineDuplicate(op, recordsInput, {
 } = {}) {
     if (!isBaselineGateEligible(op)) return { blocked: false, reason: 'ineligible' };
     const records = Array.isArray(recordsInput) ? recordsInput : [];
+    const opEntityIds = (Array.isArray(op?.entity_ids) ? op.entity_ids : []).filter(Boolean);
     let best = null;
     for (const record of records) {
+        // Same display name must not mean the same entity: when both sides carry explicit entity
+        // ids and they are disjoint, the record cannot be a duplicate of this operation.
+        const recordEntityIds = (Array.isArray(record?.entity_ids) ? record.entity_ids : []).filter(Boolean);
+        if (opEntityIds.length && recordEntityIds.length && !opEntityIds.some(id => recordEntityIds.includes(id))) continue;
         const score = baselineLexicalSimilarity(op.text, record.text);
         if (!best || score > best.score) best = { record, score };
     }
