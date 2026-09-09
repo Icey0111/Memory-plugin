@@ -12,7 +12,13 @@ for (const pattern of [/v5\.5 聊天设定绑定/,/v5\.5 设定条目覆盖编�
 const summary = read('./v55-summary-runtime.js');
 for (const pattern of [/分层自动总结与模型接口/,/summary_level1_every_turns/,/summary_level2_every_l1/,/summary_level3_every_l2/,/ConnectionManagerRequestService/,/constructPrompt/,/generateQuietPrompt/,/CHARACTER_MESSAGE_RENDERED|MESSAGE_RECEIVED/,/tree\.dirty/]) assert.match(summary, pattern);
 const api = read('./v55-api-connections.js');
-for (const pattern of [/独立 API 连接/,/OpenAI 兼容/,/aum-v55-summary-direct-url/,/aum-v55-summary-direct-key/,/aum-v55-summary-direct-model/,/aum-v55-vector-direct-url/,/aum-v55-vector-direct-key/,/aum-v55-vector-direct-model/,/chat-completions\/status/,/writeSecret/,/summary_connection_profile_id/,/SECRET_KEYS/,/saveSecret\('VLLM'/,/probeDirectVectorTransport/,/aum-v55-vector-direct-test/,/Memory \/ Baseline \/ Setting/]) assert.match(api, pattern);
+for (const pattern of [/独立 API 连接/,/OpenAI 兼容/,/aum-v55-summary-direct-url/,/aum-v55-summary-direct-key/,/aum-v55-summary-direct-model/,/aum-v55-vector-direct-url/,/aum-v55-vector-direct-key/,/aum-v55-vector-direct-model/,/chat-completions\/status/,/writeSecret/,/summary_connection_profile_id/,/SECRET_KEYS/,/saveSecret\('VLLM'/,/probeDirectVectorTransport/,/aum-v55-vector-direct-test/,/Memory、Baseline、Setting/]) assert.match(api, pattern);
+assert.match(api, /fetchSummaryModels/, 'chat-completion discovery must be summary-only');
+assert.match(api, /discoverEmbeddingModelsDirect/, 'embedding model discovery must have its own path');
+assert.match(api, /供应商未提供可用的模型枚举|手动填写 Embedding 模型名/, 'embedding discovery failure must fall back to manual model entry');
+assert.match(api, /type="text" list="aum-v55-vector-direct-model-list"/, 'embedding model must remain manually editable');
+assert.match(api, /normalizeOpenAiEmbeddingBaseUrl/, 'embedding URLs must normalize full /embeddings endpoints');
+assert.doesNotMatch(api, /fetchOpenAiCompatibleModels/, 'shared chat/embedding discovery path must not return');
 assert.doesNotMatch(api, /extensionSettings\.vectors\s*=/, 'direct API UI must not replace the host Vector Storage object');
 assert.doesNotMatch(api, /vectors\.source\s*=/, 'direct API UI must not mutate host vectors.source');
 assert.doesNotMatch(api, /vectors\.alt_endpoint_url\s*=/, 'direct API UI must not mutate host vectors.alt_endpoint_url');
@@ -25,6 +31,8 @@ assert.match(privateVector, /source:\s*'vllm'/, 'private transport must use the 
 assert.match(privateVector, /physicalCollectionId/, 'private embedding profiles must use isolated physical collections');
 assert.match(privateVector, /vector_direct_transport_signature/, 'private embedding configuration must have a stable signature');
 assert.match(privateVector, /invalidateAetheriaVectorState/, 'provider changes must invalidate derived Aetheria vector state');
+assert.match(privateVector, /normalizeOpenAiEmbeddingBaseUrl/);
+assert.match(privateVector, /replace\(\/\\\/(?:embeddings\|models)/, 'full embedding/model endpoints must be reduced to an API base');
 assert.doesNotMatch(privateVector, /extensionSettings\.vectors/, 'private transport must not read or mutate global Vector Storage settings');
 const settings = read('./settings.html');
 for (const id of ['aum-v54-settings','aum-v54-enabled','aum-v54-auto-extract','aum-v54-setting-file','aum-v54-setting-commit','aum-v54-rebuild-setting-index','aum-v54-baseline-gate','aum-v54-rebuild-baseline','aum-v54-vector','aum-v54-status','aum-v54-diagnostics']) assert.ok(settings.includes(`id="${id}"`), `settings.html missing required frontend control: ${id}`);
