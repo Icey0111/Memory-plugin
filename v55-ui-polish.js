@@ -3,6 +3,7 @@
 
 let observer = null;
 let scheduled = false;
+const SECTION_STATE_PREFIX = 'aetheria-v55-section:';
 
 const STATIC_TEXT = new Map([
     ['Plugin Setting Index + Retrieval · v5.5 Commit G', '设定索引与检索 · v5.5 Commit G'],
@@ -11,22 +12,48 @@ const STATIC_TEXT = new Map([
     ['v5.5 Runtime diagnostics', 'v5.5 运行诊断'],
 ]);
 
+const FRAGMENT_REPLACEMENTS = [
+    ['Setting Store / Index', '设定库 / 索引'],
+    ['Setting Store', '设定库'],
+    ['Setting Index', '设定索引'],
+    ['Setting Entry', '设定条目'],
+    ['Semantic Baseline', '语义基线'],
+    ['Reference Block', '参考区块'],
+    ['Current State', '当前状态'],
+    ['Canonical Memory', '规范记忆'],
+    ['Embedding Profile', '嵌入配置'],
+    ['Generation', '生成'],
+    ['Extractor', '抽取器'],
+    ['Dense', '向量'],
+    ['Lexical', '词法'],
+    ['World', '世界'],
+];
+
 function setText(node, text) {
     if (node && node.textContent !== text) node.textContent = text;
 }
 
-function replaceExactTextNodes(root) {
+function translateText(value) {
+    let out = String(value ?? '');
+    for (const [from, to] of FRAGMENT_REPLACEMENTS) out = out.split(from).join(to);
+    return out;
+}
+
+function replaceTextNodes(root) {
     if (!root || typeof document === 'undefined') return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
     while (walker.nextNode()) nodes.push(walker.currentNode);
     for (const node of nodes) {
-        const value = node.nodeValue?.trim();
-        if (!value || !STATIC_TEXT.has(value)) continue;
-        const replacement = STATIC_TEXT.get(value);
-        const leading = node.nodeValue.match(/^\s*/)?.[0] || '';
-        const trailing = node.nodeValue.match(/\s*$/)?.[0] || '';
-        node.nodeValue = `${leading}${replacement}${trailing}`;
+        const raw = node.nodeValue || '';
+        const trimmed = raw.trim();
+        if (!trimmed) continue;
+        const exact = STATIC_TEXT.get(trimmed);
+        const translated = exact || translateText(trimmed);
+        if (translated === trimmed) continue;
+        const leading = raw.match(/^\s*/)?.[0] || '';
+        const trailing = raw.match(/\s*$/)?.[0] || '';
+        node.nodeValue = `${leading}${translated}${trailing}`;
     }
 }
 
@@ -58,7 +85,7 @@ function translateBindingStatus(value) {
     if (text === 'Pinned to current chat.') return '已绑定到当前聊天。';
     if (text.startsWith('Pinned: ')) return `已绑定：${text.slice(8).replace(/\/ none$/, '/ 无基线')}`;
     if (text.startsWith('Invalid binding: ')) return `绑定无效：${text.slice(17)}`;
-    return text;
+    return translateText(text);
 }
 
 function translateEntryStatus(value) {
@@ -66,9 +93,9 @@ function translateEntryStatus(value) {
     if (text === 'No Entry selected.') return '未选择设定条目。';
     if (text === 'Using immutable imported Entry.') return '当前使用不可变的导入条目。';
     if (text.startsWith('Overlay active · ')) return `覆盖编辑已启用 · ${text.slice(17)}`;
-    if (text.startsWith('Overlay saved.')) return '覆盖编辑已保存。下次设定索引同步或生成时会按同一作用域仅更新该条目；导入的 Source / Revision 不会被改写。';
+    if (text.startsWith('Overlay saved.')) return '覆盖编辑已保存。下次设定索引同步或生成时会按同一作用域仅更新该条目；导入的来源 / 版本不会被改写。';
     if (text.startsWith('Overlay cleared;')) return '覆盖编辑已清除；重新使用不可变的导入条目。';
-    return text;
+    return translateText(text);
 }
 
 function translateUntitledPreview(value) {
@@ -79,16 +106,98 @@ function translateUntitledPreview(value) {
     text = text.replace(/^Untitled TXT preview only · sentence-preview · candidate segments (\d+)/m, '仅预览无标题 TXT · 按句子预览 · 候选分段 $1');
     text = text.replace('Import remains conservative (one Entry) unless the source is explicitly titled; this preview lets you inspect likely boundaries before editing the file.', '除非源文件具有明确标题，否则导入仍采用保守策略（单个条目）；此预览用于在编辑文件前检查可能的分段边界。');
     text = text.replace(/\[(\d+) chars\]/g, '[$1 字符]');
-    return text;
+    return translateText(text);
 }
 
 function translateRuntimeStatus(value) {
-    let text = String(value || '');
-    text = text.replace(/\bWorld\b/g, '世界');
-    text = text.replace(/\bOverlay\b/g, '覆盖编辑');
-    text = text.replace(/Dense 已就绪/g, '向量检索已就绪');
-    text = text.replace(/Dense 未就绪 \/ 词法可用/g, '向量检索未就绪 / 词法检索可用');
+    let text = translateText(value);
+    text = text.replace(/Overlay/g, '覆盖编辑');
+    text = text.replace(/向量 已就绪/g, '向量检索已就绪');
+    text = text.replace(/向量 未就绪 \/ 词法可用/g, '向量检索未就绪 / 词法检索可用');
     return text;
+}
+
+function readSectionCollapsed(key, fallback = true) {
+    try {
+        const stored = globalThis.localStorage?.getItem(`${SECTION_STATE_PREFIX}${key}`);
+        if (stored === '0') return false;
+        if (stored === '1') return true;
+    } catch { /* storage is optional */ }
+    return fallback;
+}
+
+function writeSectionCollapsed(key, collapsed) {
+    try { globalThis.localStorage?.setItem(`${SECTION_STATE_PREFIX}${key}`, collapsed ? '1' : '0'); } catch { /* storage is optional */ }
+}
+
+function setSectionCollapsed(root, key, collapsed) {
+    if (!root) return;
+    root.classList.toggle('aum-v55-section-collapsed', collapsed);
+    const body = root.querySelector(':scope > .aum-v55-section-body');
+    const toggle = root.querySelector(':scope > .aum-v55-section-header .aum-v55-section-toggle');
+    if (body) body.hidden = collapsed;
+    if (toggle) {
+        toggle.textContent = collapsed ? '展开' : '收起';
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+    }
+    writeSectionCollapsed(key, collapsed);
+}
+
+function enhanceCollapsibleSection(root, key, summaryText, { defaultCollapsed = true } = {}) {
+    if (!root) return null;
+    root.classList.add('aum-v55-collapsible-section');
+    let header = root.querySelector(':scope > .aum-v55-section-header');
+    let body = root.querySelector(':scope > .aum-v55-section-body');
+    if (!header || !body) {
+        const title = root.querySelector(':scope > h4') || root.querySelector('h4');
+        header = document.createElement('div');
+        header.className = 'aum-v55-section-header';
+        const titleWrap = document.createElement('div');
+        titleWrap.className = 'aum-v55-section-title';
+        if (title) titleWrap.append(title);
+        const summary = document.createElement('span');
+        summary.className = 'aum-v55-section-summary';
+        titleWrap.append(summary);
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'menu_button aum-v55-section-toggle';
+        header.append(titleWrap, toggle);
+
+        body = document.createElement('div');
+        body.className = 'aum-v55-section-body';
+        for (const child of [...root.children]) {
+            if (child === header || child === body) continue;
+            body.append(child);
+        }
+        root.prepend(header);
+        root.append(body);
+        toggle.addEventListener('click', event => {
+            event.preventDefault();
+            setSectionCollapsed(root, key, !root.classList.contains('aum-v55-section-collapsed'));
+        });
+        header.addEventListener('dblclick', event => {
+            if (event.target.closest('button')) return;
+            setSectionCollapsed(root, key, !root.classList.contains('aum-v55-section-collapsed'));
+        });
+        setSectionCollapsed(root, key, readSectionCollapsed(key, defaultCollapsed));
+    }
+    const summary = root.querySelector(':scope > .aum-v55-section-header .aum-v55-section-summary');
+    if (summary) setText(summary, summaryText || '');
+    return body;
+}
+
+function bindingSummary(root) {
+    const status = translateBindingStatus(root?.querySelector('#aum-v55-binding-status')?.textContent || '');
+    return status || '未绑定世界';
+}
+
+function updateEntryEmptyState(root) {
+    if (!root) return;
+    const select = root.querySelector('#aum-v55-entry-select');
+    const hasEntry = Boolean(select?.value && select.options?.length);
+    root.classList.toggle('aum-v55-entry-empty', !hasEntry);
+    const summary = root.querySelector(':scope > .aum-v55-section-header .aum-v55-section-summary');
+    if (summary) setText(summary, hasEntry ? `当前条目：${select.selectedOptions?.[0]?.textContent || select.value}` : '未选择条目，编辑表单已收起');
 }
 
 function localizeBinding(root) {
@@ -99,15 +208,18 @@ function localizeBinding(root) {
     setControlLabel('aum-v55-binding-extensions', '扩展版本');
     setText(root.querySelector('#aum-v55-binding-pin'), '绑定到当前聊天');
     root.querySelectorAll('option').forEach(translateOption);
+    const ext = root.querySelector('#aum-v55-binding-extensions');
+    if (ext) ext.size = 3;
     const status = root.querySelector('#aum-v55-binding-status');
     if (status) setText(status, translateBindingStatus(status.textContent));
+    enhanceCollapsibleSection(root, 'binding', bindingSummary(root), { defaultCollapsed: true });
 }
 
 function localizeEntryEditor(root) {
     if (!root) return;
     setText(root.querySelector('h4'), 'v5.5 设定条目覆盖编辑');
     const description = root.querySelector('small');
-    if (description) setText(description, '导入的 Source / Revision 保持不可变。编辑内容作为同一版本作用域下的覆盖层保存，因此下一次索引同步时只需要更新发生变化的条目。');
+    if (description) setText(description, '导入的来源 / 版本保持不可变。编辑内容作为同一版本作用域下的覆盖层保存，因此下一次索引同步时只需要更新发生变化的条目。');
     setControlLabel('aum-v55-entry-select', '条目');
     setControlLabel('aum-v55-entry-title', '标题');
     setControlLabel('aum-v55-entry-keys', '主关键词');
@@ -120,14 +232,26 @@ function localizeEntryEditor(root) {
     const secondary = root.querySelector('#aum-v55-entry-secondary');
     if (keys) keys.placeholder = '用逗号分隔';
     if (secondary) secondary.placeholder = '用逗号分隔';
+    const textarea = root.querySelector('#aum-v55-entry-content');
+    if (textarea) textarea.rows = 5;
     setText(root.querySelector('#aum-v55-entry-save'), '保存覆盖编辑');
     setText(root.querySelector('#aum-v55-entry-clear'), '清除覆盖编辑');
     const status = root.querySelector('#aum-v55-entry-status');
     if (status) setText(status, translateEntryStatus(status.textContent));
+
+    const editControls = [
+        '#aum-v55-entry-title', '#aum-v55-entry-keys', '#aum-v55-entry-secondary', '#aum-v55-entry-order',
+        '#aum-v55-entry-content', '#aum-v55-entry-constant', '#aum-v55-entry-disabled',
+    ];
+    for (const selector of editControls) root.querySelector(selector)?.closest('label')?.classList.add('aum-v55-entry-edit-field');
+    root.querySelector('#aum-v55-entry-save')?.closest('.aum-v51-buttons')?.classList.add('aum-v55-entry-actions');
+
+    enhanceCollapsibleSection(root, 'entry-overlay', '', { defaultCollapsed: true });
+    updateEntryEmptyState(root);
 }
 
 function localizeStaticControls(root) {
-    replaceExactTextNodes(root);
+    replaceTextNodes(root);
     const revisionKind = document.getElementById('aum-v54-setting-revision-kind');
     revisionKind?.querySelectorAll('option').forEach(translateOption);
     const runtimeSummary = document.getElementById('aum-v55-runtime-summary');
@@ -166,7 +290,7 @@ export function installV55UiPolish() {
     if (!root) return false;
     if (!observer && typeof MutationObserver === 'function') {
         observer = new MutationObserver(scheduleLocalization);
-        observer.observe(root, { childList: true, subtree: true, characterData: true });
+        observer.observe(root, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['value', 'selected'] });
     }
     return true;
 }
