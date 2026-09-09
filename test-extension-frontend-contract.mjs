@@ -65,6 +65,15 @@ assert.match(api, /aum-v55-vector-direct-model/);
 assert.match(api, /chat-completions\/status/, 'connections must test through the SillyTavern server proxy');
 assert.match(api, /writeSecret/, 'API keys must use SillyTavern Secret Store');
 assert.match(api, /summary_connection_profile_id/, 'direct summary API must feed the summary runtime');
+assert.match(api, /SECRET_KEYS/, 'direct API credentials must be mapped into host secret namespaces');
+assert.match(api, /saveSecret\('VLLM'/, 'independent vector credentials must feed ST vLLM embedding transport');
+assert.match(api, /vectors\.source\s*=\s*'vllm'/, 'direct vector mode must activate the OpenAI-compatible vLLM vector adapter');
+assert.match(api, /vectors\.use_alt_endpoint\s*=\s*true/, 'direct vector mode must use its own endpoint instead of the host text endpoint');
+assert.match(api, /vectors\.alt_endpoint_url\s*=\s*url/, 'direct vector endpoint must be projected into Vector Storage');
+assert.match(api, /vectors\.vllm_model\s*=\s*model/, 'selected embedding model must be projected into Vector Storage');
+assert.match(api, /probeDirectVectorTransport/, 'independent vector API must support a real embedding write/query probe');
+assert.match(api, /aum-v55-vector-direct-test/, 'UI must expose an explicit embedding connectivity test');
+assert.match(api, /Memory \/ Baseline \/ Setting Dense transport/, 'UI must explain which dense pipelines the vector API controls');
 
 const settings = read('./settings.html');
 for (const id of ['aum-v54-settings','aum-v54-enabled','aum-v54-auto-extract','aum-v54-setting-file','aum-v54-setting-commit','aum-v54-rebuild-setting-index','aum-v54-baseline-gate','aum-v54-rebuild-baseline','aum-v54-vector','aum-v54-status','aum-v54-diagnostics']) {
@@ -89,5 +98,6 @@ assert.match(style, /aum-v55-entry-editor\.aum-v55-entry-empty/);
 assert.match(style, /#aum-v55-binding-pin[\s\S]*writing-mode:\s*horizontal-tb\s*!important/s);
 assert.match(style, /#aum-v55-binding-pin[\s\S]*white-space:\s*nowrap\s*!important/s);
 assert.match(style, /aum-v55-page-help/);
+assert.match(style, /aum-v55-direct-api-settings/);
 
 console.log('extension frontend contract tests passed');
