@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createEmptyStore, computeVectorHash } from './memory-core.js';
+import { createEmptyStore } from './memory-core.js';
 
 const prompts = [];
 const store = createEmptyStore();
@@ -15,7 +15,8 @@ const context = {
     aetheriaUnifiedMemoryV53: {
       enabled:true, parse_ops:true, inject_current_state:true, vector_recall:false,
       vector_source_mode:'inherit', query_messages:3, candidate_top_k:12, final_recall_count:6,
-      score_threshold:0.25, injection_depth:4, max_active_items:12, protect_recent_messages:8,
+      score_threshold:0.25, injection_depth:4, current_state_injection_depth:1,
+      max_active_items:12, protect_recent_messages:8,
       auto_rebuild_vectors_on_history_change:true, debug:false,
     },
     vectors: { source:'transformers' },
@@ -40,18 +41,33 @@ const coreChat = [
   {name:'平成', mes:'上一轮完整正文。', is_system:false},
   {name:'用户', mes:'璃月有回复了吗？', is_system:false},
 ];
+const before = structuredClone(coreChat);
 await globalThis.aetheriaUnifiedMemoryV54Interceptor(coreChat, 8192, () => {}, 'normal');
-assert.equal(prompts.length, 1);
-const [key, payload, position, depth, scan, role] = prompts.at(-1);
-assert.equal(key, 'aetheria_unified_memory_v5_4');
-assert.match(payload, /<aetheria_memory_context>/);
-assert.match(payload, /平成在东街/);
-assert.match(payload, /等待璃月/);
-assert.equal(depth, 4);
+assert.deepEqual(coreChat,before,'generation interceptor must not mutate the real chat array');
 
-// Quiet generation must clear the injection.
+const reference = prompts.find(row=>row[0]==='aetheria_unified_memory_v5_4_reference');
+const current = prompts.find(row=>row[0]==='aetheria_unified_memory_v5_4_current_state');
+assert.ok(reference,'reference prompt must be set');
+assert.ok(current,'current-state prompt must be set');
+assert.equal(reference[3],4);
+assert.equal(current[3],1);
+assert.match(current[1],/PLUGIN CURRENT STATE/);
+assert.match(current[1],/平成在东街/);
+assert.match(current[1],/等待璃月/);
+assert.doesNotMatch(reference[1],/平成在东街/,'current state must not leak into reference prompt');
+
+const diag=mod.__testGetLastGenerationContextDiagnostics();
+assert.equal(diag.reference_depth,4);
+assert.equal(diag.current_state_depth,1);
+
+// Quiet generation must clear both Commit F keys and the legacy one-block key.
+const start=prompts.length;
 await globalThis.aetheriaUnifiedMemoryV54Interceptor(coreChat, 8192, () => {}, 'quiet');
-assert.equal(prompts.length, 2);
-assert.equal(prompts.at(-1)[1], '');
+const clears=prompts.slice(start);
+for(const key of ['aetheria_unified_memory_v5_4','aetheria_unified_memory_v5_4_reference','aetheria_unified_memory_v5_4_current_state']){
+  const row=clears.find(x=>x[0]===key);
+  assert.ok(row,`quiet must clear ${key}`);
+  assert.equal(row[1],'');
+}
 
-console.log('PASS mock interceptor injects current state and clears on quiet generation');
+console.log('PASS Commit F interceptor uses dual prompt keys/depths, preserves chat, and clears on quiet');

@@ -34,11 +34,16 @@ assert.equal('garbage' in normalized, false);
 
 const prompt = buildAutonomousExtractionPrompt({
   userText:'我去看看骰子。', assistantText:'平成拿起上帝的骰子看了看。',
-  canonicalState:'- [state slot=平成.state.hunger] 平成当前饥饿。'
+  canonicalState:'- [state slot=平成.state.hunger] 平成当前饥饿。',
+  relevantSettingContext:'[PLUGIN RELEVANT SETTING]\n上帝的骰子属于既有世界设定。',
+  hostBaselineContext:'[RELEVANT HOST BASELINE]\n平成喜欢植物。'
 });
 assert.match(prompt, /不区分短期记忆\/长期记忆/);
 assert.match(prompt, /角色卡、Persona、World Info\/世界书/);
 assert.match(prompt, /某角色现在知道\/确认了 X/);
 assert.match(prompt, /indexable=true/);
 assert.match(prompt, /不要把模型因为看到系统提示\/世界书而知道的事情/);
+assert.match(prompt, /与本轮变化相关的插件世界设定/);
+assert.match(prompt, /上帝的骰子属于既有世界设定/);
+assert.match(prompt, /客观参考数据，不等于场景中每个角色都知道/);
 console.log('PASS v5.4 autonomous extractor parser/schema/prompt');

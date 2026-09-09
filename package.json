@@ -4,7 +4,7 @@
   "version": "5.4.0",
   "type": "module",
   "scripts": {
-    "check": "node --check memory-core.js && node --check memory-extractor.js && node --check baseline-index.js && node --check baseline-host.js && node --check index.js",
-    "test": "node test-memory-core.mjs && node test-memory-extractor.mjs && node test-baseline-index.mjs && node test-index-mock.mjs && node test-index-vector-mock.mjs && node test-index-migration-fallback.mjs && node test-index-autopilot-mock.mjs && node test-index-baseline-mock.mjs && node test-index-baseline-vector-mock.mjs"
+    "check": "node --check memory-core.js && node --check memory-extractor.js && node --check baseline-index.js && node --check baseline-host.js && node --check setting-schema.js && node --check setting-store.js && node --check source-adapters/worldbook-json.js && node --check source-adapters/titled-text.js && node --check setting-importer.js && node --check setting-index.js && node --check setting-retriever.js && node --check context-assembler.js && node --check index.js",
+    "test": "node test-memory-core.mjs && node test-memory-extractor.mjs && node test-baseline-index.mjs && node test-depth-normalization.mjs && node test-setting-store.mjs && node test-setting-store-host.mjs && node test-setting-importer.mjs && node test-setting-importer-host.mjs && node test-setting-index.mjs && node test-setting-index-host.mjs && node test-setting-index-lifecycle.mjs && node test-setting-index-lifecycle-host.mjs && node test-setting-retriever.mjs && node test-context-assembler.mjs && node test-context-injection-lifecycle.mjs && node test-setting-retrieval-host.mjs && node test-setting-retrieval-vector-host.mjs && node test-index-mock.mjs && node test-index-vector-mock.mjs && node test-index-migration-fallback.mjs && node test-index-autopilot-mock.mjs && node test-index-baseline-mock.mjs && node test-index-baseline-vector-mock.mjs"
   }
 }

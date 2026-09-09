@@ -10,7 +10,7 @@
   "css": "style.css",
   "author": "lin lin + OpenAI",
   "version": "5.4.0",
-  "auto_update": true,
+  "auto_update": false,
   "minimum_client_version": "1.18.0",
   "generate_interceptor": "aetheriaUnifiedMemoryV54Interceptor",
   "hooks": {

@@ -29,6 +29,64 @@
             <button id="aum-v54-backfill" class="menu_button">补建缺失历史记忆</button>
         </div>
 
+        <h4>插件设定库 · v5.5 Setting Store / Index</h4>
+        <p class="aum-v51-muted">
+            JSON / TXT 世界资料可以一次性导入插件自己的 Setting Store。预览阶段只解析，不写入；确认提交后才创建 Source、Revision 与 Entry。
+            当前已能按 World + active Revision 构建共享 SettingChunk 索引，并始终保留本地词法检索；相关设定已进入正文 Reference Block 与后台抽取。
+        </p>
+        <input id="aum-v54-setting-file" class="text_pole" type="file" accept=".json,.txt,.md,.markdown,application/json,text/plain,text/markdown">
+        <div class="aum-v51-buttons">
+            <button id="aum-v54-setting-preview" class="menu_button">预览导入</button>
+            <button id="aum-v54-setting-export" class="menu_button">导出 Setting Store</button>
+        </div>
+        <div id="aum-v54-setting-preview-output" class="aum-v51-status">尚未选择导入文件。</div>
+        <div class="aum-v51-grid">
+            <label>目标世界
+                <select id="aum-v54-setting-world" class="text_pole"></select>
+            </label>
+            <label>新世界名称<input id="aum-v54-setting-world-name" class="text_pole" type="text" placeholder="仅选择“新建世界”时使用"></label>
+            <label>Revision 标签<input id="aum-v54-setting-revision-label" class="text_pole" type="text" placeholder="例如 v5 / 2026-09-09"></label>
+            <label>Revision 类型
+                <select id="aum-v54-setting-revision-kind" class="text_pole">
+                    <option value="baseline">Baseline</option>
+                    <option value="extension">Extension</option>
+                </select>
+            </label>
+            <label>Extension 绑定 Baseline
+                <select id="aum-v54-setting-base-revision" class="text_pole"></select>
+            </label>
+        </div>
+        <label class="checkbox_label"><input id="aum-v54-setting-activate" type="checkbox" checked> 提交后立即激活该 revision</label>
+        <div class="aum-v51-buttons">
+            <button id="aum-v54-setting-commit" class="menu_button" disabled>确认写入设定库</button>
+        </div>
+        <small>相同内容通过 content hash 检测。若目标世界已存在完全相同 Source，默认不会静默重复写入；只有再次确认后才复用该 Source 创建新 Revision。</small>
+
+        <h4>Plugin Setting Index + Retrieval · v5.5 Commit G</h4>
+        <p class="aum-v51-muted">
+            当前激活 Baseline + Extension 会投影为带父 Entry 链接的 SettingChunk。生成与后台抽取分别构造 Setting Query；设定与剧情历史继续保持不同检索通道。
+        </p>
+        <label class="checkbox_label"><input id="aum-v54-setting-index-vector" type="checkbox"> 同时构建设定向量索引</label>
+        <label class="checkbox_label"><input id="aum-v54-setting-index-auto" type="checkbox"> 激活范围 / 内容 / Embedding Profile 变化时自动维护设定向量</label>
+        <div class="aum-v51-grid">
+            <label>Setting 分块字符<input id="aum-v54-setting-index-chunk" class="text_pole" type="number" step="20"></label>
+        </div>
+        <small>即使 embedding 不可用，SettingChunk 的本地词法索引仍然可用。Commit G 已加入按 Entry 增量向量更新、Embedding Profile 隔离与安全 staging→verify→switch；失败时保留旧集合并自动词法降级。</small>
+        <label class="checkbox_label"><input id="aum-v54-setting-retrieval-enabled" type="checkbox"> 启用相关世界设定检索</label>
+        <label class="checkbox_label"><input id="aum-v54-setting-retrieval-dense" type="checkbox"> Setting 检索同时使用 Dense 候选（不可用时自动词法降级）</label>
+        <div class="aum-v51-grid">
+            <label>Setting 候选 Top-K<input id="aum-v54-setting-retrieval-candidate-k" class="text_pole" type="number" step="1"></label>
+            <label>最终 Setting Entry 数<input id="aum-v54-setting-retrieval-final" class="text_pole" type="number" step="1"></label>
+            <label>Setting Dense 阈值<input id="aum-v54-setting-retrieval-threshold" class="text_pole" type="number" step="0.01"></label>
+            <label>Setting RRF K<input id="aum-v54-setting-retrieval-rrf" class="text_pole" type="number" step="1"></label>
+            <label>Generation Setting 粗预算<input id="aum-v54-setting-retrieval-budget" class="text_pole" type="number" step="500"></label>
+            <label>Extractor Setting 预算<input id="aum-v54-setting-extraction-budget" class="text_pole" type="number" step="500"></label>
+            <label>Constant 保留条目数<input id="aum-v54-setting-constant-limit" class="text_pole" type="number" step="1"></label>
+        </div>
+        <div class="aum-v51-buttons">
+            <button id="aum-v54-rebuild-setting-index" class="menu_button">构建 / 重建设定索引</button>
+        </div>
+
         <h4>Semantic Baseline Index</h4>
         <p class="aum-v51-muted">
             将当前 Persona、角色卡、绑定/当前激活 World Info 视为“本来就成立”的基线。
@@ -66,7 +124,7 @@
             <option value="inherit">继承 SillyTavern Vector Storage provider</option>
             <option value="transformers">强制 Local (Transformers)</option>
         </select>
-        <small>向量只负责“过去有什么相关”；当前事实由 Canonical Store 的 active slot 查询负责。</small>
+        <small>向量只负责“过去有什么相关”；当前事实由 Canonical Store 的 active slot 查询负责。Commit F 使用两个独立 System extension prompt：Reference 默认 depth 4，Current State 默认 depth 1；不会向真实聊天数组插入伪消息。</small>
 
         <div class="aum-v51-grid">
             <label>Query messages<input id="aum-v54-query-messages" class="text_pole" type="number" step="1"></label>
@@ -80,8 +138,11 @@
             <label>MMR λ<input id="aum-v54-mmr-lambda" class="text_pole" type="number" step="0.01"></label>
             <label>重复召回冷却(消息)<input id="aum-v54-cooldown" class="text_pole" type="number" step="1"></label>
             <label>向量稳定等待(消息)<input id="aum-v54-settle" class="text_pole" type="number" step="1"></label>
-            <label>记忆注入字符预算<input id="aum-v54-budget" class="text_pole" type="number" step="100"></label>
-            <label>注入深度<input id="aum-v54-depth" class="text_pole" type="number" step="1"></label>
+            <label>Reference 总字符预算<input id="aum-v54-budget" class="text_pole" type="number" step="100"></label>
+            <label>Current State 字符预算<input id="aum-v54-current-state-budget" class="text_pole" type="number" step="100"></label>
+            <label>Reference 注入深度<input id="aum-v54-depth" class="text_pole" type="number" step="1"></label>
+            <label>Current State 注入深度<input id="aum-v54-current-state-depth" class="text_pole" type="number" step="1"></label>
+            <label>回复预留 tokens<input id="aum-v54-reply-reserve" class="text_pole" type="number" step="100"></label>
             <label>Active 上限<input id="aum-v54-max-active" class="text_pole" type="number" step="1"></label>
             <label>保护最近消息<input id="aum-v54-protect-recent" class="text_pole" type="number" step="1"></label>
         </div>

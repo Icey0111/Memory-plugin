@@ -1,6 +1,123 @@
 # Aetheria Unified Memory v5.4 — Semantic Baseline Index
 
+> **v5.5 development note (Iteration 06):** this source tree now contains Commit A+B+C+D+E+F+G. Plugin-owned settings can be imported, indexed, retrieved and maintained with per-entry vector diffs plus embedding-profile-safe staging/switch. Main generation still uses the central Context Assembler and dual System prompts. Runtime identity remains v5.4 intentionally until real SillyTavern acceptance completes. See `V55_ITERATION_06_REPORT.md`.
+
+
 v5.4 在 v5.3 **Autonomous Memory Plugin** 基础上新增一个独立的 **Persona / Character / World Info Semantic Baseline Index**，把“不要重复记住本来就在角色卡/世界书里的东西”从主要依赖提示词，升级成 **LLM 抽取 + 写入层硬过滤** 的双保险。
+
+## v5.5-dev 已实现到哪里
+
+当前开发链路：
+
+```text
+Commit A  depth=0 安全修复             DONE
+Commit B  Setting Store + Schema       DONE
+Commit C  Import Adapters + Preview    DONE
+Commit D  Setting Index                DONE
+Commit E  Relevant Setting Retrieval   DONE
+Commit F  Context Assembler + 双注入   DONE
+Commit G  增量索引生命周期             DONE
+Commit H  SillyTavern 实机验收         NEXT
+```
+
+设置页现在可以直接预览并导入 SillyTavern Worldbook JSON、标题化 TXT/Markdown。导入数据进入全局 extension settings 中的插件 Setting Store，而剧情 Canonical Memory 仍留在 chat metadata。相同文件通过 content hash 检测；未知 JSON 字段保留在 `raw_extra`，完整源文本保留在 `SourceRecord.raw_payload`。
+
+Commit D 进一步把当前激活 Baseline + Extension 投影成 `SettingChunk`。每个长条目按完整语义段落切分，子块继续携带父 `entry_id`、title、keywords、revision 和 source 信息；逻辑索引范围只依赖 `world_id + active revision ids`，而实际向量集合进一步绑定 `embedding_profile_hash`；因此同一世界可跨聊天共享，又不会把不同 embedding 空间混在一起。embedding 不可用时仍保留本地词法检索。
+
+**注意：Iteration 05 已完成主模型双块注入。** Generation path 先分别执行插件世界设定检索与剧情历史召回，再交给唯一的 `context-assembler.js` 做预算、标签与去混淆。相关世界设定 + 历史记忆进入 Reference Block；Canonical Current State 单独进入浅层 Current State Block。两者只通过 `setExtensionPrompt` 进入模型上下文，不会向真实聊天数组插入伪消息。
+
+
+
+## v5.5-dev Incremental Setting Vector Lifecycle（Commit G）
+
+Commit G 把 Setting Vector 从“范围变化就整集合 purge + rebuild”升级为可恢复的生命周期：
+
+```text
+world_id + active revision set + embedding_profile_hash
+                     ↓
+              active vector profile
+                     ↓
+       entry manifest / content hash diff
+          ├─ unchanged -> reuse
+          ├─ added     -> insert new chunks
+          ├─ changed   -> insert new -> verify -> delete old hashes
+          └─ removed   -> targeted delete old hashes
+```
+
+单条 Entry 变化不会 purge 当前集合。Changed Entry 先插入新向量并用 sample query 验证，之后才清理旧 hash；如果插入/验证失败，会尽量回滚新 hash，旧集合仍保持可用。旧 hash 清理失败时也不会阻塞检索：当前 snapshot 无法映射的旧 metadata 会被忽略，并在 diagnostics 中记录待清理 hash。
+
+当 embedding provider/model 变化，需要进入全新向量空间时，插件不会执行 `purge old -> rebuild`，而是：
+
+```text
+build inactive staging collection
+-> insert all current SettingChunks
+-> sample-query verification
+-> mark ready
+-> atomically switch active_profile_hash / active_collection_id
+-> retain previous collection as retired (later optional GC)
+```
+
+实际集合名仍以 `aetheria_v55_setting_` 开头，但物理 identity 同时包含 world/revision scope、Embedding Profile 与 staging generation。失败的 staging 不会移动 active pointer；正文自动降级到 lexical，并保留已有向量集合。v1 Setting Index 状态会迁移到 state schema v2，旧的“未绑定 embedding profile”集合只保留为 diagnostics/未来 GC 信息，不会被静默当成可信活动索引。
+
+## v5.5-dev Context Assembler + 双注入（Commit F）
+
+主生成链路现在是：
+
+```text
+Generation Query
+  ├─ Plugin Setting Retrieval
+  └─ Story History Recall
+          ↓
+context-assembler.js
+  ├─ [PLUGIN REFERENCE DATA — NOT DIALOGUE]
+  │    ├─ constant/critical setting reserve
+  │    ├─ relevant setting
+  │    └─ historical memory
+  │         → System / depth 4
+  └─ [PLUGIN CURRENT STATE — EFFECTIVE FOR THE PREVIOUS COMPLETED TURN]
+       └─ active state / active slots
+            → System / depth 1
+```
+
+Reference 的初始预算比例为 constant/critical `25%`、relevant setting `45%`、history `30%`；未使用预算可向后溢出，但总 Reference 字符上限由 Context Assembler 统一控制。导入资料中的“提示词式文字”会被明确标成 source data，并对 XML-like 标记做转义，不能提升为插件/系统控制指令。Current State 也明确标记为上一已完成回合的结构化数据；若更近的原始对话与之冲突，以更近原文为准。
+
+Commit F 使用两个独立 prompt key：
+
+```text
+aetheria_unified_memory_v5_4_reference
+aetheria_unified_memory_v5_4_current_state
+```
+
+旧单块 key `aetheria_unified_memory_v5_4` 只用于升级清理，不再承载正文。quiet / impersonate / disable / chat switch 会同时清理新旧 key。
+
+## v5.5-dev Setting Index（Commit D）
+
+插件自有设定现在形成独立派生索引：
+
+```text
+Setting Store
+  ↓ active world + baseline revision + compatible extensions
+SettingEntry
+  ↓ structured chunking
+SettingChunk[]
+  ├─ parent entry_id / source_id / revision_id
+  ├─ title / comment / keys / secondary_keys
+  ├─ body_text / retrieval_text
+  ├─ local lexical tokens
+  └─ optional Vector Storage projection
+```
+
+集合名类似：
+
+```text
+aetheria_v55_setting_<world+revision+embedding-profile+generation-hash>
+```
+
+它**不含 chat id**。同一个 world/revision/profile 可以跨聊天复用；不同 embedding provider/model 使用不同 profile 空间。安全 full build 先进入新的 staging generation，通过验证后才切换活动指针，旧集合不会提前被清空。
+
+本地 lexical path 始终可用；向量 provider 不支持、未配置或构建失败时，只降级 dense projection，不影响 SettingChunk 本身。Commit E 已把这条路径接到 generation/extraction query；设定与剧情历史仍分开检索，不共用一个向量集合。
+
+真实 41 条艾瑟瑞亚 v5 世界书在 `420` 字符上限下得到 91 个 SettingChunk；末尾 `uid=27`“世界扩展规则｜新地区与新组织生成”可以从自然语言查询中排到首位，证明索引不再只偏向文件前部。
 
 ## 运行链路
 
@@ -169,13 +286,7 @@ Baseline 原文不会复制一整份进 chat metadata。metadata 只保存：
 
 ## 安装
 
-推荐在 SillyTavern 的 **Extensions / 扩展 → Install Extension / 安装扩展** 中直接粘贴：
-
-```text
-https://github.com/Icey0111/Memory-plugin
-```
-
-SillyTavern 会把仓库克隆为 `third-party/Memory-plugin`。也可以手动把整个仓库放入 SillyTavern 第三方扩展目录。
+把整个 `aetheria-unified-memory-v5_4` 文件夹放入 SillyTavern 第三方扩展目录，或使用对应 ZIP 安装。
 
 依赖：
 

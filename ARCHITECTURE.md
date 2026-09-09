@@ -240,3 +240,130 @@ Each autonomous extraction is keyed by stable user+assistant pair fingerprint.
 4. Legacy v5.3 memories already stored before v5.4 are not destructively rewritten solely by a semantic heuristic.
 5. No direct mutation of real chat history for context pruning.
 6. No external Cross-Encoder reranker yet.
+
+## 13. v5.5-dev source / retrieval / context overlay (Iterations 1–5)
+
+The staged v5.5 work keeps the tested v5.4 runtime identity while adding a plugin-owned world-setting plane beside the per-chat Canonical Memory plane.
+
+```text
+Plugin-owned world plane (shared across chats)
+Setting Store -> active World/Revision scope -> SettingChunk Index
+             -> lexical + optional dense Relevant Setting Retrieval
+
+Story plane (chat/branch scoped)
+Dialogue -> autonomous extraction -> Canonical Memory -> current state / history recall
+```
+
+The two planes remain semantically distinct: objective setting truth is not story history, and an objective secret is not automatically character knowledge.
+
+Iteration 04 adds two separate setting-query shapes:
+
+- generation: latest user + small previous assistant context + scene entities + active location + unresolved commitments/objectives;
+- extraction: current user/assistant pair + affected entities + active state slots.
+
+Setting candidates are retrieved only from the active world/revision scope, fused from local lexical and optional dense ranks, then deduplicated at the parent-entry level. Long entries are expanded back to their parent entry after a child hit; their score is capped to avoid rewarding an entry merely for having many child chunks.
+
+The plugin-owned active Setting scope also participates in the Baseline write gate. This allows static imported world facts to be rejected as memory duplicates even when no SillyTavern World Info is bound. Existing story-delta exemptions remain in force, especially `knowledge`: a character newly learning an existing world fact remains a valid memory operation.
+
+## 14. Context Assembler and prompt-plane separation (Iteration 05 / Commit F)
+
+Commit F introduces one pure `context-assembler.js` as the only main-generation budget/formatting boundary. Setting retrieval and story-memory retrieval remain separate until assembly, and current truth remains separate even after assembly.
+
+```text
+Relevant Setting results ─┐
+                         ├─> Reference Block -> setExtensionPrompt(..., System, depth 4)
+Historical Memory recall ─┘
+
+Canonical ACTIVE_STATE / active slots
+                         └─> Current State Block -> setExtensionPrompt(..., System, depth 1)
+```
+
+Reference rules:
+- imported setting text is explicitly reference data, not dialogue or plugin/system instruction;
+- XML-like source markup is escaped before injection;
+- world truth does not imply character knowledge;
+- historical memories are labeled as past and do not automatically override current state;
+- constant/critical settings receive a reserved but bounded budget rather than unlimited residency.
+
+Current-state rules:
+- only Canonical current-state material is placed in the shallow block;
+- it is labeled as effective for the previous completed turn;
+- newer explicit user/assistant text wins on conflict;
+- no historical memory or world-setting body is copied into this block.
+
+The interceptor never appends fake messages and still does not splice the real chat array. quiet/impersonate/disable/chat-switch cleanup clears both Commit F prompt keys plus the legacy single-block key. Legal depth `0` remains supported for either configured depth.
+
+## 15. Historical staged boundary after Iteration 05
+
+Implemented:
+
+- depth=0 normalization;
+- plugin-owned Setting Store and immutable revisions;
+- JSON/TXT preview + commit import;
+- world/revision-scoped shared Setting Index;
+- local lexical fallback and optional vector projection;
+- generation/extraction Relevant Setting retrieval;
+- plugin-owned baseline dedup for extracted operations;
+- central Context Assembler;
+- Reference + Current State dual prompt injection with independent keys/depths;
+- cleanup lifecycle and assembly diagnostics.
+
+Still deliberately deferred:
+
+- per-entry no-purge incremental vector lifecycle and safe collection switching (Commit G);
+- real SillyTavern final-request / multi-provider acceptance (Commit H).
+
+## 16. Incremental Setting Vector lifecycle (Iteration 06 / Commit G)
+
+Commit G separates three identities that were previously conflated:
+
+```text
+logical setting scope = world_id + active revision ids
+embedding profile      = provider/model/API-relevant fingerprint
+physical collection    = logical scope + embedding profile + safe build generation
+```
+
+The Setting Index state schema is now v2. Each logical scope stores `profiles{embedding_profile_hash}` plus an atomic `active_profile_hash / active_collection_id` pointer. A legacy v1 collection that did not encode an embedding profile is retained only as migration/GC metadata and is not silently trusted as an active v2 profile.
+
+Each ready profile stores an Entry manifest derived from the current SettingChunk snapshot. Diff semantics are:
+
+```text
+unchanged -> retain current vectors
+added     -> insert only the new entry's chunks
+changed   -> insert replacement chunks -> verify -> targeted delete of old hashes
+removed   -> targeted delete of old hashes
+```
+
+The active collection is never whole-purged for a single Entry change. Replacement hashes are inserted before old hashes are removed. If insertion or sample verification fails, the old vectors remain authoritative and new hashes are rolled back best-effort. If stale-hash cleanup fails after a successful replacement, the profile stays usable: retrieval maps vector metadata back through the current snapshot and ignores hashes that no longer exist there; pending hashes are exposed in diagnostics for later cleanup.
+
+A new embedding profile or a forced full rebuild uses an inactive staging collection. Only the staging collection may be purged before build. The build path is:
+
+```text
+create/purge inactive staging collection
+-> insert current snapshot
+-> sample-query verification against current vector hashes
+-> mark profile ready
+-> atomically switch active pointer
+-> retain old collection id in retired_collection_ids
+```
+
+If the new build fails, the active pointer is not moved and the prior collection is not purged. For the current request, dense Setting retrieval is disabled and the plugin falls back to lexical retrieval with `vector_degraded=true` diagnostics.
+
+## 17. Current staged boundary after Iteration 06
+
+Implemented through Commit G:
+
+- plugin-owned versioned Setting Store and import preview/commit;
+- world/revision shared SettingChunk index;
+- lexical + optional dense Relevant Setting retrieval;
+- plugin Baseline dedup interface;
+- central Reference/Current-State Context Assembler and dual prompt injection;
+- embedding-profile-separated vector profiles;
+- per-entry manifest diff and targeted vector insert/delete;
+- safe staging -> verify -> atomic pointer switch;
+- failed-build preservation, lexical degradation and no active-collection purge window.
+
+Still deliberately deferred:
+
+- Commit H real SillyTavern final-request inspection for normal/continue/regenerate/group/quiet, short histories and provider-specific System handling;
+- optional garbage collection policy for retired/stale Setting vector collections (old collections are intentionally retained for safety in v5.5).

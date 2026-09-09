@@ -13,7 +13,6 @@ import {
     graphDiffuseCandidates,
     findLatestActiveState,
     fnv1a32,
-    formatMemoryContext,
     getActiveMemories,
     getIndexableMemories,
     lexicalSearchMemories,
@@ -42,20 +41,45 @@ import {
     buildBaselineRecords,
     computeBaselineFingerprint,
     evaluateBaselineDuplicate,
+    baselineLexicalSimilarity,
     fnv1a32Baseline,
     isBaselineGateEligible,
 } from './baseline-index.js';
 
 import { collectSemanticBaselineSources } from './baseline-host.js';
+import { migrateSettingStore } from './setting-schema.js';
+import { listRevisionsForWorld, listWorlds } from './setting-store.js';
+import { commitImport, findDuplicateSources, previewImport } from './setting-importer.js';
+import {
+    buildSettingEntryManifest,
+    buildSettingIndexSnapshot,
+    buildSettingVectorItems,
+    computeSettingEmbeddingProfileHash,
+    diffSettingEntryManifests,
+    getSettingCollectionId,
+    lexicalSearchSettingChunks,
+    summarizeSettingSnapshot,
+} from './setting-index.js';
+import {
+    buildExtractionSettingQuery,
+    buildGenerationSettingQuery,
+    formatRelevantSettingContext,
+    fuseSettingCandidates,
+    mapDenseSettingMetadata,
+    settingChunksToBaselineRecords,
+} from './setting-retriever.js';
+import { assembleGenerationContext } from './context-assembler.js';
 
 const MODULE_ID = 'aetheria-unified-memory-v5_4';
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const LEGACY_SETTINGS_KEYS = ['aetheriaUnifiedMemoryV53', 'aetheriaUnifiedMemoryV52', 'aetheriaUnifiedMemoryV51'];
 const LEGACY_METADATA_KEYS = ['aetheriaUnifiedMemoryV53', 'aetheriaUnifiedMemoryV52', 'aetheriaUnifiedMemoryV51'];
-const PROMPT_KEY = 'aetheria_unified_memory_v5_4';
+const LEGACY_PROMPT_KEY = 'aetheria_unified_memory_v5_4';
+const REFERENCE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_reference';
+const CURRENT_STATE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_current_state';
 const INTERCEPTOR_NAME = 'aetheriaUnifiedMemoryV54Interceptor';
-const EXTENSION_PATH = 'third-party/Memory-plugin';
+const EXTENSION_PATH = 'third-party/aetheria-unified-memory-v5_4';
 const IN_CHAT = 1;
 const SYSTEM_ROLE = 0;
 
@@ -79,6 +103,30 @@ const DEFAULT_SETTINGS = Object.freeze({
     baseline_semantic_lexical_floor: 0.16,
     baseline_chunk_chars: 420,
     baseline_hint_chars: 12000,
+    // v5.5-dev Commit D: plugin-owned setting index. Lexical projection is always local;
+    // vector projection is shared by world+active revision scope, never by chat id.
+    setting_index_use_vector: true,
+    setting_index_auto_rebuild: true,
+    setting_index_chunk_chars: 420,
+    setting_index_lexical_top_k: 12,
+    setting_index_lexical_min_score: 0.05,
+    setting_index_verify_build: true,
+    setting_index_state: null,
+    // v5.5-dev Commit E: relevant Setting retrieval. Retrieval is separate from story-memory recall.
+    setting_retrieval_enabled: true,
+    setting_retrieval_use_dense: true,
+    setting_retrieval_candidate_top_k: 18,
+    setting_retrieval_final_count: 8,
+    setting_retrieval_dense_threshold: 0.18,
+    setting_retrieval_rrf_k: 60,
+    setting_retrieval_max_chars: 10000,
+    setting_extraction_max_chars: 7000,
+    setting_retrieval_constant_limit: 2,
+    // v5.5-dev Commit F: one context assembler, two extension-prompt blocks.
+    reference_context_max_chars: 12000,
+    current_state_context_max_chars: 5000,
+    context_reply_reserve_tokens: 1200,
+    current_state_injection_depth: 1,
     inject_current_state: true,
     vector_recall: true,
     vector_source_mode: 'inherit', // inherit | transformers
@@ -120,9 +168,19 @@ let extractionQueue = Promise.resolve();
 let extractionPending = 0;
 let vectorQueue = Promise.resolve();
 let statusTimer = null;
+let pendingSettingImportPreview = null;
+let lastSettingRetrievalDebug = null;
+let lastGenerationSettingRetrieval = null;
+let lastGenerationContextDiagnostics = null;
 
 function getContext() {
     return globalThis.SillyTavern?.getContext?.();
+}
+
+function normalizeDepth(value, fallback = 4) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return Math.max(0, Math.floor(Number(fallback) || 0));
+    return Math.floor(n);
 }
 
 function log(...args) {
@@ -149,6 +207,138 @@ function getSettings(ctx) {
         if (current[key] === undefined) current[key] = value;
     }
     return current;
+}
+
+function getSettingStore(ctx, { saveMigration = true } = {}) {
+    const settings = getSettings(ctx);
+    const migration = migrateSettingStore(settings.setting_store);
+    settings.setting_store = migration.store;
+    if (migration.migrated && saveMigration) ctx.saveSettingsDebounced?.();
+    return settings.setting_store;
+}
+
+function setSettingStore(ctx, store, { save = true } = {}) {
+    const settings = getSettings(ctx);
+    const migration = migrateSettingStore(store);
+    settings.setting_store = migration.store;
+    if (save) ctx.saveSettingsDebounced?.();
+    return settings.setting_store;
+}
+
+function normalizeSettingEntryManifest(input) {
+    const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    const entries = raw.entries && typeof raw.entries === 'object' && !Array.isArray(raw.entries) ? raw.entries : {};
+    const normalizedEntries = {};
+    for (const [entryId, rowInput] of Object.entries(entries)) {
+        const row = rowInput && typeof rowInput === 'object' && !Array.isArray(rowInput) ? rowInput : {};
+        const id = String(row.entry_id || entryId || '').trim();
+        if (!id) continue;
+        normalizedEntries[id] = {
+            entry_id: id,
+            revision_id: typeof row.revision_id === 'string' ? row.revision_id : null,
+            source_id: typeof row.source_id === 'string' ? row.source_id : null,
+            parent_content_hash: typeof row.parent_content_hash === 'string' ? row.parent_content_hash : '',
+            chunk_count: Math.max(0, Number(row.chunk_count) || 0),
+            vector_hashes: Array.isArray(row.vector_hashes) ? [...new Set(row.vector_hashes.map(Number).filter(Number.isFinite))] : [],
+            signature: typeof row.signature === 'string' ? row.signature : '',
+        };
+    }
+    return {
+        manifest_version: 1,
+        snapshot_fingerprint: typeof raw.snapshot_fingerprint === 'string' ? raw.snapshot_fingerprint : null,
+        entry_count: Object.keys(normalizedEntries).length,
+        chunk_count: Object.values(normalizedEntries).reduce((sum, row) => sum + row.chunk_count, 0),
+        entries: normalizedEntries,
+    };
+}
+
+function normalizeSettingProfileState(input, profileHash = null) {
+    const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    return {
+        embedding_profile_hash: typeof raw.embedding_profile_hash === 'string' ? raw.embedding_profile_hash : (profileHash || null),
+        provider_fingerprint: typeof raw.provider_fingerprint === 'string' ? raw.provider_fingerprint : null,
+        collection_id: typeof raw.collection_id === 'string' ? raw.collection_id : null,
+        fingerprint: typeof raw.fingerprint === 'string' ? raw.fingerprint : null,
+        entry_manifest: normalizeSettingEntryManifest(raw.entry_manifest),
+        ready: raw.ready === true,
+        stale: raw.stale !== false,
+        vector_disabled: raw.vector_disabled === true,
+        cleanup_pending_hashes: Array.isArray(raw.cleanup_pending_hashes) ? [...new Set(raw.cleanup_pending_hashes.map(Number).filter(Number.isFinite))] : [],
+        last_error: typeof raw.last_error === 'string' ? raw.last_error : null,
+        last_sync_at: Number.isFinite(Number(raw.last_sync_at)) ? Number(raw.last_sync_at) : null,
+        last_verified_at: Number.isFinite(Number(raw.last_verified_at)) ? Number(raw.last_verified_at) : null,
+        last_built_at: Number.isFinite(Number(raw.last_built_at)) ? Number(raw.last_built_at) : null,
+        last_diff: raw.last_diff && typeof raw.last_diff === 'object' && !Array.isArray(raw.last_diff) ? structuredClone(raw.last_diff) : null,
+        verification: raw.verification && typeof raw.verification === 'object' && !Array.isArray(raw.verification) ? structuredClone(raw.verification) : null,
+    };
+}
+
+function normalizeSettingScopeState(input) {
+    const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    const rawProfiles = raw.profiles && typeof raw.profiles === 'object' && !Array.isArray(raw.profiles) ? raw.profiles : {};
+    const profiles = {};
+    for (const [profileHash, row] of Object.entries(rawProfiles)) {
+        const cleanHash = String(profileHash || '').trim();
+        if (!cleanHash) continue;
+        profiles[cleanHash] = normalizeSettingProfileState(row, cleanHash);
+    }
+    const legacyV1 = !Object.keys(profiles).length && raw.collection_id
+        ? {
+            collection_id: typeof raw.collection_id === 'string' ? raw.collection_id : null,
+            provider_fingerprint: typeof raw.provider_fingerprint === 'string' ? raw.provider_fingerprint : null,
+            fingerprint: typeof raw.fingerprint === 'string' ? raw.fingerprint : null,
+            migrated_at: Date.now(),
+            reason: 'v1 Setting Index collections did not include embedding_profile_hash and are retained but not trusted as active v5.5-G indexes.',
+        }
+        : (raw.legacy_v1 && typeof raw.legacy_v1 === 'object' ? structuredClone(raw.legacy_v1) : null);
+    return {
+        index_version: typeof raw.index_version === 'string' ? raw.index_version : null,
+        world_id: typeof raw.world_id === 'string' ? raw.world_id : null,
+        world_name: typeof raw.world_name === 'string' ? raw.world_name : null,
+        revision_ids: Array.isArray(raw.revision_ids) ? raw.revision_ids.map(String) : [],
+        scope_key: typeof raw.scope_key === 'string' ? raw.scope_key : null,
+        fingerprint: typeof raw.fingerprint === 'string' ? raw.fingerprint : null,
+        entry_count: Math.max(0, Number(raw.entry_count) || 0),
+        chunk_count: Math.max(0, Number(raw.chunk_count) || 0),
+        constant_chunk_count: Math.max(0, Number(raw.constant_chunk_count) || 0),
+        active_profile_hash: typeof raw.active_profile_hash === 'string' ? raw.active_profile_hash : null,
+        active_collection_id: typeof raw.active_collection_id === 'string' ? raw.active_collection_id : null,
+        profiles,
+        retired_collection_ids: Array.isArray(raw.retired_collection_ids) ? [...new Set(raw.retired_collection_ids.map(String).filter(Boolean))] : [],
+        vector_degraded: raw.vector_degraded === true,
+        last_error: typeof raw.last_error === 'string' ? raw.last_error : null,
+        last_attempt_profile_hash: typeof raw.last_attempt_profile_hash === 'string' ? raw.last_attempt_profile_hash : null,
+        last_attempt_at: Number.isFinite(Number(raw.last_attempt_at)) ? Number(raw.last_attempt_at) : null,
+        legacy_v1: legacyV1,
+    };
+}
+
+function normalizeSettingIndexState(input) {
+    const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    const scopesInput = raw.scopes && typeof raw.scopes === 'object' && !Array.isArray(raw.scopes) ? raw.scopes : {};
+    const scopes = {};
+    for (const [scopeKey, row] of Object.entries(scopesInput)) {
+        scopes[scopeKey] = normalizeSettingScopeState(row);
+    }
+    return {
+        state_version: 2,
+        active_scope_key: typeof raw.active_scope_key === 'string' ? raw.active_scope_key : null,
+        scopes,
+    };
+}
+
+function getSettingIndexState(ctx) {
+    const settings = getSettings(ctx);
+    const state = normalizeSettingIndexState(settings.setting_index_state);
+    settings.setting_index_state = state;
+    return state;
+}
+
+function setSettingIndexState(ctx, state, { save = true } = {}) {
+    const settings = getSettings(ctx);
+    settings.setting_index_state = normalizeSettingIndexState(state);
+    if (save) ctx.saveSettingsDebounced?.();
+    return settings.setting_index_state;
 }
 
 function getStore(ctx) {
@@ -420,11 +610,13 @@ async function getSemanticBaselineMatches(ctx, op, prepared) {
     }
 }
 
-async function filterOperationsAgainstBaseline(ctx, ops, prepared) {
+async function filterOperationsAgainstBaseline(ctx, ops, preparedHost, pluginDeduper = null) {
     const settings = getSettings(ctx);
-    if (!settings.semantic_baseline_gate || !prepared?.records?.length) {
-        return { accepted: [...ops], rejected: [] };
-    }
+    if (!settings.semantic_baseline_gate) return { accepted: [...ops], rejected: [] };
+    const hostRecords = Array.isArray(preparedHost?.records) ? preparedHost.records : [];
+    const hasPluginRecords = Boolean(pluginDeduper?.records?.length);
+    if (!hostRecords.length && !hasPluginRecords) return { accepted: [...ops], rejected: [] };
+
     const accepted = [];
     const rejected = [];
     for (const op of ops) {
@@ -432,24 +624,40 @@ async function filterOperationsAgainstBaseline(ctx, ops, prepared) {
             accepted.push(op);
             continue;
         }
-        let decision = evaluateBaselineDuplicate(op, prepared.records, {
-            lexicalThreshold: settings.baseline_lexical_threshold,
-            semanticThreshold: settings.baseline_similarity_threshold,
-            semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-        });
-        if (!decision.blocked && prepared.vectorReady) {
-            const semanticMatches = await getSemanticBaselineMatches(ctx, op, prepared);
-            decision = evaluateBaselineDuplicate(op, prepared.records, {
+
+        let decision = { blocked: false, reason: 'no-baseline-duplicate' };
+        let source = null;
+        if (hostRecords.length) {
+            decision = evaluateBaselineDuplicate(op, hostRecords, {
                 lexicalThreshold: settings.baseline_lexical_threshold,
-                semanticMatches,
                 semanticThreshold: settings.baseline_similarity_threshold,
                 semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
             });
+            if (!decision.blocked && preparedHost?.vectorReady) {
+                const semanticMatches = await getSemanticBaselineMatches(ctx, op, preparedHost);
+                decision = evaluateBaselineDuplicate(op, hostRecords, {
+                    lexicalThreshold: settings.baseline_lexical_threshold,
+                    semanticMatches,
+                    semanticThreshold: settings.baseline_similarity_threshold,
+                    semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
+                });
+            }
+            if (decision.blocked) source = 'host_baseline';
         }
+
+        if (!decision.blocked && pluginDeduper?.records?.length) {
+            const pluginDecision = await pluginDeduper.findPossibleMatches(op);
+            if (pluginDecision?.blocked) {
+                decision = pluginDecision;
+                source = 'plugin_setting';
+            }
+        }
+
         if (decision.blocked) {
             rejected.push({
                 op,
                 reason: decision.reason,
+                baseline_source_kind: source,
                 baseline_id: decision.match?.id || null,
                 baseline_source: decision.match ? `${decision.match.source_type}:${decision.match.title}` : null,
                 baseline_preview: String(decision.match?.text || '').slice(0, 300),
@@ -552,12 +760,26 @@ async function extractMemoryForAssistant(ctx, assistantIndex, { force = false } 
     }
 
     let preparedBaseline = await ensureSemanticBaseline(ctx, { silent: true });
+    let preparedSettingIndex = await ensurePluginSettingIndex(ctx, { silent: true });
+    const extractionSettingRetrieval = await retrieveExtractionSettings(ctx, pair, store, preparedSettingIndex);
+    const relevantSettingContext = formatRelevantSettingContext(extractionSettingRetrieval, {
+        maxChars: settings.setting_extraction_max_chars,
+        constantLimit: settings.setting_retrieval_constant_limit,
+        includeConstants: true,
+    });
+    const relevantHostBaseline = buildRelevantHostBaselineContext(
+        preparedBaseline,
+        extractionSettingRetrieval.query?.text || `${pair.userText}
+${pair.assistantText}`,
+        Math.min(4500, Math.max(1200, Math.floor(settings.setting_extraction_max_chars * 0.55))),
+    );
     const prompt = buildAutonomousExtractionPrompt({
         userText: pair.userText,
         assistantText: pair.assistantText,
         recentContext: buildRecentContextForExtraction(rows, assistantIndex, settings.extraction_context_messages),
         canonicalState: formatCanonicalStateForExtraction(store),
-        baselineHint: preparedBaseline.hint,
+        relevantSettingContext,
+        hostBaselineContext: relevantHostBaseline,
     });
 
     const started = performance.now?.() ?? Date.now();
@@ -607,17 +829,19 @@ async function extractMemoryForAssistant(ctx, assistantIndex, { force = false } 
         else validationErrors.push(...validationErrorsForOp);
     }
 
-    // Refresh baseline after the quiet call too. Persona / World Info may have changed while the
-    // extraction request was in flight; the hard write gate must use the current canonical baseline.
+    // Refresh both host baseline and plugin-owned active Setting scope after the quiet call.
+    // The write gate must use the current canonical sources, not the snapshot from before generation.
     preparedBaseline = await ensureSemanticBaseline(current, { silent: true });
-    const baselineFiltered = await filterOperationsAgainstBaseline(current, validatedOps, preparedBaseline);
+    preparedSettingIndex = await ensurePluginSettingIndex(current, { silent: true });
+    const pluginBaselineDeduper = createPluginBaselineDeduper(current, preparedSettingIndex);
+    const baselineFiltered = await filterOperationsAgainstBaseline(current, validatedOps, preparedBaseline, pluginBaselineDeduper);
     const validOps = baselineFiltered.accepted;
     const baselineRejections = baselineFiltered.rejected;
     if (!validOps.length) {
         validOps.push({
             op: 'noop',
             reason: baselineRejections.length
-                ? '候选操作均与Persona/角色卡/World Info基线重复，已由v5.4写入层拦截。'
+                ? '候选操作均与Host Baseline或插件自有世界设定重复，已由写入层拦截。'
                 : '抽取器未返回可提交的记忆操作。',
         });
     }
@@ -634,6 +858,9 @@ async function extractMemoryForAssistant(ctx, assistantIndex, { force = false } 
         active_state: parsed.activeState,
         operations: validOps,
         baseline_fingerprint: preparedBaseline.fingerprint,
+        setting_scope_key: preparedSettingIndex.scope?.scope_key || null,
+        setting_index_fingerprint: preparedSettingIndex.fingerprint || null,
+        relevant_setting_ids: extractionSettingRetrieval.results.map(row => row.entry_id),
         baseline_rejections: baselineRejections,
         generated_at: Date.now(),
         generation_mode: mode,
@@ -684,6 +911,9 @@ async function extractMemoryForAssistant(ctx, assistantIndex, { force = false } 
         baseline_rejected_count: baselineRejections.length,
         baseline_rejections: baselineRejections,
         baseline_fingerprint: preparedBaseline.fingerprint,
+        setting_scope_key: preparedSettingIndex.scope?.scope_key || null,
+        relevant_setting_ids: extractionSettingRetrieval.results.map(row => row.entry_id),
+        setting_retrieval: extractionSettingRetrieval.debug,
         changed_ids: changedIds,
         validation_errors: validationErrors,
         apply_errors: applyErrors,
@@ -860,6 +1090,559 @@ async function vectorQuery(ctx, provider, collectionId, searchText, topK, thresh
 
 async function purgeVectorCollection(ctx, collectionId) {
     await vectorRequest(ctx, 'purge', { collectionId });
+}
+
+function getSettingProfileHash(provider) {
+    return computeSettingEmbeddingProfileHash(provider?.fingerprint || provider?.source || 'unknown-provider');
+}
+
+function settingDiffSummary(diff, mode = 'incremental') {
+    return {
+        mode,
+        added: [...(diff?.added || [])],
+        changed: [...(diff?.changed || [])],
+        removed: [...(diff?.removed || [])],
+        unchanged_count: Array.isArray(diff?.unchanged) ? diff.unchanged.length : 0,
+        insert_entry_count: Array.isArray(diff?.insert_entry_ids) ? diff.insert_entry_ids.length : 0,
+        delete_hash_count: Array.isArray(diff?.delete_hashes) ? diff.delete_hashes.length : 0,
+        at: Date.now(),
+    };
+}
+
+function settingVectorHashFromMetadata(snapshot, row) {
+    const direct = Number(row?.hash);
+    if (Number.isFinite(direct)) return direct;
+    const index = Number(row?.index);
+    if (Number.isInteger(index) && index >= 0 && index < (snapshot?.chunks?.length || 0)) {
+        const hash = Number(snapshot.chunks[index]?.vector_hash);
+        return Number.isFinite(hash) ? hash : null;
+    }
+    return null;
+}
+
+async function verifySettingVectorCollection(ctx, provider, collectionId, snapshot, { entryIds = null } = {}) {
+    const settings = getSettings(ctx);
+    if (!settings.setting_index_verify_build) {
+        return { ok: true, skipped: true, reason: 'verification-disabled', expected_count: snapshot?.chunks?.length || 0 };
+    }
+    const filter = entryIds ? new Set(Array.from(entryIds, value => String(value))) : null;
+    const candidates = (snapshot?.chunks || []).filter(chunk => !filter || filter.has(String(chunk.entry_id)));
+    const sample = candidates[0] || null;
+    if (!sample) return { ok: true, skipped: true, reason: 'empty-sample', expected_count: snapshot?.chunks?.length || 0 };
+    const allowedHashes = new Set(candidates.map(chunk => Number(chunk.vector_hash)).filter(Number.isFinite));
+    try {
+        const response = await vectorQuery(ctx, provider, collectionId, sample.retrieval_text, Math.min(8, Math.max(1, candidates.length)), 0);
+        const metadata = Array.isArray(response?.metadata) ? response.metadata : [];
+        const returnedHashes = metadata.map(row => settingVectorHashFromMetadata(snapshot, row)).filter(Number.isFinite);
+        const matchedHash = returnedHashes.find(hash => allowedHashes.has(hash));
+        return {
+            ok: Number.isFinite(matchedHash),
+            skipped: false,
+            expected_count: snapshot?.chunks?.length || 0,
+            sample_entry_id: sample.entry_id,
+            sample_chunk_id: sample.chunk_id,
+            sample_hash: Number(sample.vector_hash),
+            returned_count: metadata.length,
+            matched_hash: Number.isFinite(matchedHash) ? matchedHash : null,
+            reason: Number.isFinite(matchedHash) ? null : 'sample-query-did-not-return-current-index-hash',
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            skipped: false,
+            expected_count: snapshot?.chunks?.length || 0,
+            sample_entry_id: sample.entry_id,
+            sample_chunk_id: sample.chunk_id,
+            sample_hash: Number(sample.vector_hash),
+            returned_count: 0,
+            matched_hash: null,
+            reason: `sample-query-failed: ${String(error?.message || error)}`,
+        };
+    }
+}
+
+async function insertSettingVectorItemsBatched(ctx, provider, collectionId, items, batchSize = 40) {
+    for (let i = 0; i < items.length; i += batchSize) {
+        await vectorInsert(ctx, provider, collectionId, items.slice(i, i + batchSize));
+    }
+}
+
+async function buildSettingVectorCollectionSafely(ctx, provider, snapshot, profileHash) {
+    const generationKey = `${snapshot.fingerprint}|${Date.now()}|${Math.random()}`;
+    const collectionId = getSettingCollectionId(snapshot.scope, profileHash, generationKey);
+    const items = buildSettingVectorItems(snapshot);
+    // Purging is allowed only for this inactive staging collection. The previous active
+    // collection is never purged before a replacement has been built and verified.
+    await purgeVectorCollection(ctx, collectionId);
+    try {
+        await insertSettingVectorItemsBatched(ctx, provider, collectionId, items);
+        const verification = await verifySettingVectorCollection(ctx, provider, collectionId, snapshot);
+        if (!verification.ok) throw new Error(`Setting staging verification failed: ${verification.reason || 'unknown verification failure'}`);
+        return { collectionId, verification };
+    } catch (error) {
+        try { await purgeVectorCollection(ctx, collectionId); } catch { /* inactive failed staging collection; leave diagnostics only */ }
+        throw error;
+    }
+}
+
+async function updateSettingVectorCollectionIncrementally(ctx, provider, collectionId, snapshot, previousManifest) {
+    const nextManifest = buildSettingEntryManifest(snapshot);
+    const diff = diffSettingEntryManifests(previousManifest, nextManifest);
+    if (!diff.has_changes) {
+        return {
+            manifest: nextManifest,
+            diff,
+            verification: { ok: true, skipped: true, reason: 'manifest-equivalent', expected_count: snapshot.chunks.length },
+            cleanupPendingHashes: [],
+        };
+    }
+
+    const insertItems = buildSettingVectorItems(snapshot, { entryIds: diff.insert_entry_ids });
+    const insertedHashes = [...new Set(insertItems.map(item => Number(item.hash)).filter(Number.isFinite))];
+    const currentHashes = new Set(snapshot.chunks.map(chunk => Number(chunk.vector_hash)).filter(Number.isFinite));
+    const deleteHashes = [...new Set(diff.delete_hashes.map(Number).filter(hash => Number.isFinite(hash) && !currentHashes.has(hash)))];
+
+    try {
+        // Insert replacements first. If insertion or verification fails, old vectors are still intact.
+        await insertSettingVectorItemsBatched(ctx, provider, collectionId, insertItems);
+        const verification = insertItems.length
+            ? await verifySettingVectorCollection(ctx, provider, collectionId, snapshot, { entryIds: diff.insert_entry_ids })
+            : { ok: true, skipped: true, reason: 'delete-only-update', expected_count: snapshot.chunks.length };
+        if (!verification.ok) throw new Error(`Setting incremental verification failed: ${verification.reason || 'unknown verification failure'}`);
+
+        let cleanupPendingHashes = [];
+        if (deleteHashes.length) {
+            try {
+                await vectorDelete(ctx, provider, collectionId, deleteHashes);
+            } catch (error) {
+                // Old hashes are harmless for retrieval because metadata is mapped back through the
+                // current snapshot and unknown hashes are ignored. Keep the index usable and retry GC later.
+                cleanupPendingHashes = deleteHashes;
+                log('setting index stale-hash cleanup deferred', error);
+            }
+        }
+        return { manifest: nextManifest, diff, verification, cleanupPendingHashes };
+    } catch (error) {
+        // Best-effort rollback of newly inserted hashes. Since deletion of old hashes happens only
+        // after successful verification, a failed update retains the previous valid collection.
+        if (insertedHashes.length) {
+            try { await vectorDelete(ctx, provider, collectionId, insertedHashes); } catch { /* old collection still remains authoritative */ }
+        }
+        throw error;
+    }
+}
+
+async function ensurePluginSettingIndex(ctx, { force = false, silent = true } = {}) {
+    const settings = getSettings(ctx);
+    const snapshotBase = buildSettingIndexSnapshot(getSettingStore(ctx), {
+        maxChars: settings.setting_index_chunk_chars,
+    });
+    const provider = getVectorProvider(ctx);
+    const profileHash = getSettingProfileHash(provider);
+    const state = getSettingIndexState(ctx);
+    const scopeKey = snapshotBase.scope.scope_key;
+    const summary = summarizeSettingSnapshot(snapshotBase);
+    const snapshot = {
+        ...snapshotBase,
+        logical_collection_id: snapshotBase.collection_id,
+        embedding_profile_hash: profileHash,
+    };
+
+    if (!scopeKey || !snapshot.chunks.length) {
+        state.active_scope_key = scopeKey || null;
+        if (scopeKey) {
+            const scopeRow = normalizeSettingScopeState(state.scopes[scopeKey]);
+            state.scopes[scopeKey] = {
+                ...scopeRow,
+                ...summary,
+                fingerprint: snapshot.fingerprint,
+                vector_degraded: false,
+                last_error: null,
+                last_attempt_profile_hash: profileHash,
+                last_attempt_at: Date.now(),
+            };
+        }
+        setSettingIndexState(ctx, state);
+        return {
+            ...snapshot,
+            collection_id: null,
+            provider,
+            lexicalReady: snapshot.chunks.length > 0,
+            vectorReady: false,
+            vector_degraded: false,
+            state: scopeKey ? getSettingIndexState(ctx).scopes[scopeKey] : null,
+            profile_state: null,
+        };
+    }
+
+    let scopeRow = normalizeSettingScopeState(state.scopes[scopeKey]);
+    scopeRow = {
+        ...scopeRow,
+        ...summary,
+        fingerprint: snapshot.fingerprint,
+        last_attempt_profile_hash: profileHash,
+        last_attempt_at: Date.now(),
+    };
+    state.active_scope_key = scopeKey;
+
+    const currentProfile = normalizeSettingProfileState(scopeRow.profiles[profileHash], profileHash);
+    const matchingReadyProfile = Boolean(
+        currentProfile.ready
+        && currentProfile.stale === false
+        && currentProfile.vector_disabled !== true
+        && currentProfile.provider_fingerprint === provider.fingerprint
+        && currentProfile.fingerprint === snapshot.fingerprint
+        && currentProfile.collection_id
+    );
+
+    if (!settings.setting_index_use_vector) {
+        scopeRow.vector_degraded = false;
+        scopeRow.last_error = null;
+        state.scopes[scopeKey] = scopeRow;
+        setSettingIndexState(ctx, state);
+        return { ...snapshot, collection_id: null, provider, lexicalReady: true, vectorReady: false, vector_degraded: false, state: scopeRow, profile_state: matchingReadyProfile ? currentProfile : null };
+    }
+
+    if (!provider.supported) {
+        scopeRow.vector_degraded = true;
+        scopeRow.last_error = `${provider.reason || 'Embedding provider不可用'}；插件设定仍可使用本地词法索引，已有向量集合不会被删除。`;
+        state.scopes[scopeKey] = scopeRow;
+        setSettingIndexState(ctx, state);
+        return { ...snapshot, collection_id: null, provider, lexicalReady: true, vectorReady: false, vector_degraded: true, state: scopeRow, profile_state: null };
+    }
+
+    if (matchingReadyProfile && !force) {
+        let reusableProfile = currentProfile;
+        if (currentProfile.cleanup_pending_hashes.length) {
+            try {
+                await withVectorLock(() => vectorDelete(ctx, provider, currentProfile.collection_id, currentProfile.cleanup_pending_hashes));
+                reusableProfile = normalizeSettingProfileState({ ...currentProfile, cleanup_pending_hashes: [], last_error: null }, profileHash);
+            } catch (error) {
+                reusableProfile = normalizeSettingProfileState({ ...currentProfile, last_error: `旧 hash 清理仍待重试：${String(error?.message || error)}` }, profileHash);
+            }
+        }
+        scopeRow.active_profile_hash = profileHash;
+        scopeRow.active_collection_id = reusableProfile.collection_id;
+        scopeRow.vector_degraded = false;
+        scopeRow.last_error = reusableProfile.cleanup_pending_hashes.length
+            ? `向量可用；有 ${reusableProfile.cleanup_pending_hashes.length} 个旧 hash 等待清理。`
+            : null;
+        scopeRow.profiles[profileHash] = reusableProfile;
+        state.scopes[scopeKey] = scopeRow;
+        setSettingIndexState(ctx, state);
+        return { ...snapshot, collection_id: reusableProfile.collection_id, provider, lexicalReady: true, vectorReady: true, vector_degraded: false, state: scopeRow, profile_state: reusableProfile };
+    }
+
+    const needsBuild = force || !matchingReadyProfile;
+    if (needsBuild && !(force || settings.setting_index_auto_rebuild)) {
+        scopeRow.vector_degraded = true;
+        scopeRow.last_error = '设定范围、内容或Embedding profile已变化，需要更新派生向量；当前自动更新已关闭。';
+        state.scopes[scopeKey] = scopeRow;
+        setSettingIndexState(ctx, state);
+        return { ...snapshot, collection_id: null, provider, lexicalReady: true, vectorReady: false, vector_degraded: true, state: scopeRow, profile_state: null };
+    }
+
+    try {
+        const canIncrement = Boolean(
+            !force
+            && currentProfile.ready
+            && currentProfile.stale === false
+            && currentProfile.collection_id
+            && currentProfile.provider_fingerprint === provider.fingerprint
+            && currentProfile.entry_manifest?.entry_count >= 0
+            && currentProfile.fingerprint !== snapshot.fingerprint
+        );
+
+        let nextProfile;
+        if (canIncrement) {
+            const incremental = await withVectorLock(() => updateSettingVectorCollectionIncrementally(
+                ctx,
+                provider,
+                currentProfile.collection_id,
+                snapshot,
+                currentProfile.entry_manifest,
+            ));
+            nextProfile = normalizeSettingProfileState({
+                ...currentProfile,
+                embedding_profile_hash: profileHash,
+                provider_fingerprint: provider.fingerprint,
+                collection_id: currentProfile.collection_id,
+                fingerprint: snapshot.fingerprint,
+                entry_manifest: incremental.manifest,
+                ready: true,
+                stale: false,
+                vector_disabled: false,
+                cleanup_pending_hashes: incremental.cleanupPendingHashes,
+                last_error: incremental.cleanupPendingHashes.length ? '旧向量 hash 清理延后；当前快照检索仍可用。' : null,
+                last_sync_at: Date.now(),
+                last_verified_at: incremental.verification.skipped ? currentProfile.last_verified_at : Date.now(),
+                last_built_at: currentProfile.last_built_at || Date.now(),
+                last_diff: settingDiffSummary(incremental.diff, 'incremental'),
+                verification: incremental.verification,
+            }, profileHash);
+            if (!silent) notify('success', `插件设定索引已增量更新：新增 ${incremental.diff.added.length} / 修改 ${incremental.diff.changed.length} / 删除 ${incremental.diff.removed.length}。`, 'Setting Index');
+        } else {
+            const built = await withVectorLock(() => buildSettingVectorCollectionSafely(ctx, provider, snapshot, profileHash));
+            const manifest = buildSettingEntryManifest(snapshot);
+            const previousActiveCollection = scopeRow.active_collection_id;
+            nextProfile = normalizeSettingProfileState({
+                embedding_profile_hash: profileHash,
+                provider_fingerprint: provider.fingerprint,
+                collection_id: built.collectionId,
+                fingerprint: snapshot.fingerprint,
+                entry_manifest: manifest,
+                ready: true,
+                stale: false,
+                vector_disabled: false,
+                cleanup_pending_hashes: [],
+                last_error: null,
+                last_sync_at: Date.now(),
+                last_verified_at: built.verification.skipped ? null : Date.now(),
+                last_built_at: Date.now(),
+                last_diff: settingDiffSummary({ added: Object.keys(manifest.entries), changed: [], removed: [], unchanged: [] }, 'safe-full-build'),
+                verification: built.verification,
+            }, profileHash);
+            if (previousActiveCollection && previousActiveCollection !== built.collectionId) {
+                scopeRow.retired_collection_ids = [...new Set([...scopeRow.retired_collection_ids, previousActiveCollection])];
+            }
+            if (!silent) notify('success', `插件设定新向量空间已安全构建并切换：${snapshot.chunks.length} 个分块。`, 'Setting Index');
+        }
+
+        // Atomic local pointer switch happens only after insert + verification succeeded.
+        scopeRow.profiles[profileHash] = nextProfile;
+        scopeRow.active_profile_hash = profileHash;
+        scopeRow.active_collection_id = nextProfile.collection_id;
+        scopeRow.vector_degraded = false;
+        scopeRow.last_error = nextProfile.last_error;
+        state.scopes[scopeKey] = scopeRow;
+        setSettingIndexState(ctx, state);
+        return { ...snapshot, collection_id: nextProfile.collection_id, provider, lexicalReady: true, vectorReady: true, vector_degraded: false, state: scopeRow, profile_state: nextProfile };
+    } catch (error) {
+        scopeRow.vector_degraded = true;
+        scopeRow.last_error = `设定向量更新失败；保留既有索引并降级词法：${String(error?.message || error)}`;
+        state.scopes[scopeKey] = scopeRow;
+        setSettingIndexState(ctx, state);
+        if (!silent) notify('warning', scopeRow.last_error, 'Setting Index');
+        return { ...snapshot, collection_id: null, provider, lexicalReady: true, vectorReady: false, vector_degraded: true, state: scopeRow, profile_state: null };
+    }
+}
+
+function searchPluginSettingsLexical(ctx, query, options = {}) {
+    const settings = getSettings(ctx);
+    const snapshot = buildSettingIndexSnapshot(getSettingStore(ctx), {
+        maxChars: settings.setting_index_chunk_chars,
+    });
+    const results = lexicalSearchSettingChunks(snapshot.chunks, query, {
+        topK: options.topK ?? settings.setting_index_lexical_top_k,
+        minScore: options.minScore ?? settings.setting_index_lexical_min_score,
+    });
+    return { snapshot, results };
+}
+
+function buildRelevantHostBaselineContext(preparedBaseline, queryText, maxChars = 4500) {
+    const records = Array.isArray(preparedBaseline?.records) ? preparedBaseline.records : [];
+    if (!records.length) return '';
+    const coreTypes = new Set(['persona', 'character_description', 'character_personality', 'character_scenario']);
+    const coreReserve = records.filter(record => coreTypes.has(record.source_type)).slice(0, 6);
+    const ranked = String(queryText || '').trim()
+        ? records
+            .map(record => ({ record, score: baselineLexicalSimilarity(queryText, record.text || '') }))
+            .filter(row => row.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10)
+            .map(row => row.record)
+        : [];
+    const selected = [];
+    const seen = new Set();
+    for (const record of [...coreReserve, ...ranked]) {
+        const key = record.id || `${record.source_type}:${record.source_id}:${record.title}:${record.text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        selected.push(record);
+    }
+    const cap = Math.max(1000, Math.min(12000, Number(maxChars) || 4500));
+    const lines = ['[RELEVANT HOST BASELINE — PERSONA / CHARACTER / HOST WORLD INFO]'];
+    let used = lines[0].length;
+    for (const record of selected) {
+        const line = `- [${record.source_type}:${record.title}] ${record.text}`;
+        if (used + line.length + 1 > cap) break;
+        lines.push(line);
+        used += line.length + 1;
+    }
+    return lines.length > 1 ? lines.join('\n') : '';
+}
+
+async function retrievePluginSettings(ctx, queryInput, options = {}) {
+    const settings = getSettings(ctx);
+    const query = typeof queryInput === 'string' ? { mode: options.mode || 'generic', text: queryInput, components: {} } : (queryInput || {});
+    if (!settings.setting_retrieval_enabled || !String(query.text || '').trim()) {
+        return {
+            query,
+            snapshot: buildSettingIndexSnapshot(getSettingStore(ctx), { maxChars: settings.setting_index_chunk_chars }),
+            results: [], constant_entries: [], dropped_entry_ids: [], candidate_entry_count: 0,
+            lexical: [], dense: [], dense_available: false, dense_reason: 'disabled-or-empty-query',
+        };
+    }
+
+    const prepared = options.prepared || await ensurePluginSettingIndex(ctx, { silent: true });
+    const candidateTopK = Math.max(1, Math.min(80, Number(options.candidateTopK ?? settings.setting_retrieval_candidate_top_k) || 18));
+    const lexical = lexicalSearchSettingChunks(prepared.chunks, query.text, {
+        topK: candidateTopK,
+        minScore: options.minScore ?? settings.setting_index_lexical_min_score,
+    });
+
+    let dense = [];
+    let denseAvailable = false;
+    let denseReason = null;
+    if (settings.setting_retrieval_use_dense && prepared.vectorReady && prepared.collection_id && prepared.provider?.supported) {
+        try {
+            const response = await withVectorLock(() => vectorQuery(
+                ctx,
+                prepared.provider,
+                prepared.collection_id,
+                query.text,
+                candidateTopK,
+                Math.max(0, Math.min(1, Number(settings.setting_retrieval_dense_threshold) || 0.18)),
+            ));
+            dense = mapDenseSettingMetadata(prepared, response?.metadata || []);
+            denseAvailable = true;
+        } catch (error) {
+            denseReason = `setting dense query failed: ${String(error?.message || error)}`;
+        }
+    } else {
+        denseReason = !settings.setting_retrieval_use_dense
+            ? 'dense-disabled'
+            : prepared.vectorReady
+                ? 'no-collection-or-provider'
+                : 'setting-vector-not-ready';
+    }
+
+    const fused = fuseSettingCandidates(prepared, {
+        lexical,
+        dense,
+        rrfK: settings.setting_retrieval_rrf_k,
+        topEntries: options.topEntries ?? settings.setting_retrieval_final_count,
+        maxChars: options.maxChars ?? settings.setting_retrieval_max_chars,
+    });
+    const debug = {
+        mode: query.mode || options.mode || 'generic',
+        world_id: prepared.scope?.world_id || null,
+        scope_key: prepared.scope?.scope_key || null,
+        query_chars: String(query.text || '').length,
+        query_components: query.components || {},
+        lexical_count: lexical.length,
+        dense_available: denseAvailable,
+        dense_reason: denseAvailable ? null : denseReason,
+        vector_degraded: Boolean(prepared.vector_degraded),
+        embedding_profile_hash: prepared.embedding_profile_hash || null,
+        vector_collection_id: prepared.collection_id || null,
+        dense_count: dense.length,
+        candidate_entry_count: fused.candidate_entry_count,
+        selected: fused.results.map(row => ({
+            entry_id: row.entry_id,
+            title: row.title,
+            revision_id: row.revision_id,
+            score: Math.round(Number(row.score || 0) * 1e6) / 1e6,
+            channels: row.channels,
+            matched_chunks: row.matched_chunks.slice(0, 3).map(chunk => ({ chunk_id: chunk.chunk_id, chunk_index: chunk.chunk_index, channels: chunk.channels })),
+        })),
+        dropped_entry_ids: fused.dropped_entry_ids,
+        at: Date.now(),
+    };
+    lastSettingRetrievalDebug = debug;
+    return {
+        ...fused,
+        query,
+        snapshot: prepared,
+        lexical,
+        dense,
+        dense_available: denseAvailable,
+        dense_reason: denseReason,
+        debug,
+    };
+}
+
+async function retrieveGenerationSettings(ctx, interceptorChat, storeInput = null) {
+    const settings = getSettings(ctx);
+    const store = normalizeStore(storeInput || getStore(ctx));
+    const querySeed = buildQueryText(interceptorChat, settings.query_messages);
+    const activeMemories = getActiveMemories(store, querySeed, settings.max_active_items);
+    const query = buildGenerationSettingQuery({
+        chat: interceptorChat,
+        activeMemories,
+        activeState: store.last_active_state,
+    });
+    const retrieval = await retrievePluginSettings(ctx, query, { mode: 'generation' });
+    lastGenerationSettingRetrieval = retrieval;
+    return retrieval;
+}
+
+async function retrieveExtractionSettings(ctx, pair, storeInput, prepared = null) {
+    const settings = getSettings(ctx);
+    const store = normalizeStore(storeInput || getStore(ctx));
+    const pairSeed = `${pair?.userText || ''}
+${pair?.assistantText || ''}`;
+    const activeMemories = getActiveMemories(store, pairSeed, Math.max(settings.max_active_items, 18));
+    const query = buildExtractionSettingQuery({
+        userText: pair?.userText || '',
+        assistantText: pair?.assistantText || '',
+        activeMemories,
+        currentState: store.last_active_state,
+    });
+    return retrievePluginSettings(ctx, query, {
+        mode: 'extraction',
+        prepared,
+        topEntries: settings.setting_retrieval_final_count,
+        maxChars: settings.setting_extraction_max_chars,
+    });
+}
+
+function createPluginBaselineDeduper(ctx, preparedSettingIndex) {
+    const settings = getSettings(ctx);
+    const prepared = preparedSettingIndex || buildSettingIndexSnapshot(getSettingStore(ctx), { maxChars: settings.setting_index_chunk_chars });
+    const records = settingChunksToBaselineRecords(prepared);
+    return {
+        snapshot: prepared,
+        records,
+        async findPossibleMatches(candidateOperation) {
+            if (!settings.semantic_baseline_gate || !isBaselineGateEligible(candidateOperation) || !records.length) {
+                return { blocked: false, reason: 'ineligible-or-empty', source: 'plugin_setting', records, semanticMatches: [] };
+            }
+            let decision = evaluateBaselineDuplicate(candidateOperation, records, {
+                lexicalThreshold: settings.baseline_lexical_threshold,
+                semanticThreshold: settings.baseline_similarity_threshold,
+                semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
+            });
+            let semanticMatches = [];
+            if (!decision.blocked && prepared.vectorReady && prepared.collection_id && prepared.provider?.supported) {
+                try {
+                    const response = await withVectorLock(() => vectorQuery(
+                        ctx,
+                        prepared.provider,
+                        prepared.collection_id,
+                        String(candidateOperation.text || ''),
+                        6,
+                        Math.max(0, Math.min(1, Number(settings.baseline_similarity_threshold) || 0.84)),
+                    ));
+                    const denseRows = mapDenseSettingMetadata(prepared, response?.metadata || []);
+                    const recordByChunkId = new Map(records.map((record, index) => [prepared.chunks[index]?.chunk_id, record]));
+                    semanticMatches = denseRows.map(row => ({
+                        record: recordByChunkId.get(row.chunk.chunk_id),
+                        score: Number.isFinite(Number(row.score)) ? Number(row.score) : settings.baseline_similarity_threshold,
+                    })).filter(row => row.record);
+                    decision = evaluateBaselineDuplicate(candidateOperation, records, {
+                        lexicalThreshold: settings.baseline_lexical_threshold,
+                        semanticMatches,
+                        semanticThreshold: settings.baseline_similarity_threshold,
+                        semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
+                    });
+                } catch (error) {
+                    log('plugin setting baseline semantic query failed', error);
+                }
+            }
+            return { ...decision, source: 'plugin_setting', records, semanticMatches };
+        },
+    };
 }
 
 async function rebuildVectorIndex(ctx, { silent = false } = {}) {
@@ -1170,11 +1953,11 @@ async function recallMemories(ctx, interceptorChat) {
     }
 }
 
-async function buildInjectedMemoryContext(interceptorChat) {
+async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
     const ctx = getContext();
-    if (!ctx) return '';
+    if (!ctx) return { referenceBlock: '', currentStateBlock: '', diagnostics: {} };
     const settings = getSettings(ctx);
-    if (!settings.enabled) return '';
+    if (!settings.enabled) return { referenceBlock: '', currentStateBlock: '', diagnostics: {} };
 
     await waitForExtractionFreshness(ctx);
     await operationQueue;
@@ -1184,14 +1967,46 @@ async function buildInjectedMemoryContext(interceptorChat) {
         ? getActiveMemories(store, queryText, settings.max_active_items)
         : [];
     const activeState = settings.inject_current_state ? store.last_active_state : '';
+    const settingResults = await retrieveGenerationSettings(ctx, interceptorChat, store);
     const recalledMemories = await recallMemories(ctx, interceptorChat);
-    return formatMemoryContext({
-        activeState,
+    const bundle = assembleGenerationContext({
+        scope: settingResults?.snapshot?.scope || null,
+        latestMessages: interceptorChat,
+        currentState: activeState,
         activeMemories,
-        recalledMemories,
-        maxChars: settings.max_memory_context_chars,
+        settingResults,
+        historyResults: recalledMemories,
+        hostContextBudget: contextSize,
+        replyReserve: settings.context_reply_reserve_tokens,
+        maxReferenceChars: settings.reference_context_max_chars,
+        maxCurrentStateChars: settings.current_state_context_max_chars,
         includeEvidence: settings.include_evidence,
+        constantLimit: settings.setting_retrieval_constant_limit,
     });
+    lastGenerationContextDiagnostics = {
+        ...bundle.diagnostics,
+        at: Date.now(),
+        reference_prompt_key: REFERENCE_PROMPT_KEY,
+        current_state_prompt_key: CURRENT_STATE_PROMPT_KEY,
+        reference_depth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
+        current_state_depth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
+    };
+    return bundle;
+}
+
+function clearInjectedPrompts(ctx, settings, { includeLegacy = true } = {}) {
+    const referenceDepth = normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth);
+    const currentDepth = normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth);
+    if (includeLegacy) ctx.setExtensionPrompt(LEGACY_PROMPT_KEY, '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
+    ctx.setExtensionPrompt(REFERENCE_PROMPT_KEY, '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
+    ctx.setExtensionPrompt(CURRENT_STATE_PROMPT_KEY, '', IN_CHAT, currentDepth, false, SYSTEM_ROLE);
+}
+
+function applyInjectedContextBundle(ctx, settings, bundle) {
+    const referenceDepth = normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth);
+    const currentDepth = normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth);
+    ctx.setExtensionPrompt(REFERENCE_PROMPT_KEY, bundle?.referenceBlock || '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
+    ctx.setExtensionPrompt(CURRENT_STATE_PROMPT_KEY, bundle?.currentStateBlock || '', IN_CHAT, currentDepth, false, SYSTEM_ROLE);
 }
 
 
@@ -1235,17 +2050,27 @@ async function generationInterceptor(chat, _contextSize, _abort, type) {
     if (!ctx) return;
     const settings = getSettings(ctx);
     if (!settings.enabled) {
-        ctx.setExtensionPrompt(PROMPT_KEY, '', IN_CHAT, settings.injection_depth, false, SYSTEM_ROLE);
+        clearInjectedPrompts(ctx, settings);
+        lastGenerationContextDiagnostics = null;
         return;
     }
     if (type === 'quiet' || type === 'impersonate') {
-        ctx.setExtensionPrompt(PROMPT_KEY, '', IN_CHAT, settings.injection_depth, false, SYSTEM_ROLE);
+        clearInjectedPrompts(ctx, settings);
         return;
     }
-    const prompt = await buildInjectedMemoryContext(chat);
-    ctx.setExtensionPrompt(PROMPT_KEY, prompt, IN_CHAT, Math.max(0, Number(settings.injection_depth) || 4), false, SYSTEM_ROLE);
+    const bundle = await buildInjectedContextBundle(chat, _contextSize);
+    // The interceptor never splices or appends fake chat messages. Both blocks are host
+    // extension prompts with distinct keys and depths.
+    applyInjectedContextBundle(ctx, settings, bundle);
     const removed = settings.manage_context_window ? trimPromptHistory(chat, settings.keep_recent_messages) : 0;
-    log('interceptor injected memory', { type, chars: prompt.length, trimmedMessages: removed });
+    log('interceptor injected context bundle', {
+        type,
+        referenceChars: bundle.referenceBlock.length,
+        currentStateChars: bundle.currentStateBlock.length,
+        referenceDepth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
+        currentStateDepth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
+        trimmedMessages: removed,
+    });
 }
 
 globalThis[INTERCEPTOR_NAME] = generationInterceptor;
@@ -1270,19 +2095,52 @@ function updateStatusUi() {
             ? `待重建${store.vector.last_error ? `（${store.vector.last_error}）` : ''}`
             : '已同步';
     const extractionCount = Object.keys(store.extractions || {}).length;
+    const settingStore = getSettingStore(ctx);
+    const settingWorld = settingStore.active_world_id ? settingStore.worlds[settingStore.active_world_id] : null;
+    const activeSettingRevisionIds = settingWorld
+        ? [settingWorld.active_baseline_revision_id, ...settingWorld.active_extension_revision_ids].filter(Boolean)
+        : [];
+    const activeSettingEntries = Object.values(settingStore.entries).filter(entry => activeSettingRevisionIds.includes(entry.revision_id) && !entry.disabled).length;
+    const settingSnapshot = buildSettingIndexSnapshot(settingStore, { maxChars: getSettings(ctx).setting_index_chunk_chars });
+    const settingIndexState = getSettingIndexState(ctx);
+    const settingIndexRow = settingSnapshot.scope.scope_key ? settingIndexState.scopes[settingSnapshot.scope.scope_key] : null;
+    const currentSettingProfileHash = getSettingProfileHash(provider);
+    const currentSettingProfile = settingIndexRow?.profiles?.[currentSettingProfileHash] || null;
+    const currentSettingVectorReady = Boolean(
+        currentSettingProfile?.ready
+        && currentSettingProfile?.stale === false
+        && currentSettingProfile?.provider_fingerprint === provider.fingerprint
+        && currentSettingProfile?.fingerprint === settingSnapshot.fingerprint
+        && currentSettingProfile?.collection_id
+    );
+    const settingVectorState = !settingWorld
+        ? '未导入'
+        : !getSettings(ctx).setting_index_use_vector
+            ? '词法就绪/向量关闭'
+            : !provider.supported
+                ? '词法就绪/向量不可用（已有集合保留）'
+                : currentSettingVectorReady
+                    ? `词法+向量已同步 [${currentSettingProfileHash}]${currentSettingProfile.cleanup_pending_hashes?.length ? ` / 待清理${currentSettingProfile.cleanup_pending_hashes.length}` : ''}`
+                    : `词法就绪/向量降级 [${currentSettingProfileHash}]${settingIndexRow?.last_error ? `（${settingIndexRow.last_error}）` : ''}`;
+    const settingState = settingWorld
+        ? `${settingWorld.name} / ${activeSettingEntries} entries / ${settingSnapshot.chunk_count} chunks / ${settingVectorState}`
+        : '未导入';
     const baselineState = !getSettings(ctx).semantic_baseline_gate
         ? '关闭'
         : store.baseline?.vector?.stale
             ? `词法可用/向量待重建${store.baseline?.vector?.last_error ? `（${store.baseline.vector.last_error}）` : ''}`
             : `已就绪 ${Number(store.baseline?.record_count || 0)}块`;
-    el.textContent = `Provider: ${provider.source} ｜ 记忆 ${memories.length} ｜ 抽取 ${extractionCount} ｜ Active slots ${activeSlots} ｜ 可向量化 ${indexable} ｜ Memory Vector ${vectorState} ｜ Baseline ${baselineState} ｜ 后台任务 ${extractionPending}`;
+    el.textContent = `Provider: ${provider.source} ｜ 记忆 ${memories.length} ｜ 抽取 ${extractionCount} ｜ Active slots ${activeSlots} ｜ 可向量化 ${indexable} ｜ Memory Vector ${vectorState} ｜ Host Baseline ${baselineState} ｜ Plugin Setting ${settingState} ｜ 后台任务 ${extractionPending}`;
     const diagnostics = document.getElementById('aum-v54-diagnostics');
     if (diagnostics) {
         const errors = (store.last_errors || []).slice(-6).join('\n');
         const extraction = store.last_extraction_debug ? `\n\n[Extraction] ${JSON.stringify(store.last_extraction_debug, null, 2)}` : '';
         const baseline = store.baseline ? `\n\n[Baseline] ${JSON.stringify({ fingerprint: store.baseline.fingerprint, record_count: store.baseline.record_count, source_count: store.baseline.source_count, source_labels: store.baseline.source_labels, vector: store.baseline.vector, last_gate_debug: store.baseline.last_gate_debug }, null, 2)}` : '';
+        const settingIndex = settingSnapshot.scope.world_id ? `\n\n[SettingIndex] ${JSON.stringify({ ...summarizeSettingSnapshot(settingSnapshot), current_embedding_profile_hash: currentSettingProfileHash, current_profile_ready: currentSettingVectorReady, state: settingIndexRow || null }, null, 2)}` : '';
+        const settingRetrieval = lastSettingRetrievalDebug ? `\n\n[SettingRetrieval] ${JSON.stringify(lastSettingRetrievalDebug, null, 2)}` : '';
+        const contextAssembler = lastGenerationContextDiagnostics ? `\n\n[ContextAssembler] ${JSON.stringify(lastGenerationContextDiagnostics, null, 2)}` : '';
         const recall = store.last_recall_debug ? `\n\n[Recall] ${JSON.stringify(store.last_recall_debug, null, 2)}` : '';
-        diagnostics.textContent = (errors || '无记忆诊断。') + extraction + baseline + recall;
+        diagnostics.textContent = (errors || '无记忆诊断。') + extraction + baseline + settingIndex + settingRetrieval + contextAssembler + recall;
     }
     const lastEvent = document.getElementById('aum-v54-last-event');
     if (lastEvent) lastEvent.textContent = store.last_event_summary || '暂无自动事件摘要。';
@@ -1298,6 +2156,10 @@ function bindCheckbox(id, key) {
     el.checked = Boolean(settings[key]);
     el.addEventListener('change', () => {
         settings[key] = Boolean(el.checked);
+        if (key === 'enabled' && !settings[key]) {
+            clearInjectedPrompts(ctx, settings);
+            lastGenerationContextDiagnostics = null;
+        }
         ctx.saveSettingsDebounced?.();
         scheduleStatusUpdate();
     });
@@ -1350,6 +2212,192 @@ function downloadJson(filename, value) {
     URL.revokeObjectURL(url);
 }
 
+function filenameStem(filename) {
+    const name = String(filename || '').replace(/\\/g, '/').split('/').pop() || '';
+    return name.replace(/\.[^.]+$/, '').trim();
+}
+
+function replaceSelectOptions(select, rows, preferredValue = null) {
+    if (!select) return;
+    const previous = preferredValue ?? select.value;
+    select.replaceChildren();
+    for (const row of rows) {
+        const option = document.createElement('option');
+        option.value = String(row.value);
+        option.textContent = String(row.label);
+        select.appendChild(option);
+    }
+    if ([...select.options].some(option => option.value === previous)) select.value = previous;
+}
+
+function refreshSettingStoreControls(ctx, { preserveWorld = true } = {}) {
+    const store = getSettingStore(ctx);
+    const worldSelect = document.getElementById('aum-v54-setting-world');
+    const baseSelect = document.getElementById('aum-v54-setting-base-revision');
+    const kindSelect = document.getElementById('aum-v54-setting-revision-kind');
+    const newWorldInput = document.getElementById('aum-v54-setting-world-name');
+    const selectedBefore = preserveWorld ? worldSelect?.value : null;
+    const worlds = listWorlds(store);
+    const preferred = selectedBefore || store.active_world_id || '__new__';
+    replaceSelectOptions(worldSelect, [
+        { value: '__new__', label: '＋ 新建世界' },
+        ...worlds.map(world => ({
+            value: world.world_id,
+            label: `${world.name} (${world.world_id})`,
+        })),
+    ], preferred);
+
+    const selectedWorldId = worldSelect?.value && worldSelect.value !== '__new__' ? worldSelect.value : null;
+    const baselines = selectedWorldId
+        ? listRevisionsForWorld(store, selectedWorldId).filter(row => row.revision_kind === 'baseline')
+        : [];
+    const activeBaselineId = selectedWorldId ? store.worlds[selectedWorldId]?.active_baseline_revision_id : null;
+    replaceSelectOptions(baseSelect, [
+        { value: '', label: baselines.length ? '选择 Baseline…' : '无可用 Baseline' },
+        ...baselines.map(revision => ({
+            value: revision.revision_id,
+            label: `${revision.revision_label} (${revision.revision_id})`,
+        })),
+    ], activeBaselineId || '');
+
+    const isExtension = kindSelect?.value === 'extension';
+    if (baseSelect) baseSelect.disabled = !isExtension || !selectedWorldId || baselines.length === 0;
+    if (newWorldInput) newWorldInput.disabled = Boolean(selectedWorldId);
+}
+
+function renderSettingImportPreview(preview) {
+    const output = document.getElementById('aum-v54-setting-preview-output');
+    const commit = document.getElementById('aum-v54-setting-commit');
+    if (!output || !commit) return;
+    if (!preview) {
+        output.textContent = '尚未选择导入文件。';
+        commit.disabled = true;
+        return;
+    }
+    const lines = [
+        `文件：${preview.filename || '未命名来源'}`,
+        `格式：${preview.format}`,
+        `条目：${preview.entries.length}（constant ${preview.metadata?.constant_count || 0} / disabled ${preview.metadata?.disabled_count || 0}）`,
+        `Content hash：${preview.content_hash}`,
+    ];
+    if (preview.duplicate_source_ids?.length) lines.push(`检测到相同 Source：${preview.duplicate_source_ids.join(', ')}`);
+    if (preview.warnings?.length) lines.push(`警告：${preview.warnings.join('；')}`);
+    const sample = preview.entries.slice(0, 6).map((entry, index) => `${index + 1}. ${entry.title || entry.comment || entry.source_entry_id || '未命名条目'}`);
+    if (sample.length) lines.push(`预览：${sample.join(' ｜ ')}${preview.entries.length > sample.length ? ' …' : ''}`);
+    output.textContent = lines.join('\n');
+    commit.disabled = false;
+}
+
+async function commitSettingImportToContext(ctx, preview, options = {}) {
+    const result = await commitImport(getSettingStore(ctx), preview, options);
+    setSettingStore(ctx, result.store);
+    scheduleStatusUpdate();
+    return result;
+}
+
+function bindSettingImportUi(ctx) {
+    const fileInput = document.getElementById('aum-v54-setting-file');
+    const previewButton = document.getElementById('aum-v54-setting-preview');
+    const commitButton = document.getElementById('aum-v54-setting-commit');
+    const worldSelect = document.getElementById('aum-v54-setting-world');
+    const worldName = document.getElementById('aum-v54-setting-world-name');
+    const revisionLabel = document.getElementById('aum-v54-setting-revision-label');
+    const revisionKind = document.getElementById('aum-v54-setting-revision-kind');
+    const baseRevision = document.getElementById('aum-v54-setting-base-revision');
+    const activate = document.getElementById('aum-v54-setting-activate');
+
+    refreshSettingStoreControls(ctx, { preserveWorld: false });
+    renderSettingImportPreview(pendingSettingImportPreview);
+
+    worldSelect?.addEventListener('change', () => refreshSettingStoreControls(ctx));
+    revisionKind?.addEventListener('change', () => refreshSettingStoreControls(ctx));
+
+    previewButton?.addEventListener('click', () => {
+        void (async () => {
+            const file = fileInput?.files?.[0];
+            if (!file) {
+                notify('warning', '请先选择 JSON / TXT 文件。', '设定库导入');
+                return;
+            }
+            try {
+                previewButton.disabled = true;
+                pendingSettingImportPreview = await previewImport(file, { store: getSettingStore(ctx) });
+                renderSettingImportPreview(pendingSettingImportPreview);
+                if (revisionLabel && !revisionLabel.value.trim()) revisionLabel.value = filenameStem(file.name) || 'Imported revision';
+                if (worldName && !worldName.value.trim()) worldName.value = filenameStem(file.name) || 'Imported World';
+                notify('success', `已解析 ${pendingSettingImportPreview.entries.length} 个条目；尚未写入。`, '设定库预览');
+            } catch (error) {
+                pendingSettingImportPreview = null;
+                renderSettingImportPreview(null);
+                notify('error', String(error?.message || error), '设定库预览失败');
+            } finally {
+                previewButton.disabled = false;
+            }
+        })();
+    });
+
+    commitButton?.addEventListener('click', () => {
+        void (async () => {
+            if (!pendingSettingImportPreview) return;
+            const selectedWorld = worldSelect?.value || '__new__';
+            const targetWorldId = selectedWorld === '__new__' ? null : selectedWorld;
+            const kind = revisionKind?.value === 'extension' ? 'extension' : 'baseline';
+            if (!targetWorldId && kind === 'extension') {
+                notify('error', 'Extension 必须导入到已有世界并显式绑定一个 Baseline。', '设定库导入');
+                return;
+            }
+            if (kind === 'extension' && !baseRevision?.value) {
+                notify('error', '请选择 Extension 要绑定的 Baseline revision。', '设定库导入');
+                return;
+            }
+            try {
+                commitButton.disabled = true;
+                const currentStore = getSettingStore(ctx);
+                const duplicates = targetWorldId
+                    ? findDuplicateSources(currentStore, pendingSettingImportPreview.content_hash, { world_id: targetWorldId })
+                    : [];
+                let duplicatePolicy = 'reject';
+                if (duplicates.length) {
+                    const reuse = confirm(`目标世界中已经存在完全相同的 Source：${duplicates.map(row => row.source_id).join(', ')}。\n\n是否复用该 Source 并显式创建另一个 Revision？`);
+                    if (!reuse) return;
+                    duplicatePolicy = 'reuse_source';
+                }
+                const result = await commitSettingImportToContext(ctx, pendingSettingImportPreview, {
+                    world_id: targetWorldId,
+                    world_name: worldName?.value || null,
+                    revision_label: revisionLabel?.value || null,
+                    revision_kind: kind,
+                    base_revision_id: kind === 'extension' ? baseRevision?.value : null,
+                    activate: activate?.checked !== false,
+                    duplicate_policy: duplicatePolicy,
+                });
+                pendingSettingImportPreview = null;
+                if (fileInput) fileInput.value = '';
+                renderSettingImportPreview(null);
+                refreshSettingStoreControls(ctx, { preserveWorld: false });
+                if (worldSelect) worldSelect.value = result.world.world_id;
+                refreshSettingStoreControls(ctx);
+                scheduleStatusUpdate();
+                if (activate?.checked !== false) {
+                    void enqueue(async () => {
+                        await ensurePluginSettingIndex(ctx, { silent: true });
+                        scheduleStatusUpdate();
+                    });
+                }
+                notify('success', `已写入 ${result.entries.length} 个条目：${result.world.name} / ${result.revision.revision_label}`, '设定库导入');
+            } catch (error) {
+                notify('error', String(error?.message || error), '设定库导入失败');
+            } finally {
+                commitButton.disabled = pendingSettingImportPreview === null;
+            }
+        })();
+    });
+
+    document.getElementById('aum-v54-setting-export')?.addEventListener('click', () => {
+        downloadJson(`aetheria-setting-store-${Date.now()}.json`, getSettingStore(ctx));
+    });
+}
+
 async function setupUi() {
     if (document.getElementById('aum-v54-settings')) return;
     const ctx = getContext();
@@ -1393,6 +2441,18 @@ async function setupUi() {
     bindNumber('aum-v54-baseline-semantic-floor', 'baseline_semantic_lexical_floor', { min: 0, max: 1 });
     bindNumber('aum-v54-baseline-chunk', 'baseline_chunk_chars', { min: 120, max: 1200, integer: true });
     bindNumber('aum-v54-baseline-hint', 'baseline_hint_chars', { min: 1000, max: 30000, integer: true });
+    bindCheckbox('aum-v54-setting-index-vector', 'setting_index_use_vector');
+    bindCheckbox('aum-v54-setting-index-auto', 'setting_index_auto_rebuild');
+    bindNumber('aum-v54-setting-index-chunk', 'setting_index_chunk_chars', { min: 120, max: 1200, integer: true });
+    bindCheckbox('aum-v54-setting-retrieval-enabled', 'setting_retrieval_enabled');
+    bindCheckbox('aum-v54-setting-retrieval-dense', 'setting_retrieval_use_dense');
+    bindNumber('aum-v54-setting-retrieval-candidate-k', 'setting_retrieval_candidate_top_k', { min: 1, max: 80, integer: true });
+    bindNumber('aum-v54-setting-retrieval-final', 'setting_retrieval_final_count', { min: 1, max: 30, integer: true });
+    bindNumber('aum-v54-setting-retrieval-threshold', 'setting_retrieval_dense_threshold', { min: 0, max: 1 });
+    bindNumber('aum-v54-setting-retrieval-rrf', 'setting_retrieval_rrf_k', { min: 1, max: 500, integer: true });
+    bindNumber('aum-v54-setting-retrieval-budget', 'setting_retrieval_max_chars', { min: 1000, max: 50000, integer: true });
+    bindNumber('aum-v54-setting-extraction-budget', 'setting_extraction_max_chars', { min: 1000, max: 30000, integer: true });
+    bindNumber('aum-v54-setting-constant-limit', 'setting_retrieval_constant_limit', { min: 0, max: 20, integer: true });
     bindNumber('aum-v54-keep-recent', 'keep_recent_messages', { min: 2, max: 200, integer: true });
     bindNumber('aum-v54-query-messages', 'query_messages', { min: 1, max: 12, integer: true });
     bindNumber('aum-v54-candidate-k', 'candidate_top_k', { min: 1, max: 80, integer: true });
@@ -1405,10 +2465,25 @@ async function setupUi() {
     bindNumber('aum-v54-mmr-lambda', 'mmr_lambda', { min: 0, max: 1 });
     bindNumber('aum-v54-cooldown', 'recall_cooldown_turns', { min: 0, max: 100, integer: true });
     bindNumber('aum-v54-settle', 'vector_settle_messages', { min: 0, max: 20, integer: true });
-    bindNumber('aum-v54-budget', 'max_memory_context_chars', { min: 1200, max: 30000, integer: true });
+    bindNumber('aum-v54-budget', 'reference_context_max_chars', { min: 1200, max: 60000, integer: true });
+    bindNumber('aum-v54-current-state-budget', 'current_state_context_max_chars', { min: 800, max: 20000, integer: true });
     bindNumber('aum-v54-depth', 'injection_depth', { min: 0, max: 100, integer: true });
+    bindNumber('aum-v54-current-state-depth', 'current_state_injection_depth', { min: 0, max: 100, integer: true });
+    bindNumber('aum-v54-reply-reserve', 'context_reply_reserve_tokens', { min: 0, max: 32000, integer: true });
     bindNumber('aum-v54-max-active', 'max_active_items', { min: 0, max: 50, integer: true });
     bindNumber('aum-v54-protect-recent', 'protect_recent_messages', { min: 0, max: 100, integer: true });
+
+    bindSettingImportUi(ctx);
+
+    document.getElementById('aum-v54-rebuild-setting-index')?.addEventListener('click', () => {
+        void enqueue(async () => {
+            const current = getContext();
+            if (!current) return;
+            const result = await ensurePluginSettingIndex(current, { force: true, silent: false });
+            notify('success', `Setting Index：${result.chunks.length} 个分块；词法 ${result.lexicalReady ? '可用' : '空'}；向量 ${result.vectorReady ? '已就绪' : '未就绪/已降级'}。`, 'Setting Index');
+            scheduleStatusUpdate();
+        });
+    });
 
     document.getElementById('aum-v54-rebuild-baseline')?.addEventListener('click', () => {
         void enqueueExtraction(async () => {
@@ -1436,13 +2511,18 @@ async function setupUi() {
         });
     });
     document.getElementById('aum-v54-rebuild-vectors')?.addEventListener('click', () => {
-        void enqueue(async () => { await rebuildVectorIndex(ctx, { silent: false }); await ensureSemanticBaseline(ctx, { force: true, silent: true }); });
+        void enqueue(async () => {
+            await rebuildVectorIndex(ctx, { silent: false });
+            await ensureSemanticBaseline(ctx, { force: true, silent: true });
+            await ensurePluginSettingIndex(ctx, { force: true, silent: true });
+        });
     });
     document.getElementById('aum-v54-rebuild-all')?.addEventListener('click', () => {
         void enqueue(async () => {
             await rebuildCanonicalFromChat(ctx, { rebuildVectors: true, silent: false });
             await ensureSemanticBaseline(ctx, { force: true, silent: true });
-            notify('success', 'Canonical Memory、剧情向量与 Semantic Baseline 已完整重建。');
+            await ensurePluginSettingIndex(ctx, { force: true, silent: true });
+            notify('success', 'Canonical Memory、剧情向量、Host Baseline 与 Plugin Setting Index 已完整重建。');
         });
     });
     document.getElementById('aum-v54-export')?.addEventListener('click', () => {
@@ -1497,7 +2577,8 @@ function registerEvents() {
         const current = getContext();
         if (!current) return;
         const settings = getSettings(current);
-        current.setExtensionPrompt(PROMPT_KEY, '', IN_CHAT, settings.injection_depth, false, SYSTEM_ROLE);
+        clearInjectedPrompts(current, settings);
+        lastGenerationContextDiagnostics = null;
         void enqueue(async () => {
             await reconcileCurrentChat(current, { forceRebuild: true });
             scheduleLatestAssistantExtraction({ force: false });
@@ -1511,13 +2592,17 @@ async function startup() {
     initialized = true;
     const ctx = getContext();
     if (!ctx) return;
-    getSettings(ctx);
+    const settings = getSettings(ctx);
+    getSettingStore(ctx);
+    // In-place upgrade safety: the old single-block key must not coexist with Commit F prompts.
+    ctx.setExtensionPrompt?.(LEGACY_PROMPT_KEY, '', IN_CHAT, normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth), false, SYSTEM_ROLE);
     registerEvents();
     await setupUi();
     // v5.2/v5.1 canonical metadata migrates automatically; old inline <memory_ops> are replayed once.
     void enqueue(async () => {
         await reconcileCurrentChat(ctx, { forceRebuild: true });
         await ensureSemanticBaseline(ctx, { silent: true });
+        await ensurePluginSettingIndex(ctx, { silent: true });
         scheduleLatestAssistantExtraction({ force: false });
     });
     scheduleStatusUpdate();
@@ -1526,6 +2611,10 @@ async function startup() {
 
 // Small explicit test hooks. They are not used by normal runtime, but make the autonomous
 // extraction pipeline verifiable without depending on DOM event timing.
+export function __testNormalizeDepth(value, fallback = DEFAULT_SETTINGS.injection_depth) {
+    return normalizeDepth(value, fallback);
+}
+
 export async function __testExtractMemoryForAssistant(ctx, assistantIndex, options = {}) {
     return extractMemoryForAssistant(ctx, assistantIndex, options);
 }
@@ -1536,6 +2625,58 @@ export async function __testBackfillMissingExtractions(ctx, options = {}) {
 
 export function __testGetStore(ctx) {
     return getStore(ctx);
+}
+
+export function __testGetSettingStore(ctx, options = {}) {
+    return getSettingStore(ctx, options);
+}
+
+export function __testSetSettingStore(ctx, store, options = {}) {
+    return setSettingStore(ctx, store, options);
+}
+
+export async function __testPreviewSettingImport(input, options = {}) {
+    return previewImport(input, options);
+}
+
+export async function __testCommitSettingImport(ctx, preview, options = {}) {
+    return commitSettingImportToContext(ctx, preview, options);
+}
+
+export async function __testEnsurePluginSettingIndex(ctx, options = {}) {
+    return ensurePluginSettingIndex(ctx, options);
+}
+
+export function __testSearchPluginSettingsLexical(ctx, query, options = {}) {
+    return searchPluginSettingsLexical(ctx, query, options);
+}
+
+export function __testGetSettingIndexState(ctx) {
+    return getSettingIndexState(ctx);
+}
+
+export async function __testRetrievePluginSettings(ctx, query, options = {}) {
+    return retrievePluginSettings(ctx, query, options);
+}
+
+export async function __testRetrieveGenerationSettings(ctx, chat, store = null) {
+    return retrieveGenerationSettings(ctx, chat, store);
+}
+
+export function __testGetLastSettingRetrievalDebug() {
+    return lastSettingRetrievalDebug;
+}
+
+export function __testGetLastGenerationContextDiagnostics() {
+    return lastGenerationContextDiagnostics;
+}
+
+export async function __testBuildInjectedContextBundle(chat, contextSize = null) {
+    return buildInjectedContextBundle(chat, contextSize);
+}
+
+export function __testCreatePluginBaselineDeduper(ctx, prepared = null) {
+    return createPluginBaselineDeduper(ctx, prepared);
 }
 
 export async function __testEnsureSemanticBaseline(ctx, options = {}) {
