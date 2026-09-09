@@ -97,7 +97,8 @@
 #aum-v55-settings-window textarea,
 #aum-v55-settings-window input { max-width: 100%; min-width: 0; box-sizing: border-box; }
 
-#aum-v55-settings-window .aum-v55-page-intro {
+#aum-v55-settings-window .aum-v55-page-intro,
+#aum-v55-settings-window .aum-v55-page-help {
     display: grid;
     gap: 0.25rem;
     margin-bottom: 0.65rem;
@@ -106,6 +107,14 @@
     border-radius: 8px;
 }
 #aum-v55-settings-window .aum-v55-page-intro span { opacity: 0.78; }
+#aum-v55-settings-window .aum-v55-page-help {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 14%, transparent);
+}
+#aum-v55-settings-window .aum-v55-page-help h4 { margin: 0 !important; }
+#aum-v55-settings-window .aum-v55-page-help p { margin: 0.2rem 0; line-height: 1.45; }
+#aum-v55-settings-window .aum-v55-page-help ul { margin: 0.2rem 0 0; padding-left: 1.35rem; }
+#aum-v55-settings-window .aum-v55-page-help li { margin: 0.2rem 0; line-height: 1.4; }
+#aum-v55-settings-window .aum-v55-page-help strong { font-weight: 700; }
 
 /* Dynamic v5.5 cards: compact summary header + collapsible body. */
 #aum-v55-settings-window .aum-v55-collapsible-section {
@@ -150,12 +159,33 @@
 #aum-v55-settings-window .aum-v55-section-body > :first-child { margin-top: 0; }
 #aum-v55-settings-window .aum-v55-section-body > :last-child { margin-bottom: 0; }
 
-/* Binding card: less vertical waste and a smaller multi-select. */
-#aum-v55-chat-binding .flexFlowColumn { gap: 0.4rem; }
-#aum-v55-chat-binding label { margin: 0; }
+/* Binding card: force the action row and button to remain horizontal. */
+#aum-v55-chat-binding .flexFlowColumn { gap: 0.4rem; min-width: 0; }
+#aum-v55-chat-binding label { margin: 0; min-width: 0; }
 #aum-v55-chat-binding #aum-v55-binding-extensions { min-height: 5.6em; max-height: 7.5em; }
-#aum-v55-chat-binding .flex-container:not(.flexFlowColumn) { align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-#aum-v55-chat-binding #aum-v55-binding-status { overflow-wrap: anywhere; }
+#aum-v55-chat-binding .flex-container:not(.flexFlowColumn) {
+    display: grid;
+    grid-template-columns: minmax(9.5rem, max-content) minmax(0, 1fr);
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+}
+#aum-v55-chat-binding #aum-v55-binding-pin {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: 9.5rem !important;
+    max-width: 100%;
+    white-space: nowrap !important;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed !important;
+    word-break: keep-all !important;
+    overflow-wrap: normal !important;
+    line-height: 1.25;
+}
+#aum-v55-chat-binding #aum-v55-binding-status { min-width: 0; overflow-wrap: anywhere; }
 
 /* Entry overlay: when no Entry exists, don't waste a full card-height on unusable controls. */
 #aum-v55-entry-editor.aum-v55-entry-empty .aum-v55-entry-edit-field,
@@ -178,10 +208,21 @@
 #aum-v55-settings-window.aum-v55-compact .aum-v55-settings-tab { min-width: 0; width: 100%; }
 #aum-v55-settings-window.aum-v55-compact .aum-v55-section-header { align-items: flex-start; }
 #aum-v55-settings-window.aum-v55-compact .aum-v55-section-toggle { min-width: 4em; }
+#aum-v55-settings-window.aum-v55-compact #aum-v55-chat-binding .flex-container:not(.flexFlowColumn) {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+}
+#aum-v55-settings-window.aum-v55-compact #aum-v55-binding-pin {
+    width: 100% !important;
+    min-width: 0 !important;
+    white-space: nowrap !important;
+}
 
 @container (max-width: 560px) {
     #aum-v55-settings-window .aum-v51-grid { grid-template-columns: 1fr; }
     #aum-v55-settings-window .aum-v55-settings-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #aum-v55-settings-window #aum-v55-chat-binding .flex-container:not(.flexFlowColumn) { grid-template-columns: 1fr; }
+    #aum-v55-settings-window #aum-v55-binding-pin { width: 100% !important; min-width: 0 !important; }
 }
 
 @media (max-height: 720px) {
