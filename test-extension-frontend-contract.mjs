@@ -32,6 +32,11 @@ assert.match(polish, /v5\.5 聊天设定绑定/, 'dynamic chat-binding UI must b
 assert.match(polish, /v5\.5 设定条目覆盖编辑/, 'dynamic entry-overlay UI must be localized');
 assert.match(polish, /未绑定世界/, 'dynamic empty binding state must be localized');
 assert.match(polish, /无标题 TXT 分段预览/, 'untitled TXT preview must be localized');
+assert.match(polish, /enhanceCollapsibleSection/, 'large dynamic setting cards must be collapsible');
+assert.match(polish, /aum-v55-entry-empty/, 'entry editor must expose an empty-state compact mode');
+assert.match(polish, /textarea\.rows\s*=\s*5/, 'entry editor content box should default to a compact height');
+assert.match(polish, /ext\.size\s*=\s*3/, 'extension revision multi-select should be compact');
+assert.match(polish, /SECTION_STATE_PREFIX/, 'dynamic section collapsed state should persist');
 
 const settings = read('./settings.html');
 for (const id of [
@@ -62,5 +67,8 @@ assert.match(style, /word-break:\s*keep-all/, 'normal-width buttons must not bre
 assert.match(style, /aum-v55-compact/, 'narrow drawer layout must collapse grids/buttons deliberately');
 assert.match(style, /grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/, 'top tabs must wrap into a fixed grid instead of horizontal scrolling');
 assert.doesNotMatch(style, /\.aum-v55-settings-tabs[\s\S]{0,400}overflow-x:\s*auto/, 'top tab bar must not create a horizontal scrollbar');
+assert.match(style, /aum-v55-collapsible-section/, 'dynamic cards need compact collapsible styling');
+assert.match(style, /aum-v55-section-body\[hidden\]/, 'collapsed dynamic cards must hide their bodies');
+assert.match(style, /aum-v55-entry-editor\.aum-v55-entry-empty/, 'empty entry editor must hide unusable form fields');
 
 console.log('extension frontend contract tests passed');
