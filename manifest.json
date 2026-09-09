@@ -3,9 +3,7 @@
   "loading_order": 95,
   "requires": [],
   "optional": [],
-  "dependencies": [
-    "vectors"
-  ],
+  "dependencies": [],
   "js": "index-v55.js",
   "css": "style.css",
   "author": "lin lin + OpenAI",
