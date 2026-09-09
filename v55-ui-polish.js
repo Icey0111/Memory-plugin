@@ -200,6 +200,36 @@ function updateEntryEmptyState(root) {
     if (summary) setText(summary, hasEntry ? `当前条目：${select.selectedOptions?.[0]?.textContent || select.value}` : '未选择条目，编辑表单已收起');
 }
 
+function ensurePageHelp(pageId, title, bodyHtml) {
+    const page = document.getElementById(`aum-v55-settings-page-${pageId}`);
+    if (!page || page.querySelector(':scope > .aum-v55-page-help')) return;
+    const box = document.createElement('section');
+    box.className = 'aum-v55-page-help';
+    box.innerHTML = `<h4>${title}</h4>${bodyHtml}`;
+    page.prepend(box);
+}
+
+function mountPageExplanations() {
+    ensurePageHelp('settings', '“设定”页是做什么的？', `
+        <p><strong>设定 = 故事开始前就已经存在的世界资料。</strong>例如国家、城市、组织、角色档案、地点规则、世界观条目等。</p>
+        <ul>
+            <li><strong>导入设定库：</strong>把 JSON / TXT 世界书变成插件自己的结构化设定资料。</li>
+            <li><strong>聊天设定绑定：</strong>指定当前聊天使用哪一个世界、哪一版基线，以及叠加哪些扩展版本。</li>
+            <li><strong>设定索引 / 检索：</strong>当聊天需要某条世界设定时，只找相关条目放进上下文，不必每轮把整本世界书都塞给模型。</li>
+            <li><strong>条目覆盖编辑：</strong>临时修正某个设定条目，同时保留原始导入版本不变。</li>
+        </ul>
+        <p>一句话：<strong>设定页负责“世界本来是什么样”。</strong></p>`);
+
+    ensurePageHelp('baseline', '“基线”页是做什么的？', `
+        <p><strong>基线 = 用来判断“这是不是已经知道的固定事实”的参照层。</strong>它主要防止自动记忆把角色卡、Persona、世界书里本来就存在的资料反复记成新的剧情事件。</p>
+        <ul>
+            <li>例如角色卡已经写着“平成住在东京”，聊天里再次提到东京时，不需要再新增一条“平成住在东京”的剧情记忆。</li>
+            <li>但“平成今天第一次得知某个秘密”属于新发生的剧情信息，仍然可以进入记忆。</li>
+            <li><strong>词法过滤</strong>负责发现文字很接近的重复；<strong>语义向量复核</strong>负责发现换了说法但意思相同的重复。</li>
+        </ul>
+        <p>一句话：<strong>基线页负责区分“原本就知道”与“剧情中新发生/新知道”。</strong></p>`);
+}
+
 function localizeBinding(root) {
     if (!root) return;
     setText(root.querySelector('h4'), 'v5.5 聊天设定绑定');
@@ -269,6 +299,7 @@ export function localizeV55Ui() {
     localizeStaticControls(root);
     localizeBinding(document.getElementById('aum-v55-chat-binding'));
     localizeEntryEditor(document.getElementById('aum-v55-entry-editor'));
+    mountPageExplanations();
     return true;
 }
 
