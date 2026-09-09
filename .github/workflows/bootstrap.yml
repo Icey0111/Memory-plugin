@@ -23,7 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            cat .bootstrap/fix00.0 .bootstrap/fix00.1 .bootstrap/release00.2a .bootstrap/release00.2b .bootstrap/fix00.3
+            cat .bootstrap/fix00.0 .bootstrap/fix00.1 .bootstrap/r002.s0 .bootstrap/r002.s1 .bootstrap/r002.s2 .bootstrap/r002.s3 .bootstrap/release00.2b .bootstrap/fix00.3
             cat .bootstrap/release.part01 .bootstrap/release.part02 .bootstrap/release.part03
             cat .bootstrap/release04.0 .bootstrap/release04.1 .bootstrap/release04.2 .bootstrap/release04.3
             cat .bootstrap/release.part05 .bootstrap/release.part06 .bootstrap/release.part07
