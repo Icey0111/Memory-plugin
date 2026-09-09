@@ -1,0 +1,15 @@
+{
+  "display_name": "Aetheria Unified Memory v5.4 Semantic Baseline",
+  "loading_order": 95,
+  "requires": [],
+  "optional": [],
+  "dependencies": ["vectors"],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "lin lin + OpenAI",
+  "version": "5.4.0",
+  "auto_update": true,
+  "minimum_client_version": "1.18.0",
+  "generate_interceptor": "aetheriaUnifiedMemoryV54Interceptor",
+  "hooks": {"activate": "init"}
+}
