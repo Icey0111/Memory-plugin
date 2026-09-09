@@ -22,13 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          {
-            cat .bootstrap/fix00.0 .bootstrap/fix00.1 .bootstrap/fix00.2 .bootstrap/fix00.3
-            cat .bootstrap/payload.part01 .bootstrap/payload.part02
-            cat .bootstrap/fix03.0 .bootstrap/fix03.1 .bootstrap/fix03.2 .bootstrap/fix03.3
-            cat .bootstrap/payload.part04 .bootstrap/payload.part05 .bootstrap/payload.part06
-            tail -c 13776 .bootstrap/payload.part07
-          } | tr -d '\r\n' | base64 --decode > /tmp/aetheria-plugin.zip
+          cat .bootstrap/release.part00 .bootstrap/release.part01 .bootstrap/release.part02 .bootstrap/release.part03 .bootstrap/release.part04 .bootstrap/release.part05 .bootstrap/release.part06 .bootstrap/release.part07 | tr -d '\r\n' | base64 --decode > /tmp/aetheria-plugin.zip
           echo "6336a2235aa79b522ea0ed94c74f0c327ebede9a593ea23a619a6d6de353aec5  /tmp/aetheria-plugin.zip" | sha256sum -c -
           unzip -oq /tmp/aetheria-plugin.zip -d .
           rm -f /tmp/aetheria-plugin.zip
