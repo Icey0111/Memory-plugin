@@ -4,7 +4,7 @@
   "requires": [],
   "optional": [],
   "dependencies": [],
-  "js": "index-v55.js",
+  "js": "index-v55-bootstrap.js",
   "css": "style.css",
   "author": "lin lin + OpenAI",
   "version": "5.5.0-dev.8",
