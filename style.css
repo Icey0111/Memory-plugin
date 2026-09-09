@@ -27,7 +27,7 @@
 #aum-v54-setting-preview-output { white-space: pre-wrap; max-height: 12rem; overflow: auto; }
 
 #aum-v54-settings .aum-v55-brand-icon { margin-right: 0.45rem; opacity: 0.9; }
-#aum-v54-settings .aum-v54-section { margin: 0.65rem 0; padding: 0.7rem; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; }
+#aum-v54-settings .aum-v54-section { margin: 0.55rem 0; padding: 0.65rem; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; }
 #aum-v55-runtime-dashboard { background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 18%, transparent); }
 #aum-v55-runtime-dashboard > h4 { margin-top: 0 !important; }
 #aum-v55-runtime-dashboard details { margin-top: 0.45rem; }
@@ -87,7 +87,7 @@
     overflow-x: hidden;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
-    padding: 0.75rem;
+    padding: 0.65rem;
 }
 
 #aum-v55-settings-window .aum-v55-settings-page[hidden] { display: none !important; }
@@ -100,12 +100,68 @@
 #aum-v55-settings-window .aum-v55-page-intro {
     display: grid;
     gap: 0.25rem;
-    margin-bottom: 0.75rem;
-    padding: 0.65rem 0.75rem;
+    margin-bottom: 0.65rem;
+    padding: 0.6rem 0.7rem;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 8px;
 }
 #aum-v55-settings-window .aum-v55-page-intro span { opacity: 0.78; }
+
+/* Dynamic v5.5 cards: compact summary header + collapsible body. */
+#aum-v55-settings-window .aum-v55-collapsible-section {
+    padding: 0 !important;
+    overflow: hidden;
+}
+#aum-v55-settings-window .aum-v55-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    min-width: 0;
+    padding: 0.65rem 0.7rem;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 16%, transparent);
+}
+#aum-v55-settings-window .aum-v55-section-title {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+}
+#aum-v55-settings-window .aum-v55-section-title h4 {
+    margin: 0 !important;
+    line-height: 1.25;
+}
+#aum-v55-settings-window .aum-v55-section-summary {
+    min-width: 0;
+    opacity: 0.72;
+    font-size: 0.84em;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+#aum-v55-settings-window .aum-v55-section-toggle {
+    flex: 0 0 auto;
+    min-width: 4.5em;
+    padding: 0.25rem 0.55rem;
+    white-space: nowrap;
+}
+#aum-v55-settings-window .aum-v55-section-body {
+    padding: 0.65rem 0.7rem 0.7rem;
+}
+#aum-v55-settings-window .aum-v55-section-body[hidden] { display: none !important; }
+#aum-v55-settings-window .aum-v55-section-body > :first-child { margin-top: 0; }
+#aum-v55-settings-window .aum-v55-section-body > :last-child { margin-bottom: 0; }
+
+/* Binding card: less vertical waste and a smaller multi-select. */
+#aum-v55-chat-binding .flexFlowColumn { gap: 0.4rem; }
+#aum-v55-chat-binding label { margin: 0; }
+#aum-v55-chat-binding #aum-v55-binding-extensions { min-height: 5.6em; max-height: 7.5em; }
+#aum-v55-chat-binding .flex-container:not(.flexFlowColumn) { align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+#aum-v55-chat-binding #aum-v55-binding-status { overflow-wrap: anywhere; }
+
+/* Entry overlay: when no Entry exists, don't waste a full card-height on unusable controls. */
+#aum-v55-entry-editor.aum-v55-entry-empty .aum-v55-entry-edit-field,
+#aum-v55-entry-editor.aum-v55-entry-empty .aum-v55-entry-actions { display: none !important; }
+#aum-v55-entry-editor.aum-v55-entry-empty #aum-v55-entry-status { margin-bottom: 0; }
+#aum-v55-entry-editor textarea { resize: vertical; min-height: 7em; max-height: 18em; }
 
 /* Compact mode is based on the extension drawer width, not the browser viewport. */
 #aum-v55-settings-window.aum-v55-compact .aum-v51-grid { grid-template-columns: 1fr; }
@@ -120,6 +176,8 @@
 }
 #aum-v55-settings-window.aum-v55-compact .aum-v55-settings-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 #aum-v55-settings-window.aum-v55-compact .aum-v55-settings-tab { min-width: 0; width: 100%; }
+#aum-v55-settings-window.aum-v55-compact .aum-v55-section-header { align-items: flex-start; }
+#aum-v55-settings-window.aum-v55-compact .aum-v55-section-toggle { min-width: 4em; }
 
 @container (max-width: 560px) {
     #aum-v55-settings-window .aum-v51-grid { grid-template-columns: 1fr; }
@@ -133,5 +191,6 @@
 @media (max-width: 700px) {
     .aum-v51-grid { grid-template-columns: 1fr; }
     #aum-v54-settings .aum-v54-section { padding: 0.55rem; }
+    #aum-v54-settings .aum-v54-section.aum-v55-collapsible-section { padding: 0 !important; }
     #aum-v55-settings-window { height: min(66vh, 620px); }
 }
