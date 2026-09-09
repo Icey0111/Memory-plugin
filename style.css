@@ -2,11 +2,24 @@
 .aum-v51-panel .inline-drawer-content { padding: 0.6rem 0.8rem 0.9rem; }
 .aum-v51-muted { opacity: 0.78; margin-top: 0; }
 .aum-v51-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem 0.7rem; margin: 0.6rem 0; }
-.aum-v51-grid label { display: flex; flex-direction: column; gap: 0.2rem; }
+.aum-v51-grid label { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.aum-v51-grid .text_pole, #aum-v54-settings > .inline-drawer-content .text_pole { box-sizing: border-box; width: 100%; min-width: 0; }
 .aum-v51-status { margin: 0.6rem 0; padding: 0.55rem; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; font-size: 0.9em; overflow-wrap: anywhere; }
-.aum-v51-buttons { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.6rem 0; }
+.aum-v51-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; margin: 0.6rem 0; min-width: 0; }
+.aum-v51-buttons .menu_button {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: max-content;
+    max-width: 100%;
+    padding-inline: 0.75rem;
+    white-space: nowrap;
+    writing-mode: horizontal-tb !important;
+    text-orientation: mixed;
+    word-break: keep-all;
+    overflow-wrap: normal;
+    line-height: 1.25;
+}
 .aum-v51-diagnostics { white-space: pre-wrap; max-height: 10rem; overflow: auto; font-size: 0.82em; }
-@media (max-width: 700px) { .aum-v51-grid { grid-template-columns: 1fr; } }
 
 #aum-v54-settings h4 { margin: 0.8em 0 0.35em; }
 #aum-v54-settings small { display: block; opacity: 0.78; margin: 0.25em 0 0.55em; }
@@ -20,7 +33,107 @@
 #aum-v55-runtime-dashboard details { margin-top: 0.45rem; }
 #aum-v55-runtime-dashboard summary { cursor: pointer; user-select: none; }
 #aum-v55-runtime-dashboard .aum-v51-diagnostics { max-height: 16rem; }
+
+/* v5.5: turn the very long drawer into a bounded secondary settings window. */
+#aum-v55-settings-window {
+    container-type: inline-size;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 100%;
+    height: clamp(360px, 68vh, 720px);
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 10%, transparent);
+}
+
+#aum-v55-settings-window .aum-v55-settings-tabs {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.45rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 28%, transparent);
+}
+
+#aum-v55-settings-window .aum-v55-settings-tab {
+    flex: 0 0 auto;
+    min-width: max-content;
+    width: auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.65rem;
+    white-space: nowrap;
+    writing-mode: horizontal-tb !important;
+    word-break: keep-all;
+    overflow-wrap: normal;
+}
+
+#aum-v55-settings-window .aum-v55-settings-tab.active {
+    box-shadow: inset 0 -2px 0 currentColor;
+    font-weight: 700;
+}
+
+#aum-v55-settings-window .aum-v55-settings-viewport {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding: 0.75rem;
+}
+
+#aum-v55-settings-window .aum-v55-settings-page[hidden] { display: none !important; }
+#aum-v55-settings-window .aum-v55-settings-page { min-width: 0; }
+#aum-v55-settings-window .aum-v55-settings-page > :first-child { margin-top: 0; }
+
+#aum-v55-settings-window .aum-v55-page-intro {
+    display: grid;
+    gap: 0.25rem;
+    margin-bottom: 0.75rem;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+}
+#aum-v55-settings-window .aum-v55-page-intro span { opacity: 0.78; }
+
+/* Compact mode is based on the extension drawer width, not the browser viewport. */
+#aum-v55-settings-window.aum-v55-compact .aum-v51-grid { grid-template-columns: 1fr; }
+#aum-v55-settings-window.aum-v55-compact .aum-v51-buttons { display: grid; grid-template-columns: 1fr; }
+#aum-v55-settings-window.aum-v55-compact .aum-v51-buttons .menu_button {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+    white-space: normal;
+    word-break: normal;
+    overflow-wrap: anywhere;
+}
+#aum-v55-settings-window.aum-v55-compact .aum-v55-settings-tab {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+}
+
+@container (max-width: 560px) {
+    #aum-v55-settings-window .aum-v51-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-height: 720px) {
+    #aum-v55-settings-window { height: min(64vh, 560px); }
+}
+
 @media (max-width: 700px) {
+    .aum-v51-grid { grid-template-columns: 1fr; }
     #aum-v54-settings .aum-v54-section { padding: 0.55rem; }
-    #aum-v55-runtime-dashboard .aum-v51-buttons .menu_button { flex: 1 1 auto; }
+    #aum-v55-settings-window { height: min(66vh, 620px); }
 }
