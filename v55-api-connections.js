@@ -1,9 +1,10 @@
 // Aetheria Unified Memory v5.5 — independent API connection settings.
 // Provides SillyTavern-like OpenAI-compatible connection controls for summarization and embeddings.
-// API keys are stored through SillyTavern's secret store; only returned secret IDs are kept in extension settings.
+// Secrets are written into SillyTavern Secret Store; Aetheria only retains secret IDs and non-secret connection metadata.
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const SUMMARY_PROFILE_NAME = 'Aetheria · Summary API';
+const VECTOR_TEST_PREFIX = 'aetheria_v55_vector_probe_';
 
 const DEFAULTS = Object.freeze({
     summary_direct_api_enabled: false,
@@ -12,11 +13,15 @@ const DEFAULTS = Object.freeze({
     summary_direct_api_model: '',
     summary_direct_api_secret_id: '',
     summary_direct_api_profile_id: '',
+    summary_direct_api_models: [],
     vector_direct_api_enabled: false,
     vector_direct_api_mode: 'openai_compatible',
     vector_direct_api_url: '',
     vector_direct_api_model: '',
     vector_direct_api_secret_id: '',
+    vector_direct_api_probe_secret_id: '',
+    vector_direct_api_models: [],
+    vector_direct_previous_config: null,
 });
 
 let secretsModulePromise = null;
@@ -32,7 +37,9 @@ function ensureSettings(ctx) {
         ctx.extensionSettings[SETTINGS_KEY] = {};
     }
     const settings = ctx.extensionSettings[SETTINGS_KEY];
-    for (const [key, value] of Object.entries(DEFAULTS)) if (settings[key] === undefined) settings[key] = value;
+    for (const [key, value] of Object.entries(DEFAULTS)) {
+        if (settings[key] === undefined) settings[key] = Array.isArray(value) ? [...value] : value;
+    }
     return settings;
 }
 
@@ -44,19 +51,25 @@ function uuid() {
     return globalThis.crypto?.randomUUID?.() || `aum-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function notify(type, message) {
+    const toast = globalThis.toastr;
+    if (toast && typeof toast[type] === 'function') toast[type](message, 'Aetheria API');
+}
+
 async function getSecretsModule() {
     if (!secretsModulePromise) secretsModulePromise = import('/scripts/secrets.js').catch(() => null);
     return secretsModulePromise;
 }
 
-async function saveCustomSecret(value, label) {
+async function saveSecret(secretKeyName, value, label) {
     const key = String(value || '').trim();
     if (!key) return null;
     const secrets = await getSecretsModule();
-    if (!secrets?.writeSecret || !secrets?.SECRET_KEYS?.CUSTOM) {
-        throw new Error('当前 SillyTavern 未提供可用的安全 Secret Store。');
+    const secretKey = secrets?.SECRET_KEYS?.[secretKeyName];
+    if (!secrets?.writeSecret || !secretKey) {
+        throw new Error(`当前 SillyTavern 未提供 ${secretKeyName} Secret Store。`);
     }
-    return await secrets.writeSecret(secrets.SECRET_KEYS.CUSTOM, key, label);
+    return await secrets.writeSecret(secretKey, key, label);
 }
 
 function getRequestHeaders(ctx) {
@@ -70,22 +83,22 @@ function extractModels(payload) {
     const rows = candidates.find(Array.isArray) || [];
     const ids = rows.map(row => {
         if (typeof row === 'string') return row;
-        return row?.id || row?.model || row?.name || '';
+        return row?.id || row?.model || row?.name || row?.slug || '';
     }).map(String).map(x => x.trim()).filter(Boolean);
     return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
 }
 
-async function fetchOpenAiCompatibleModels(ctx, url, secretId) {
+async function fetchOpenAiCompatibleModels(ctx, url, customSecretId) {
     const base = normalizeUrl(url);
     if (!base) throw new Error('请先填写接口地址。');
-    if (!secretId) throw new Error('请先保存 API Key。');
+    if (!customSecretId) throw new Error('请先保存 API Key。');
     const response = await fetch('/api/backends/chat-completions/status', {
         method: 'POST',
         headers: getRequestHeaders(ctx),
         body: JSON.stringify({
             chat_completion_source: 'custom',
             custom_url: base,
-            secret_id: secretId,
+            secret_id: customSecretId,
         }),
     });
     if (!response.ok) {
@@ -110,9 +123,7 @@ function ensureConnectionManager(ctx) {
 function upsertSummaryProfile(ctx, settings) {
     const manager = ensureConnectionManager(ctx);
     let profile = manager.profiles.find(row => row.id === settings.summary_direct_api_profile_id);
-    if (!profile) {
-        profile = manager.profiles.find(row => row.name === SUMMARY_PROFILE_NAME);
-    }
+    if (!profile) profile = manager.profiles.find(row => row.name === SUMMARY_PROFILE_NAME);
     if (!profile) {
         profile = { id: uuid(), mode: 'cc', name: SUMMARY_PROFILE_NAME, exclude: [] };
         manager.profiles.push(profile);
@@ -134,7 +145,100 @@ function upsertSummaryProfile(ctx, settings) {
     return profile;
 }
 
+function rememberPreviousVectorConfig(ctx, settings) {
+    if (settings.vector_direct_previous_config) return;
+    const vectors = ctx.extensionSettings?.vectors || {};
+    settings.vector_direct_previous_config = {
+        source: vectors.source,
+        use_alt_endpoint: vectors.use_alt_endpoint,
+        alt_endpoint_url: vectors.alt_endpoint_url,
+        vllm_model: vectors.vllm_model,
+    };
+}
+
+export function applyDirectVectorTransport(ctxInput = getContext()) {
+    const ctx = ctxInput;
+    const settings = ensureSettings(ctx);
+    if (!ctx || !settings) return false;
+    if (!settings.vector_direct_api_enabled) return false;
+    const url = normalizeUrl(settings.vector_direct_api_url);
+    const model = String(settings.vector_direct_api_model || '').trim();
+    if (!url || !model || !settings.vector_direct_api_secret_id) return false;
+
+    rememberPreviousVectorConfig(ctx, settings);
+    if (!ctx.extensionSettings.vectors || typeof ctx.extensionSettings.vectors !== 'object') ctx.extensionSettings.vectors = {};
+    const vectors = ctx.extensionSettings.vectors;
+    // ST's vLLM Vector Storage adapter is OpenAI-compatible: it calls /v1/embeddings and uses
+    // the VLLM secret/additional-header path. This lets every existing Aetheria dense collection
+    // keep using /api/vector/* while the embedding transport is the independently configured API.
+    vectors.source = 'vllm';
+    vectors.use_alt_endpoint = true;
+    vectors.alt_endpoint_url = url;
+    vectors.vllm_model = model;
+    settings.vector_source_mode = 'inherit';
+    ctx.saveSettingsDebounced?.();
+    return true;
+}
+
+function restorePreviousVectorConfig(ctx, settings) {
+    const previous = settings.vector_direct_previous_config;
+    if (!previous || !ctx?.extensionSettings) return false;
+    if (!ctx.extensionSettings.vectors || typeof ctx.extensionSettings.vectors !== 'object') ctx.extensionSettings.vectors = {};
+    Object.assign(ctx.extensionSettings.vectors, previous);
+    settings.vector_direct_previous_config = null;
+    ctx.saveSettingsDebounced?.();
+    return true;
+}
+
+async function vectorRequest(ctx, endpoint, body) {
+    const response = await fetch(`/api/vector/${endpoint}`, {
+        method: 'POST',
+        headers: getRequestHeaders(ctx),
+        body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`Embedding 验证失败：HTTP ${response.status}${text ? ` · ${text.slice(0, 220)}` : ''}`);
+    }
+    if (response.status === 204) return null;
+    const type = response.headers.get('content-type') || '';
+    return type.includes('application/json') ? await response.json() : await response.text();
+}
+
+export async function probeDirectVectorTransport(ctxInput = getContext()) {
+    const ctx = ctxInput;
+    const settings = ensureSettings(ctx);
+    if (!ctx || !settings) throw new Error('SillyTavern Context 不可用。');
+    if (!applyDirectVectorTransport(ctx)) throw new Error('请先填写向量 API 地址、API Key 并选择模型。');
+    const collectionId = `${VECTOR_TEST_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    const item = { hash: 904211, text: 'Aetheria embedding connectivity probe.', index: 0 };
+    try {
+        await vectorRequest(ctx, 'insert', {
+            source: 'vllm',
+            apiUrl: normalizeUrl(settings.vector_direct_api_url),
+            model: settings.vector_direct_api_model,
+            collectionId,
+            items: [item],
+        });
+        const result = await vectorRequest(ctx, 'query', {
+            source: 'vllm',
+            apiUrl: normalizeUrl(settings.vector_direct_api_url),
+            model: settings.vector_direct_api_model,
+            collectionId,
+            searchText: item.text,
+            topK: 1,
+            threshold: 0,
+        });
+        const metadata = Array.isArray(result?.metadata) ? result.metadata : [];
+        if (!metadata.length) throw new Error('Embedding 请求成功，但测试集合没有返回检索结果。');
+        return true;
+    } finally {
+        await vectorRequest(ctx, 'purge', { collectionId }).catch(() => {});
+    }
+}
+
 function updateSelect(select, models, current) {
+    if (!select) return;
     const keep = String(current || '');
     select.replaceChildren();
     const placeholder = document.createElement('option');
@@ -157,7 +261,7 @@ function updateSelect(select, models, current) {
 }
 
 function status(root, kind, message, ok = null) {
-    const el = root.querySelector(`#aum-v55-${kind}-direct-status`);
+    const el = root?.querySelector(`#aum-v55-${kind}-direct-status`);
     if (!el) return;
     el.textContent = message;
     el.dataset.state = ok === true ? 'ok' : ok === false ? 'error' : 'idle';
@@ -192,10 +296,23 @@ function createConnectionBlock(kind, title, description) {
         <div class="aum-v51-buttons aum-v55-direct-api-actions">
             <button id="aum-v55-${kind}-direct-connect" class="menu_button">保存密钥并连接</button>
             <button id="aum-v55-${kind}-direct-refresh" class="menu_button">重新拉取模型</button>
-            ${isSummary ? '<button id="aum-v55-summary-direct-apply" class="menu_button">设为总结接口</button>' : ''}
+            ${isSummary ? '<button id="aum-v55-summary-direct-apply" class="menu_button">设为总结接口</button>' : '<button id="aum-v55-vector-direct-test" class="menu_button">测试 Embedding</button>'}
         </div>
         <div id="aum-v55-${kind}-direct-status" class="aum-v51-status">尚未连接。</div>`;
     return block;
+}
+
+async function saveConnectionSecret(kind, key) {
+    if (kind === 'summary') {
+        const id = await saveSecret('CUSTOM', key, 'Aetheria Summary API');
+        return { runtimeSecretId: id, probeSecretId: id };
+    }
+    // Vector runtime uses ST's vLLM embedding adapter, while model discovery uses the custom
+    // Chat Completion status bridge. Store the same credential in both ST secret namespaces so
+    // neither secret ever lands in Aetheria settings as plaintext.
+    const runtimeSecretId = await saveSecret('VLLM', key, 'Aetheria Vector API');
+    const probeSecretId = await saveSecret('CUSTOM', key, 'Aetheria Vector Model Discovery');
+    return { runtimeSecretId, probeSecretId };
 }
 
 function mountCard() {
@@ -212,10 +329,12 @@ function mountCard() {
         root.className = 'aum-v54-section aum-v55-direct-api-settings';
         const heading = document.createElement('div');
         heading.className = 'aum-v55-direct-api-title';
-        heading.innerHTML = '<h4>独立 API 连接</h4><p class="aum-v51-muted">像酒馆的 API 设置一样：选择接口模式、填写地址和 API Key，连接成功后自动拉取模型列表。总结模型和向量模型分别配置，互不绑定。</p>';
-        root.append(heading,
-            createConnectionBlock('summary', '总结 API', '用于一级/二级/三级后台总结。'),
-            createConnectionBlock('vector', '向量 API', '用于 Embedding / Dense 检索。'));
+        heading.innerHTML = '<h4>独立 API 连接</h4><p class="aum-v51-muted">像酒馆的 API 设置一样：选择接口模式、填写地址和 API Key，连接后自动拉取模型。总结 API 与 Embedding API 完全独立；密钥由 SillyTavern Secret Store 保存。</p>';
+        root.append(
+            heading,
+            createConnectionBlock('summary', '总结 API', '用于一级 / 二级 / 三级后台总结。'),
+            createConnectionBlock('vector', '向量 API', '用于 Memory、Baseline、Setting 三条 Dense / Embedding 检索链路。'),
+        );
         page.prepend(root);
 
         for (const kind of ['summary', 'vector']) {
@@ -224,6 +343,10 @@ function mountCard() {
                 if (kind === 'summary' && !event.target.checked) {
                     settings.summary_provider_mode = 'current';
                     settings.summary_connection_profile_id = '';
+                }
+                if (kind === 'vector') {
+                    if (event.target.checked) applyDirectVectorTransport(ctx);
+                    else restorePreviousVectorConfig(ctx, settings);
                 }
                 ctx.saveSettingsDebounced?.();
                 renderDirectApiSettings();
@@ -234,11 +357,24 @@ function mountCard() {
             });
             root.querySelector(`#aum-v55-${kind}-direct-url`)?.addEventListener('change', event => {
                 settings[`${kind}_direct_api_url`] = normalizeUrl(event.target.value);
+                if (kind === 'vector' && settings.vector_direct_api_enabled) applyDirectVectorTransport(ctx);
                 ctx.saveSettingsDebounced?.();
             });
-            root.querySelector(`#aum-v55-${kind}-direct-model`)?.addEventListener('change', event => {
+            root.querySelector(`#aum-v55-${kind}-direct-model`)?.addEventListener('change', async event => {
                 settings[`${kind}_direct_api_model`] = String(event.target.value || '');
-                if (kind === 'summary' && settings.summary_direct_api_enabled) upsertSummaryProfile(ctx, settings);
+                if (kind === 'summary' && settings.summary_direct_api_enabled && settings.summary_direct_api_model) {
+                    upsertSummaryProfile(ctx, settings);
+                }
+                if (kind === 'vector' && settings.vector_direct_api_enabled && settings.vector_direct_api_model) {
+                    applyDirectVectorTransport(ctx);
+                    status(root, 'vector', '模型已应用到 Aetheria Dense 索引，正在验证 Embedding…');
+                    try {
+                        await probeDirectVectorTransport(ctx);
+                        status(root, 'vector', `Embedding 验证成功：${settings.vector_direct_api_model}`, true);
+                    } catch (error) {
+                        status(root, 'vector', String(error?.message || error), false);
+                    }
+                }
                 ctx.saveSettingsDebounced?.();
             });
             root.querySelector(`#aum-v55-${kind}-direct-connect`)?.addEventListener('click', async () => {
@@ -248,26 +384,32 @@ function mountCard() {
                     const url = normalizeUrl(urlEl.value);
                     const key = String(keyEl.value || '').trim();
                     if (!url) throw new Error('请填写接口地址。');
-                    let secretId = settings[`${kind}_direct_api_secret_id`];
+                    let runtimeSecretId = settings[`${kind}_direct_api_secret_id`];
+                    let probeSecretId = kind === 'vector' ? settings.vector_direct_api_probe_secret_id : runtimeSecretId;
                     if (key) {
-                        secretId = await saveCustomSecret(key, `Aetheria ${kind === 'summary' ? 'Summary' : 'Vector'} API`);
-                        settings[`${kind}_direct_api_secret_id`] = secretId || '';
+                        const saved = await saveConnectionSecret(kind, key);
+                        runtimeSecretId = saved.runtimeSecretId;
+                        probeSecretId = saved.probeSecretId;
+                        settings[`${kind}_direct_api_secret_id`] = runtimeSecretId || '';
+                        if (kind === 'vector') settings.vector_direct_api_probe_secret_id = probeSecretId || '';
                         keyEl.value = '';
                     }
-                    if (!secretId) throw new Error('请填写 API Key；保存后密钥会进入 SillyTavern Secret Store。');
+                    if (!runtimeSecretId || !probeSecretId) {
+                        throw new Error('请填写 API Key；密钥保存后只会进入 SillyTavern Secret Store。');
+                    }
                     settings[`${kind}_direct_api_url`] = url;
                     settings[`${kind}_direct_api_enabled`] = true;
                     status(root, kind, '正在连接并拉取模型…');
-                    const models = await fetchOpenAiCompatibleModels(ctx, url, secretId);
-                    updateSelect(root.querySelector(`#aum-v55-${kind}-direct-model`), models, settings[`${kind}_direct_api_model`]);
+                    const models = await fetchOpenAiCompatibleModels(ctx, url, probeSecretId);
                     settings[`${kind}_direct_api_models`] = models;
+                    updateSelect(root.querySelector(`#aum-v55-${kind}-direct-model`), models, settings[`${kind}_direct_api_model`]);
                     if (!settings[`${kind}_direct_api_model`] && models.length === 1) {
                         settings[`${kind}_direct_api_model`] = models[0];
-                        root.querySelector(`#aum-v55-${kind}-direct-model`).value = models[0];
                     }
-                    if (kind === 'summary') upsertSummaryProfile(ctx, settings);
+                    if (kind === 'summary' && settings.summary_direct_api_model) upsertSummaryProfile(ctx, settings);
+                    if (kind === 'vector') applyDirectVectorTransport(ctx);
                     ctx.saveSettingsDebounced?.();
-                    status(root, kind, `连接成功，已拉取 ${models.length} 个模型。`, true);
+                    status(root, kind, `连接成功，已拉取 ${models.length} 个模型。请选择${kind === 'vector' ? ' Embedding' : '总结'}模型。`, true);
                     renderDirectApiSettings();
                 } catch (error) {
                     status(root, kind, String(error?.message || error), false);
@@ -276,7 +418,7 @@ function mountCard() {
             root.querySelector(`#aum-v55-${kind}-direct-refresh`)?.addEventListener('click', async () => {
                 try {
                     const url = normalizeUrl(settings[`${kind}_direct_api_url`]);
-                    const secretId = settings[`${kind}_direct_api_secret_id`];
+                    const secretId = kind === 'vector' ? settings.vector_direct_api_probe_secret_id : settings.summary_direct_api_secret_id;
                     status(root, kind, '正在重新拉取模型…');
                     const models = await fetchOpenAiCompatibleModels(ctx, url, secretId);
                     settings[`${kind}_direct_api_models`] = models;
@@ -302,8 +444,21 @@ function mountCard() {
                 status(root, 'summary', String(error?.message || error), false);
             }
         });
+
+        root.querySelector('#aum-v55-vector-direct-test')?.addEventListener('click', async () => {
+            try {
+                status(root, 'vector', '正在测试真实 Embedding 写入 / 查询…');
+                await probeDirectVectorTransport(ctx);
+                status(root, 'vector', `Embedding 测试成功：${settings.vector_direct_api_model}`, true);
+                notify('success', '独立向量 API 已通过 Embedding 写入与检索测试。');
+            } catch (error) {
+                status(root, 'vector', String(error?.message || error), false);
+            }
+        });
     }
+
     mounted = true;
+    if (settings.vector_direct_api_enabled) applyDirectVectorTransport(ctx);
     renderDirectApiSettings();
     return true;
 }
@@ -326,7 +481,11 @@ export function renderDirectApiSettings() {
         const block = root.querySelector(`[data-kind="${kind}"]`);
         block?.classList.toggle('aum-v55-direct-api-disabled', !settings[`${kind}_direct_api_enabled`]);
         if (settings[`${kind}_direct_api_secret_id`] && settings[`${kind}_direct_api_url`]) {
-            status(root, kind, `已保存连接：${settings[`${kind}_direct_api_url`]}${settings[`${kind}_direct_api_model`] ? ` / ${settings[`${kind}_direct_api_model`]}` : ''}`, true);
+            const suffix = settings[`${kind}_direct_api_model`] ? ` / ${settings[`${kind}_direct_api_model`]}` : '';
+            const active = kind === 'vector' && settings.vector_direct_api_enabled && settings.vector_direct_api_model
+                ? '；已接管 Aetheria Memory / Baseline / Setting Dense transport'
+                : '';
+            status(root, kind, `已保存连接：${settings[`${kind}_direct_api_url`]}${suffix}${active}`, true);
         }
     }
     return true;
