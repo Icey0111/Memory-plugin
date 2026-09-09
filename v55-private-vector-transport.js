@@ -17,8 +17,16 @@ function getSettings(ctx) {
     return ctx?.extensionSettings?.[SETTINGS_KEY] || null;
 }
 
-function normalizeUrl(value) {
-    return String(value || '').trim().replace(/\/+$/, '');
+export function normalizeOpenAiEmbeddingBaseUrl(value) {
+    let url = String(value || '').trim();
+    if (!url) return '';
+    url = url.replace(/[?#].*$/, '').replace(/\/+$/, '');
+    // Users often paste the documented request endpoint (for example
+    // https://api.jina.ai/v1/embeddings). ST's vLLM adapter appends /v1/embeddings itself,
+    // therefore retain only the API base here or the path would be duplicated.
+    url = url.replace(/\/(?:embeddings|models)$/i, '');
+    url = url.replace(/\/chat\/completions$/i, '');
+    return url.replace(/\/+$/, '');
 }
 
 function fnv1a32(value) {
@@ -34,7 +42,7 @@ function fnv1a32(value) {
 function transportConfig(ctx = getContext()) {
     const settings = getSettings(ctx);
     if (!settings?.vector_direct_api_enabled) return null;
-    const apiUrl = normalizeUrl(settings.vector_direct_api_url);
+    const apiUrl = normalizeOpenAiEmbeddingBaseUrl(settings.vector_direct_api_url);
     const model = String(settings.vector_direct_api_model || '').trim();
     const secretId = String(settings.vector_direct_api_secret_id || '').trim();
     if (!apiUrl || !model || !secretId) return null;
@@ -81,8 +89,6 @@ function rewriteVectorRequest(input, init) {
         ...payload,
         collectionId: physicalCollectionId(payload.collectionId, config.signature),
     };
-    // purge only needs the collection identity; every operation that embeds or opens the index
-    // gets the private provider explicitly, independent of ST's global vectors.source.
     if (endpoint !== 'purge') {
         rewritten.source = config.source;
         rewritten.apiUrl = config.apiUrl;
@@ -148,9 +154,6 @@ export function configurePrivateVectorTransport(ctxInput = getContext()) {
         return { active: false, reason: 'not-configured' };
     }
 
-    // The mature core only needs a supported logical provider to run its index lifecycle.
-    // Physical /api/vector requests are rewritten below, so we use the plugin-private source mode
-    // rather than mutating extensionSettings.vectors (which belongs to the host/user globally).
     if (settings.vector_direct_previous_source_mode === undefined) {
         settings.vector_direct_previous_source_mode = settings.vector_source_mode || 'inherit';
     }
