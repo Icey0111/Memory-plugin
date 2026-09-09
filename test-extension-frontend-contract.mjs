@@ -1,76 +1,73 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-function read(path) {
-    return fs.readFileSync(new URL(path, import.meta.url), 'utf8');
-}
+function read(path) { return fs.readFileSync(new URL(path, import.meta.url), 'utf8'); }
 
 const manifest = JSON.parse(read('./manifest.json'));
 assert.equal(manifest.js, 'index-v55-bootstrap.js');
 assert.equal(manifest.hooks?.activate, 'init');
-assert.deepEqual(manifest.dependencies, [], 'Vector Storage must not hard-block extension activation.');
-assert.deepEqual(manifest.optional, [], 'manifest.optional is reserved for Extras modules, not optional extensions.');
+assert.deepEqual(manifest.dependencies, []);
+assert.deepEqual(manifest.optional, []);
 
 const bootstrap = read('./index-v55-bootstrap.js');
-assert.match(bootstrap, /index-v55\.js/, 'bootstrap must keep the v5.5 staged core entry point');
-assert.match(bootstrap, /v55-ui-polish\.js/, 'bootstrap must install the host-facing UI localization layer');
-assert.match(bootstrap, /v55-summary-runtime\.js/, 'bootstrap must install the active hierarchical summary runtime');
+assert.match(bootstrap, /index-v55\.js/);
+assert.match(bootstrap, /v55-ui-polish\.js/);
+assert.match(bootstrap, /v55-summary-runtime\.js/);
+assert.match(bootstrap, /v55-api-connections\.js/, 'bootstrap must install independent API connection settings');
 
 const entry = read('./index-v55.js');
-assert.match(entry, /\/scripts\/extensions\//, 'entry point must resolve its installed extension path dynamically');
-assert.match(entry, /LEGACY_EXTENSION_PATH/, 'entry point must preserve legacy template-path compatibility');
-assert.match(entry, /aum-v55-runtime-dashboard/, 'v5.5 runtime dashboard must be mounted');
-assert.match(entry, /aum-v55-chat-binding/, 'UI normalizer must recognize the chat binding surface');
-assert.match(entry, /aum-v55-entry-editor/, 'UI normalizer must recognize the setting overlay editor');
-assert.match(entry, /buildSceneSummaries/, 'runtime dashboard must expose rebuildable scene-summary visibility');
-assert.match(entry, /aum-v55-settings-window/, 'settings must be converted into a bounded secondary window');
-assert.match(entry, /SETTINGS_PAGES/, 'settings must expose paged navigation');
-assert.match(entry, /aum-v55-settings-tabs/, 'settings pagination must expose a tab navigation surface');
-assert.match(entry, /ResizeObserver/, 'layout must react to the actual extension drawer width');
+assert.match(entry, /\/scripts\/extensions\//);
+assert.match(entry, /LEGACY_EXTENSION_PATH/);
+assert.match(entry, /aum-v55-runtime-dashboard/);
+assert.match(entry, /aum-v55-chat-binding/);
+assert.match(entry, /aum-v55-entry-editor/);
+assert.match(entry, /buildSceneSummaries/);
+assert.match(entry, /aum-v55-settings-window/);
+assert.match(entry, /SETTINGS_PAGES/);
+assert.match(entry, /aum-v55-settings-tabs/);
+assert.match(entry, /ResizeObserver/);
 
 const polish = read('./v55-ui-polish.js');
-assert.match(polish, /v5\.5 聊天设定绑定/, 'dynamic chat-binding UI must be localized');
-assert.match(polish, /v5\.5 设定条目覆盖编辑/, 'dynamic entry-overlay UI must be localized');
-assert.match(polish, /未绑定世界/, 'dynamic empty binding state must be localized');
-assert.match(polish, /无标题 TXT 分段预览/, 'untitled TXT preview must be localized');
-assert.match(polish, /enhanceCollapsibleSection/, 'large dynamic setting cards must be collapsible');
-assert.match(polish, /aum-v55-entry-empty/, 'entry editor must expose an empty-state compact mode');
-assert.match(polish, /textarea\.rows\s*=\s*5/, 'entry editor content box should default to a compact height');
-assert.match(polish, /ext\.size\s*=\s*3/, 'extension revision multi-select should be compact');
-assert.match(polish, /SECTION_STATE_PREFIX/, 'dynamic section collapsed state should persist');
-assert.match(polish, /“设定”页是做什么的？/, 'settings page must explain its user-facing purpose');
-assert.match(polish, /“基线”页是做什么的？/, 'baseline page must explain its user-facing purpose');
-assert.match(polish, /世界本来是什么样/, 'settings help must distinguish stable world setting from memory');
-assert.match(polish, /原本就知道.*剧情中新发生\/新知道/s, 'baseline help must explain prior-known versus newly learned facts');
+assert.match(polish, /v5\.5 聊天设定绑定/);
+assert.match(polish, /v5\.5 设定条目覆盖编辑/);
+assert.match(polish, /未绑定世界/);
+assert.match(polish, /无标题 TXT 分段预览/);
+assert.match(polish, /enhanceCollapsibleSection/);
+assert.match(polish, /aum-v55-entry-empty/);
+assert.match(polish, /textarea\.rows\s*=\s*5/);
+assert.match(polish, /ext\.size\s*=\s*3/);
+assert.match(polish, /SECTION_STATE_PREFIX/);
+assert.match(polish, /“设定”页是做什么的？/);
+assert.match(polish, /“基线”页是做什么的？/);
+assert.match(polish, /世界本来是什么样/);
+assert.match(polish, /原本就知道.*剧情中新发生\/新知道/s);
 
 const summary = read('./v55-summary-runtime.js');
-assert.match(summary, /分层自动总结与模型接口/, 'memory page must expose summary model/API settings');
-assert.match(summary, /summary_level1_every_turns/, 'level-1 summary cadence must be configurable');
-assert.match(summary, /summary_level2_every_l1/, 'level-2 summary cadence must be configurable');
-assert.match(summary, /summary_level3_every_l2/, 'level-3 summary cadence must be configurable');
-assert.match(summary, /ConnectionManagerRequestService/, 'summary model must support an independent Connection Profile');
-assert.match(summary, /constructPrompt/, 'connection-profile summaries must bridge chat and text completion profiles');
-assert.match(summary, /generateQuietPrompt/, 'summary model must be able to inherit the current SillyTavern API');
-assert.match(summary, /CHARACTER_MESSAGE_RENDERED|MESSAGE_RECEIVED/, 'summary scheduling must run after assistant completion events');
-assert.match(summary, /aum-v55-vector-source/, 'memory page must expose the vector provider selector');
-assert.match(summary, /aum-v55-vector-model/, 'memory page must expose the embedding model field');
-assert.match(summary, /Vector Storage/, 'vector API credentials must remain delegated to SillyTavern');
-assert.match(summary, /tree\.dirty/, 'edited history must invalidate derived summaries');
+assert.match(summary, /分层自动总结与模型接口/);
+assert.match(summary, /summary_level1_every_turns/);
+assert.match(summary, /summary_level2_every_l1/);
+assert.match(summary, /summary_level3_every_l2/);
+assert.match(summary, /ConnectionManagerRequestService/);
+assert.match(summary, /constructPrompt/);
+assert.match(summary, /generateQuietPrompt/);
+assert.match(summary, /CHARACTER_MESSAGE_RENDERED|MESSAGE_RECEIVED/);
+assert.match(summary, /tree\.dirty/);
+
+const api = read('./v55-api-connections.js');
+assert.match(api, /独立 API 连接/);
+assert.match(api, /OpenAI 兼容/);
+assert.match(api, /aum-v55-summary-direct-url/);
+assert.match(api, /aum-v55-summary-direct-key/);
+assert.match(api, /aum-v55-summary-direct-model/);
+assert.match(api, /aum-v55-vector-direct-url/);
+assert.match(api, /aum-v55-vector-direct-key/);
+assert.match(api, /aum-v55-vector-direct-model/);
+assert.match(api, /chat-completions\/status/, 'connections must test through the SillyTavern server proxy');
+assert.match(api, /writeSecret/, 'API keys must use SillyTavern Secret Store');
+assert.match(api, /summary_connection_profile_id/, 'direct summary API must feed the summary runtime');
 
 const settings = read('./settings.html');
-for (const id of [
-    'aum-v54-settings',
-    'aum-v54-enabled',
-    'aum-v54-auto-extract',
-    'aum-v54-setting-file',
-    'aum-v54-setting-commit',
-    'aum-v54-rebuild-setting-index',
-    'aum-v54-baseline-gate',
-    'aum-v54-rebuild-baseline',
-    'aum-v54-vector',
-    'aum-v54-status',
-    'aum-v54-diagnostics',
-]) {
+for (const id of ['aum-v54-settings','aum-v54-enabled','aum-v54-auto-extract','aum-v54-setting-file','aum-v54-setting-commit','aum-v54-rebuild-setting-index','aum-v54-baseline-gate','aum-v54-rebuild-baseline','aum-v54-vector','aum-v54-status','aum-v54-diagnostics']) {
     assert.ok(settings.includes(`id="${id}"`), `settings.html missing required frontend control: ${id}`);
 }
 
@@ -79,18 +76,18 @@ assert.match(style, /aum-v55-brand-icon/);
 assert.match(style, /aum-v55-runtime-dashboard/);
 assert.match(style, /aum-v54-section/);
 assert.match(style, /aum-v55-settings-window/);
-assert.match(style, /height:\s*clamp\(/, 'secondary settings window must have a bounded responsive height');
-assert.match(style, /overflow-y:\s*auto/, 'paged settings viewport must scroll internally');
-assert.match(style, /writing-mode:\s*horizontal-tb/, 'button labels must stay horizontal');
-assert.match(style, /word-break:\s*keep-all/, 'normal-width buttons must not break into vertical single-character columns');
-assert.match(style, /aum-v55-compact/, 'narrow drawer layout must collapse grids/buttons deliberately');
-assert.match(style, /grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/, 'top tabs must wrap into a fixed grid instead of horizontal scrolling');
-assert.doesNotMatch(style, /\.aum-v55-settings-tabs[\s\S]{0,400}overflow-x:\s*auto/, 'top tab bar must not create a horizontal scrollbar');
-assert.match(style, /aum-v55-collapsible-section/, 'dynamic cards need compact collapsible styling');
-assert.match(style, /aum-v55-section-body\[hidden\]/, 'collapsed dynamic cards must hide their bodies');
-assert.match(style, /aum-v55-entry-editor\.aum-v55-entry-empty/, 'empty entry editor must hide unusable form fields');
-assert.match(style, /#aum-v55-binding-pin[\s\S]*writing-mode:\s*horizontal-tb\s*!important/s, 'chat binding action must stay horizontal even under host button CSS');
-assert.match(style, /#aum-v55-binding-pin[\s\S]*white-space:\s*nowrap\s*!important/s, 'chat binding action label must not collapse into a vertical character column');
-assert.match(style, /aum-v55-page-help/, 'settings and baseline pages need inline explanatory help cards');
+assert.match(style, /height:\s*clamp\(/);
+assert.match(style, /overflow-y:\s*auto/);
+assert.match(style, /writing-mode:\s*horizontal-tb/);
+assert.match(style, /word-break:\s*keep-all/);
+assert.match(style, /aum-v55-compact/);
+assert.match(style, /grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+assert.doesNotMatch(style, /\.aum-v55-settings-tabs[\s\S]{0,400}overflow-x:\s*auto/);
+assert.match(style, /aum-v55-collapsible-section/);
+assert.match(style, /aum-v55-section-body\[hidden\]/);
+assert.match(style, /aum-v55-entry-editor\.aum-v55-entry-empty/);
+assert.match(style, /#aum-v55-binding-pin[\s\S]*writing-mode:\s*horizontal-tb\s*!important/s);
+assert.match(style, /#aum-v55-binding-pin[\s\S]*white-space:\s*nowrap\s*!important/s);
+assert.match(style, /aum-v55-page-help/);
 
 console.log('extension frontend contract tests passed');
