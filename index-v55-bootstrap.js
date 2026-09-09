@@ -1,11 +1,13 @@
 // Aetheria Unified Memory v5.5 — host bootstrap.
-// Keeps the core staged entry point intact and layers host-facing UI localization/polish on top.
+// Keeps the core staged entry point intact and layers host-facing UI/localization/summary services on top.
 import { init as coreInit } from './index-v55.js';
 import { installV55UiPolish, localizeV55Ui } from './v55-ui-polish.js';
+import { installV55HierarchicalSummary } from './v55-summary.js';
 
 function installUi() {
     installV55UiPolish();
     localizeV55Ui();
+    installV55HierarchicalSummary();
 }
 
 export function init() {
