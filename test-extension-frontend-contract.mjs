@@ -14,7 +14,7 @@ assert.deepEqual(manifest.optional, [], 'manifest.optional is reserved for Extra
 const bootstrap = read('./index-v55-bootstrap.js');
 assert.match(bootstrap, /index-v55\.js/, 'bootstrap must keep the v5.5 staged core entry point');
 assert.match(bootstrap, /v55-ui-polish\.js/, 'bootstrap must install the host-facing UI localization layer');
-assert.match(bootstrap, /v55-summary\.js/, 'bootstrap must install hierarchical summarization');
+assert.match(bootstrap, /v55-summary-runtime\.js/, 'bootstrap must install the active hierarchical summary runtime');
 
 const entry = read('./index-v55.js');
 assert.match(entry, /\/scripts\/extensions\//, 'entry point must resolve its installed extension path dynamically');
@@ -43,15 +43,19 @@ assert.match(polish, /“基线”页是做什么的？/, 'baseline page must ex
 assert.match(polish, /世界本来是什么样/, 'settings help must distinguish stable world setting from memory');
 assert.match(polish, /原本就知道.*剧情中新发生\/新知道/s, 'baseline help must explain prior-known versus newly learned facts');
 
-const summary = read('./v55-summary.js');
+const summary = read('./v55-summary-runtime.js');
 assert.match(summary, /分层自动总结与模型接口/, 'memory page must expose summary model/API settings');
 assert.match(summary, /summary_level1_every_turns/, 'level-1 summary cadence must be configurable');
 assert.match(summary, /summary_level2_every_l1/, 'level-2 summary cadence must be configurable');
 assert.match(summary, /summary_level3_every_l2/, 'level-3 summary cadence must be configurable');
 assert.match(summary, /ConnectionManagerRequestService/, 'summary model must support an independent Connection Profile');
+assert.match(summary, /constructPrompt/, 'connection-profile summaries must bridge chat and text completion profiles');
 assert.match(summary, /generateQuietPrompt/, 'summary model must be able to inherit the current SillyTavern API');
 assert.match(summary, /CHARACTER_MESSAGE_RENDERED|MESSAGE_RECEIVED/, 'summary scheduling must run after assistant completion events');
-assert.match(summary, /向量模型：/, 'summary UI must expose the active vector provider/model source');
+assert.match(summary, /aum-v55-vector-source/, 'memory page must expose the vector provider selector');
+assert.match(summary, /aum-v55-vector-model/, 'memory page must expose the embedding model field');
+assert.match(summary, /Vector Storage/, 'vector API credentials must remain delegated to SillyTavern');
+assert.match(summary, /tree\.dirty/, 'edited history must invalidate derived summaries');
 
 const settings = read('./settings.html');
 for (const id of [
