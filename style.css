@@ -1,0 +1,13 @@
+.aum-v51-panel { margin-top: 0.5rem; }
+.aum-v51-panel .inline-drawer-content { padding: 0.6rem 0.8rem 0.9rem; }
+.aum-v51-muted { opacity: 0.78; margin-top: 0; }
+.aum-v51-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem 0.7rem; margin: 0.6rem 0; }
+.aum-v51-grid label { display: flex; flex-direction: column; gap: 0.2rem; }
+.aum-v51-status { margin: 0.6rem 0; padding: 0.55rem; border: 1px solid var(--SmartThemeBorderColor); border-radius: 6px; font-size: 0.9em; overflow-wrap: anywhere; }
+.aum-v51-buttons { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.6rem 0; }
+.aum-v51-diagnostics { white-space: pre-wrap; max-height: 10rem; overflow: auto; font-size: 0.82em; }
+@media (max-width: 700px) { .aum-v51-grid { grid-template-columns: 1fr; } }
+
+#aum-v54-settings h4 { margin: 0.8em 0 0.35em; }
+#aum-v54-settings small { display: block; opacity: 0.78; margin: 0.25em 0 0.55em; }
+#aum-v54-settings .aum-v54-disabled-option { opacity: 0.55; }
