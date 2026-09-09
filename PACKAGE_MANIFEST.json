@@ -1,0 +1,168 @@
+{
+  "package": "aetheria-unified-memory-v5_4",
+  "version": "5.4.0",
+  "architecture": "autonomous after-AI extraction + canonical current truth + v5.2 hybrid recall + semantic Persona/Character/WorldInfo baseline hard gate",
+  "reference_design": "LittleWhiteBox public docs/repository concepts; independent implementation",
+  "baseline_policy": {
+    "stable_vector_sources": [
+      "persona",
+      "character_description",
+      "character_personality",
+      "character_scenario",
+      "persona_worldbook",
+      "character_worldbook",
+      "chat_worldbook"
+    ],
+    "volatile_lexical_only_sources": [
+      "active_world_info"
+    ],
+    "does_not_scan_all_account_lorebooks": true
+  },
+  "files": [
+    {
+      "name": "ARCHITECTURE.md",
+      "sha256": "64f2286b537d05af10f6a0f31a4cb0f619145dcc5f9b871447988c1845d1c9ee",
+      "bytes": 6729
+    },
+    {
+      "name": "baseline-host.js",
+      "sha256": "1ffa647d08e6160caa7c5e3443769210779f738571c106b55914a3f6e8665af5",
+      "bytes": 6988
+    },
+    {
+      "name": "baseline-index.js",
+      "sha256": "d763578001e671b3dc2e814bde580e492c1038a47543cec0e3e856c85f71c475",
+      "bytes": 11077
+    },
+    {
+      "name": "CHANGELOG.md",
+      "sha256": "9c074b7c5599eb7c6bc41b21eba5311929f5ab1fde0355d847c0f1db156c25c7",
+      "bytes": 1511
+    },
+    {
+      "name": "index.js",
+      "sha256": "4409bbdfee7decb12ccf72a376db9ab98673e5657cfad5d06ec921b83bfc7246",
+      "bytes": 69127
+    },
+    {
+      "name": "LICENSE",
+      "sha256": "622d30c2132216c5abf80a01f09d75c2ab78f351b812f1fa665260cf3cf569e3",
+      "bytes": 1064
+    },
+    {
+      "name": "LITTLEWHITEBOX_REFERENCE.md",
+      "sha256": "8b0484e1ad50047d8fc9eaf3b9b3380440883cd197c7ce4daeba23bff03d26e4",
+      "bytes": 2935
+    },
+    {
+      "name": "manifest.json",
+      "sha256": "e70a4b94d8ad43166386acdf8d0ffb9ed72e6b81dca49d655b652b6e9e842894",
+      "bytes": 433
+    },
+    {
+      "name": "memory-core.js",
+      "sha256": "9af9c5e9b0b838fec9895aab9806642c2cd931b2c512d4467ee08962ad0f4d35",
+      "bytes": 49458
+    },
+    {
+      "name": "memory-extractor.js",
+      "sha256": "e055f5416b3740a25d8390ff12a3440e1506ef986bdec71dc0b3974f6fc61f69",
+      "bytes": 9304
+    },
+    {
+      "name": "memory-op.schema.json",
+      "sha256": "091fb38e0d0c8ef2bf49a893dd5210850fe0fef069af1c69031d9aba218ab434",
+      "bytes": 4696
+    },
+    {
+      "name": "MIGRATION_V52_TO_V53.md",
+      "sha256": "05c46e51586907fe06a86bcd74a27676d35aeb5db3d963867b67548a7f44c0b7",
+      "bytes": 1661
+    },
+    {
+      "name": "MIGRATION_V53_TO_V54.md",
+      "sha256": "248008370b30cdfcad6d4d60542bc0927a50e81c23ce415251614c1f81b38cf9",
+      "bytes": 1950
+    },
+    {
+      "name": "package.json",
+      "sha256": "480344860d4a81aa3d7401385d3302ea73b1a7d4d757f0f976749bb50c038161",
+      "bytes": 628
+    },
+    {
+      "name": "README.md",
+      "sha256": "830cad9db8d5e2b120fcf1c2cffaa14f4114a6a751ca774d43f564ab2f2457ef",
+      "bytes": 7242
+    },
+    {
+      "name": "settings.html",
+      "sha256": "70e5476ff22aafc2283b07166dcaf1548d102256aa7b25907e6f684a860f2670",
+      "bytes": 9124
+    },
+    {
+      "name": "style.css",
+      "sha256": "38717a7441c7f8847b8c1973fbf4b1463de5e42ecb4440dd3aeaa0eaf7f68a8d",
+      "bytes": 984
+    },
+    {
+      "name": "test-baseline-index.mjs",
+      "sha256": "fdcd32c119667d1dce8827bb63d4a4a5be73f7102cb19a459113c56650abcfb5",
+      "bytes": 4675
+    },
+    {
+      "name": "test-index-autopilot-mock.mjs",
+      "sha256": "0664a20e549d3014a85c6910dd25a6d1f4a5e35b63183c9ffc4daaf3b2fa03e5",
+      "bytes": 6075
+    },
+    {
+      "name": "test-index-baseline-mock.mjs",
+      "sha256": "59d7788ec5a2199db89893f950e3863240a3006e79251de65e6b13e346cc6def",
+      "bytes": 5022
+    },
+    {
+      "name": "test-index-baseline-vector-mock.mjs",
+      "sha256": "3641fcc55d8d31980cbbf2c93d7c4d5e75973f9c0fd0e778e18614d8bd4e8c25",
+      "bytes": 3949
+    },
+    {
+      "name": "test-index-migration-fallback.mjs",
+      "sha256": "b1b51745c98a773528836eda8ab134fc01f541a0f68a6d5e10a862c3f4447683",
+      "bytes": 2493
+    },
+    {
+      "name": "test-index-mock.mjs",
+      "sha256": "5d0b39000ef078dac1ba74ed2628fe8a6176b5e5282f439bcf5873c3199f717a",
+      "bytes": 2507
+    },
+    {
+      "name": "test-index-vector-mock.mjs",
+      "sha256": "26e09993bac1b4e888c4873a3487f232675419ac16fc1f441b74c168fe3d6826",
+      "bytes": 2884
+    },
+    {
+      "name": "test-memory-core.mjs",
+      "sha256": "2643280adf63cca5d2d6ba2e74e68e00a34fa5d54f1be4bfbfa1ddfe2de21410",
+      "bytes": 19686
+    },
+    {
+      "name": "test-memory-extractor.mjs",
+      "sha256": "f39ae086201bf25c0b3d77ce8c7d3498157aff64d60020e3d004168d12695053",
+      "bytes": 2084
+    },
+    {
+      "name": "TEST_PLAN.md",
+      "sha256": "138c391283c27e4e47aed2f49144370fea63625b0d56d9335754b30f04984ed9",
+      "bytes": 2107
+    },
+    {
+      "name": "v5.4_开发上下文恢复.md",
+      "sha256": "6e18dd75621c909b2633d4800dbca65e1969e696ee27df8d0981b50a50a8a423",
+      "bytes": 4973
+    },
+    {
+      "name": "v5.4_验收报告.txt",
+      "sha256": "8993a3f071e82c45589c2572ea11fb85acfac713109bf7b89b5c2665b8b19833",
+      "bytes": 4763
+    }
+  ]
+}

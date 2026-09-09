@@ -1,0 +1,80 @@
+艾瑟瑞亚统一向量记忆 v5.4｜验收报告
+====================================================================
+
+版本主题：Semantic Baseline Index + Hard Write Gate
+基线版本：v5.3.0 Autonomous Memory Plugin
+参考项目：
+- https://docs.littlewhitebox.qzz.io/
+- https://github.com/RT15548/LittleWhiteBox
+
+一、核心新增
+--------------------------------------------------------------------
+[PASS] 新增 baseline-index.js：纯函数 Baseline 分块 / 归一化 / 指纹 / 重复判定。
+[PASS] 新增 baseline-host.js：从 SillyTavern Context 保守收集当前 Persona / 角色卡 / 绑定 World Info。
+[PASS] Persona、角色 description/personality/scenario 可进入 Baseline。
+[PASS] Persona lorebook、character lorebook、embedded character_book、chat lore 可进入 Baseline。
+[PASS] 当前 activated World Info 可进入 Baseline hint + lexical hard gate。
+[PASS] 不扫描账号中所有无关 World Info 文件。
+[PASS] group chat 缺少普通 characterId 时保守解析成员，不因空值崩溃。
+[PASS] Baseline fingerprint 确定性；基线文本变化会改变指纹。
+[PASS] Baseline Vector collection 与 Memory Vector collection 分离。
+[PASS] active/keyword World Info 被视作 volatile，不因每轮激活集合变化强制重建稳定 Baseline Vector。
+[PASS] 稳定 Persona/card/bound lorebook 才进入 Baseline Vector corpus。
+[PASS] provider/model fingerprint 变化会使 Baseline 派生向量重建。
+
+二、写入层硬过滤
+--------------------------------------------------------------------
+[PASS] quiet extractor 收到真实 Baseline hint，而不是仅靠宏占位文本。
+[PASS] operations 先 schema validate，再经过 Baseline Gate，之后才能 apply Canonical Memory。
+[PASS] exact/near-exact lexical baseline duplicate 可被阻止。
+[PASS] 向量高相似 + 词法/实体/主题锚点的 paraphrase baseline duplicate 可被阻止。
+[PASS] rejected op 不进入 Canonical Store。
+[PASS] rejection 写入 extraction transaction/debug，便于审计。
+[PASS] event 默认豁免，避免“回到基线住所”等真实事件被误删。
+[PASS] knowledge 默认豁免，保留“角色新知道既有世界事实”的认知变化。
+[PASS] belief/intention/world_delta 默认豁免。
+[PASS] hunger/location.current 等明显动态 current state 不按稳定基线重复处理。
+[PASS] 搬家/失去/获得/解除/转专业等显式变化语义不会被旧基线吞掉。
+
+三、v5.3 / v5.2 回归
+--------------------------------------------------------------------
+[PASS] 主回复仍无需输出 <summary>/<memory_ops>。
+[PASS] after-AI generateQuietPrompt 自动抽取保留。
+[PASS] pair fingerprint duplicate guard 保留。
+[PASS] branch change during quiet extraction commit guard 保留。
+[PASS] forced re-extraction transaction replacement 保留。
+[PASS] edit/swipe/delete replay 语义保留。
+[PASS] Current Truth 与 Vector Recall 仍分离。
+[PASS] Dense + Lexical、CJK bigram/trigram、Entity bypass、Dense Gate 保留。
+[PASS] query variants、Weighted RRF、graph diffusion、MMR-like diversity 保留。
+[PASS] Evidence Gate、动态预算、Recall cooldown 保留。
+[PASS] v5.1/v5.2/v5.3 settings/metadata 迁移链保留。
+[PASS] 不直接 splice / 删除 SillyTavern 真实聊天历史。
+
+四、自动化验证
+--------------------------------------------------------------------
+[PASS] npm run check：memory-core / memory-extractor / baseline-index / baseline-host / index 全部语法通过。
+[PASS] pure memory core：29/29。
+[PASS] autonomous extractor parser/schema/prompt。
+[PASS] Semantic Baseline pure index + host source scoping。
+[PASS] mock interceptor Current Truth 注入。
+[PASS] Hybrid Recall entity-bypass regression。
+[PASS] v5.1 metadata migration + Dense unavailable lexical fallback。
+[PASS] v5.4 autonomous extraction + immediate memory vector sync。
+[PASS] hard baseline write gate + knowledge/event preservation。
+[PASS] semantic baseline vector gate + provider/source fingerprint rebuild。
+
+合计：36 个自动化断言/测试组通过（其中 pure core 29 项）。
+
+五、实现边界
+--------------------------------------------------------------------
+未宣称完成：
+- 真实 SillyTavern 多 provider 实机兼容性；
+- 真实 streaming/regenerate/swipe/edit/delete 并发压力；
+- 1000+/10000+ memory 性能测试；
+- 对所有“全局已选但当前未激活”World Info 的完整稳定索引；
+- Cross-Encoder reranker；
+- 安全无损的 host 级旧楼层 prompt 裁剪；
+- 对 pre-v5.4 历史记忆做不可逆的语义批量删除。
+
+最后一项是故意保守：旧记忆若需清洗，应先做可预览/可回滚 audit，而不是仅凭语义相似度自动删除。

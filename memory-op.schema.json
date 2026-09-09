@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aetheria:unified-vector-memory:v5",
+  "title": "Aetheria Unified Vector Memory Operation v5",
+  "description": "One JSON object per line inside <memory_ops version=\"5\">. Stable IDs, timestamps and embeddings are assigned by the Memory Manager, not the chat model.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "op",
+        "kind",
+        "text"
+      ],
+      "properties": {
+        "op": {
+          "const": "add"
+        },
+        "kind": {
+          "enum": [
+            "event",
+            "state",
+            "knowledge",
+            "belief",
+            "relation",
+            "commitment",
+            "ownership",
+            "intention",
+            "world_delta"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1200
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "maxItems": 20
+        },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "maxItems": 20
+        },
+        "slot": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "closed",
+            "superseded",
+            "invalid"
+          ]
+        },
+        "importance": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "epistemic": {
+          "enum": [
+            "fact",
+            "observed",
+            "reported",
+            "rumor",
+            "belief",
+            "inference",
+            "plan"
+          ]
+        },
+        "known_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "indexable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "update",
+            "close",
+            "supersede",
+            "reinforce",
+            "invalidate"
+          ]
+        },
+        "target_id": {
+          "type": "string"
+        },
+        "target_slot": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "event",
+            "state",
+            "knowledge",
+            "belief",
+            "relation",
+            "commitment",
+            "ownership",
+            "intention",
+            "world_delta"
+          ]
+        },
+        "slot": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1200
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 800
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "maxItems": 20
+        },
+        "topics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "maxItems": 20
+        },
+        "status": {
+          "enum": [
+            "active",
+            "closed",
+            "superseded",
+            "invalid"
+          ]
+        },
+        "importance": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "epistemic": {
+          "enum": [
+            "fact",
+            "observed",
+            "reported",
+            "rumor",
+            "belief",
+            "inference",
+            "plan"
+          ]
+        },
+        "known_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "indexable": {
+          "type": "boolean"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "target_id"
+          ]
+        },
+        {
+          "required": [
+            "target_slot"
+          ]
+        }
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "op",
+        "reason"
+      ],
+      "properties": {
+        "op": {
+          "const": "noop"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 800
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

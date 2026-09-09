@@ -3,7 +3,9 @@
   "loading_order": 95,
   "requires": [],
   "optional": [],
-  "dependencies": ["vectors"],
+  "dependencies": [
+    "vectors"
+  ],
   "js": "index.js",
   "css": "style.css",
   "author": "lin lin + OpenAI",
@@ -11,5 +13,7 @@
   "auto_update": true,
   "minimum_client_version": "1.18.0",
   "generate_interceptor": "aetheriaUnifiedMemoryV54Interceptor",
-  "hooks": {"activate": "init"}
+  "hooks": {
+    "activate": "init"
+  }
 }

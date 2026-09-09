@@ -1,0 +1,10 @@
+{
+  "name": "aetheria-unified-memory-v5_4",
+  "private": true,
+  "version": "5.4.0",
+  "type": "module",
+  "scripts": {
+    "check": "node --check memory-core.js && node --check memory-extractor.js && node --check baseline-index.js && node --check baseline-host.js && node --check index.js",
+    "test": "node test-memory-core.mjs && node test-memory-extractor.mjs && node test-baseline-index.mjs && node test-index-mock.mjs && node test-index-vector-mock.mjs && node test-index-migration-fallback.mjs && node test-index-autopilot-mock.mjs && node test-index-baseline-mock.mjs && node test-index-baseline-vector-mock.mjs"
+  }
+}

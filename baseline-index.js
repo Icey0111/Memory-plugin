@@ -97,6 +97,7 @@ export function splitBaselineText(input, { maxChars = 420, minChars = 18 } = {})
     }
     flush();
 
+    // Merge tiny tail chunks when this does not explode the upper bound.
     const merged = [];
     for (const chunk of chunks) {
         if (merged.length && chunk.length < min && merged[merged.length - 1].length + 1 + chunk.length <= max) {
@@ -178,6 +179,8 @@ export function hasExplicitChangeSignal(text) {
 
 export function isBaselineGateEligible(op) {
     if (!op || op.op !== 'add' || !op.text) return false;
+    // These encode story occurrence, epistemic change, uncertainty, intent, or explicit world change.
+    // They can mention baseline facts without being duplicates of the baseline itself.
     if (['event', 'knowledge', 'belief', 'intention', 'world_delta'].includes(op.kind)) return false;
     if (hasExplicitChangeSignal(op.text)) return false;
     if (op.kind === 'state') {
@@ -196,6 +199,7 @@ function hasSemanticAnchor(op, record) {
         const n = normalizeBaselineText(raw);
         if (n.length >= 2 && hay.includes(n)) return true;
     }
+    // Entity-only anchoring is deliberately stricter because the protagonist's name occurs everywhere.
     const entities = (Array.isArray(op?.entities) ? op.entities : [])
         .map(normalizeBaselineText)
         .filter(n => n.length >= 3);
@@ -225,6 +229,7 @@ export function evaluateBaselineDuplicate(op, recordsInput, {
         if (!record) continue;
         const semanticScore = Number(row?.score ?? row?.similarity ?? semanticThreshold);
         const lexicalScore = baselineLexicalSimilarity(op.text, record.text);
+        // SillyTavern's vector query only returns rows that passed threshold; some providers do not expose score.
         const semPassed = Number.isFinite(semanticScore) ? semanticScore >= semanticThreshold : true;
         if (semPassed && (lexicalScore >= semanticLexicalFloor || hasSemanticAnchor(op, record))) {
             return {
