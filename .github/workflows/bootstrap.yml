@@ -1,4 +1,4 @@
-name: Bootstrap Aetheria Unified Memory v5.4
+name: Publish Aetheria Unified Memory v5.4
 
 on:
   workflow_dispatch:
@@ -6,31 +6,46 @@ on:
     branches:
       - main
     paths:
-      - '.bootstrap/**'
-      - '.github/workflows/bootstrap.yml'
+      - '.bootstrap/READY'
 
 permissions:
   contents: write
 
 jobs:
-  bootstrap:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Restore plugin payload
+      - name: Restore verified plugin payload
         shell: bash
         run: |
           set -euo pipefail
-          cat .bootstrap/payload.part* | tr -d '\r\n' | base64 --decode > /tmp/aetheria-plugin.zip
+          cat .bootstrap/payload.part00 .bootstrap/payload.part01 .bootstrap/payload.part02 .bootstrap/payload.part03 .bootstrap/payload.part04 .bootstrap/payload.part05 .bootstrap/payload.part06 .bootstrap/payload.part07 | tr -d '\r\n' | base64 --decode > /tmp/aetheria-plugin.zip
+          echo "6336a2235aa79b522ea0ed94c74f0c327ebede9a593ea23a619a6d6de353aec5  /tmp/aetheria-plugin.zip" | sha256sum -c -
           unzip -oq /tmp/aetheria-plugin.zip -d .
           rm -f /tmp/aetheria-plugin.zip
 
-      - name: Commit plugin files
+      - name: Validate source package
         shell: bash
         run: |
           set -euo pipefail
+          node --check memory-core.js
+          node --check memory-extractor.js
+          node --check baseline-index.js
+          node --check baseline-host.js
+          node --check index.js
+          npm test
+
+      - name: Remove bootstrap transport and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .bootstrap
+          rm -f .github/workflows/bootstrap.yml
+          rmdir .github/workflows 2>/dev/null || true
+          rmdir .github 2>/dev/null || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
