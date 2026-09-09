@@ -49,29 +49,26 @@
     background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 10%, transparent);
 }
 
+/* Tabs wrap into a compact grid instead of creating a second horizontal scrollbar. */
 #aum-v55-settings-window .aum-v55-settings-tabs {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     flex: 0 0 auto;
-    align-items: center;
     gap: 0.35rem;
     padding: 0.45rem;
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-x: contain;
-    scrollbar-width: thin;
+    overflow: hidden;
     border-bottom: 1px solid var(--SmartThemeBorderColor);
     background: color-mix(in srgb, var(--SmartThemeBlurTintColor, transparent) 28%, transparent);
 }
 
 #aum-v55-settings-window .aum-v55-settings-tab {
-    flex: 0 0 auto;
-    min-width: max-content;
-    width: auto;
+    min-width: 0;
+    width: 100%;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.4rem;
-    padding: 0.4rem 0.65rem;
+    padding: 0.4rem 0.5rem;
     white-space: nowrap;
     writing-mode: horizontal-tb !important;
     word-break: keep-all;
@@ -94,8 +91,11 @@
 }
 
 #aum-v55-settings-window .aum-v55-settings-page[hidden] { display: none !important; }
-#aum-v55-settings-window .aum-v55-settings-page { min-width: 0; }
+#aum-v55-settings-window .aum-v55-settings-page { min-width: 0; overflow-x: hidden; }
 #aum-v55-settings-window .aum-v55-settings-page > :first-child { margin-top: 0; }
+#aum-v55-settings-window select,
+#aum-v55-settings-window textarea,
+#aum-v55-settings-window input { max-width: 100%; min-width: 0; box-sizing: border-box; }
 
 #aum-v55-settings-window .aum-v55-page-intro {
     display: grid;
@@ -118,14 +118,12 @@
     word-break: normal;
     overflow-wrap: anywhere;
 }
-#aum-v55-settings-window.aum-v55-compact .aum-v55-settings-tab {
-    width: auto;
-    min-width: max-content;
-    white-space: nowrap;
-}
+#aum-v55-settings-window.aum-v55-compact .aum-v55-settings-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#aum-v55-settings-window.aum-v55-compact .aum-v55-settings-tab { min-width: 0; width: 100%; }
 
 @container (max-width: 560px) {
     #aum-v55-settings-window .aum-v51-grid { grid-template-columns: 1fr; }
+    #aum-v55-settings-window .aum-v55-settings-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-height: 720px) {
