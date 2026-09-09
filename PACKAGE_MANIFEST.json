@@ -84,6 +84,15 @@
     "scene_evidence_expansion": true,
     "scene_evidence_cap_chars": 1200
   },
+  "frontend_policy": {
+    "dynamic_extension_path_resolution": true,
+    "vector_extension_is_hard_dependency": false,
+    "settings_drawer_brand_icon": true,
+    "v55_runtime_dashboard": true,
+    "chat_binding_ui": true,
+    "setting_entry_overlay_ui": true,
+    "frontend_contract_test": "test-extension-frontend-contract.mjs"
+  },
   "files": [
     {
       "name": "ARCHITECTURE.md",
@@ -182,8 +191,8 @@
     },
     {
       "name": "index-v55.js",
-      "sha256": "fad1edc2b2625c6a9c3783055c27c9078e1cc6f46de8a0c062698d2535d333d1",
-      "bytes": 1337
+      "sha256": "8069c455c0d6bed2519127c4d7322844bee451cc1c87e3e3cba231ec95712bcb",
+      "bytes": 12666
     },
     {
       "name": "index.js",
@@ -192,8 +201,8 @@
     },
     {
       "name": "manifest.json",
-      "sha256": "0581779657cccbf77d3949860e13f2fcbe0473d139e81a1d598f720948997552",
-      "bytes": 442
+      "sha256": "4f1cb5824a087a96c5fab56766d5afdf90ace472d69a1dd8278a80dbbf9b77bb",
+      "bytes": 425
     },
     {
       "name": "memory-core.js",
@@ -212,8 +221,8 @@
     },
     {
       "name": "package.json",
-      "sha256": "014879b601c03eedd0864e2c3815b8a494108647c1e842ed24e677c0e0b8dc33",
-      "bytes": 2000
+      "sha256": "501fbde1395c3549ef408654624293a270226d571300a92ac43aed2c3fdd8383",
+      "bytes": 2098
     },
     {
       "name": "setting-importer.js",
@@ -247,8 +256,8 @@
     },
     {
       "name": "style.css",
-      "sha256": "726ab848fac97b815a9dbcff737c78173bc01266631e47b211f6f8f7b12b32bb",
-      "bytes": 1078
+      "sha256": "a7cef0f3d0b8fda075e8cd073720bbe8338890d05ead9ffcf399a386097663ed",
+      "bytes": 1866
     },
     {
       "name": "test-baseline-calibration.mjs",
@@ -274,6 +283,11 @@
       "name": "test-depth-normalization.mjs",
       "sha256": "2973268901b279a6e0229149abd9770c8e58e8cc4aae1ca8780c1490537b24c0",
       "bytes": 674
+    },
+    {
+      "name": "test-extension-frontend-contract.mjs",
+      "sha256": "b4c9242608cea88d95229dc6e6aecb1c90b586645dcb49174ac10db59929d062",
+      "bytes": 1912
     },
     {
       "name": "test-index-autopilot-mock.mjs",
@@ -442,5 +456,5 @@
     }
   ],
   "development_iteration": "v5.5-iteration-08",
-  "development_scope": "Iteration 08 closes the two I07 release-blocking defects (provenance origin order, quiet/impersonate/disabled prompt re-injection) and implements the remaining proposal items: explicit role-private setting schema + actor-filtered retrieval, condition/exception-aware chunking, baseline write-gate calibration samples and entity-disjoint guard, same-name entity disambiguation, failed-refresh reuse of the active vector profile, scene evidence expansion, depth null/blank normalization, third-party quiet policy and dead baseline-hint removal. Commit H real SillyTavern acceptance is next."
+  "development_scope": "Iteration 08 closes the two I07 release-blocking defects, implements the remaining proposal items, and now includes host-facing frontend stabilization: dynamic installed-path resolution, no hard Vector Storage dependency, normalized v5.5 UI mounting, a runtime dashboard with scene rebuild/status controls, and a frontend contract test. Commit H real TauriTavern/SillyTavern acceptance is next."
 }
