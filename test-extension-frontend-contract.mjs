@@ -37,6 +37,10 @@ assert.match(polish, /aum-v55-entry-empty/, 'entry editor must expose an empty-s
 assert.match(polish, /textarea\.rows\s*=\s*5/, 'entry editor content box should default to a compact height');
 assert.match(polish, /ext\.size\s*=\s*3/, 'extension revision multi-select should be compact');
 assert.match(polish, /SECTION_STATE_PREFIX/, 'dynamic section collapsed state should persist');
+assert.match(polish, /“设定”页是做什么的？/, 'settings page must explain its user-facing purpose');
+assert.match(polish, /“基线”页是做什么的？/, 'baseline page must explain its user-facing purpose');
+assert.match(polish, /世界本来是什么样/, 'settings help must distinguish stable world setting from memory');
+assert.match(polish, /原本就知道.*剧情中新发生\/新知道/s, 'baseline help must explain prior-known versus newly learned facts');
 
 const settings = read('./settings.html');
 for (const id of [
@@ -70,5 +74,8 @@ assert.doesNotMatch(style, /\.aum-v55-settings-tabs[\s\S]{0,400}overflow-x:\s*au
 assert.match(style, /aum-v55-collapsible-section/, 'dynamic cards need compact collapsible styling');
 assert.match(style, /aum-v55-section-body\[hidden\]/, 'collapsed dynamic cards must hide their bodies');
 assert.match(style, /aum-v55-entry-editor\.aum-v55-entry-empty/, 'empty entry editor must hide unusable form fields');
+assert.match(style, /#aum-v55-binding-pin[\s\S]*writing-mode:\s*horizontal-tb\s*!important/s, 'chat binding action must stay horizontal even under host button CSS');
+assert.match(style, /#aum-v55-binding-pin[\s\S]*white-space:\s*nowrap\s*!important/s, 'chat binding action label must not collapse into a vertical character column');
+assert.match(style, /aum-v55-page-help/, 'settings and baseline pages need inline explanatory help cards');
 
 console.log('extension frontend contract tests passed');
