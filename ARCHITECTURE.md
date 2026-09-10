@@ -490,6 +490,67 @@ and prompt/completion/embed characters with estimated tokens (chars / 4). `v55-s
 fixed hard cases (数字 / 否定 / 条件 / 承诺 / 偏好变化 / 跨轮) through the production fusion path (lexical +
 temporal + structured RRF + MMR) and records 6/6 with `MRR 0.750` as the regression floor.
 
+
+### Summary cadence and floor folding (冷原文)
+
+The hierarchy summarizes on a fixed cadence rather than on every turn: one **Level-1 summary per ten
+completed floors** (`summary_level1_every_turns`), one Level-2 per `summary_level2_every_l1` Level-1
+summaries, one Level-3 per `summary_level3_every_l2` Level-2 summaries. A Level-1 batch input is capped
+by `summary_source_max_chars` so a ten-floor batch cannot overflow the summarizer's context.
+
+A floor a Level-1 summary already covers then leaves the model prompt:
+
+```text
+floor completes
+   -> collectCompletedDialogueTurns (folded rows still count)
+   -> Level-1 batch of 10 -> processSummaryHierarchy -> hierarchical_summaries.level1
+   -> foldSummarizedFloors
+        message.is_system = true                  (SillyTavern drops it from the prompt)
+        message.extra.aetheria_v55_folded = {...} (this plugin's marker + audit fingerprint)
+        store.floor_folds.hidden[index] = {...}   (reversible, index-shift safe)
+   -> the Level-1/2/3 summaries carry the floor instead
+```
+
+SillyTavern expresses exactly one thing with `is_system` — "not part of the prompt" — and its own
+`/hide` command uses the same flag. The extension therefore separates the two meanings everywhere it
+reads chat history. `memory-core.js` owns the classification:
+
+```text
+isFoldedRow(row)    -> is_system && extra.aetheria_v55_folded   (ours: still dialogue)
+isHostHiddenRow(row)-> is_system && !isFoldedRow(row)           (a /hide: not remembered)
+isDialogueRow(row)  -> !isHostHiddenRow(row)                    (the predicate every reader uses)
+```
+
+A folded row stays load-bearing for extraction, dialogue-pair fingerprints, branch identity
+(`deriveBranchId`) and on-demand evidence expansion, so folding never rebinds an identity or drops a
+floor from the memory system.
+
+Three invariants make the feature safe:
+
+- only a floor covered by an existing Level-1 summary is folded, and the newest floor is never folded
+  (SillyTavern's swipes act on the last message, and its own hide helper refreshes the swipe buttons
+  precisely because hiding the tail breaks them);
+- a summary-tree reset restores the raw text **before** it drops the tree, so nothing is ever missing
+  from the prompt with nothing standing in for it;
+- folding is idempotent, audited per row with a content fingerprint, and reversible at any time from the
+  settings panel or `unfoldAllFloors()`.
+
+Because the folded floors are no longer in the prompt, the injected summary block is their only surviving
+record. `format()` therefore gives each level a share of the summary sub-budget, fills it newest-first,
+and keeps the lower levels in even after a higher level consumed them — the opposite of the right
+behaviour when the raw floors are still present.
+
+### Summary-tree ownership across a store replacement
+
+The chat-metadata ownership guard keeps module-owned state when a Canonical replay replaces the whole
+store object, but it does so by **cloning** that state into the replacement. Anything holding a
+reference to the old object is orphaned the moment the replay lands. `processSummaryHierarchy` runs
+model calls between mutations, so it re-reads the tree out of chat metadata after every await instead of
+holding the reference it started with. A batch whose `processed_turn_ids` record was lost along with the
+store is re-summarized rather than trusted. The guard likewise only treats a non-`undefined` incoming
+value as authoritative, because `normalizeStore` spreads its input and can surface an omitted auxiliary
+key as an own property holding `undefined`.
+
 ### Reliability hardening (Iteration 13)
 
 The same iteration closes reliability defects across the runtime: privacy filtering now matches raw and
@@ -520,7 +581,8 @@ transactions and chat正文 are not stored in them.
 
 ### Tests
 
-`npm run check` passes and 47 offline test suites pass, including the new
-`test-v55-reliability-fixes.mjs`, `test-v55-evidence.mjs`, `test-v55-temporal.mjs` and
-`test-retrieval-hard-cases.mjs`.
+`npm run check` passes and every offline suite passes, including `test-v55-reliability-fixes.mjs`,
+`test-v55-evidence.mjs`, `test-v55-temporal.mjs`, `test-retrieval-hard-cases.mjs`, and the folding
+suites `test-v55-floor-fold.mjs`, `test-v55-summary-dirty.mjs` and
+`test-v55-injection-host-fresh-context.mjs`.
 

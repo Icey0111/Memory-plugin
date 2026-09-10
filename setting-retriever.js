@@ -6,6 +6,7 @@
 // separate retrieval channels.
 
 import { normalizeBaselineText } from './baseline-index.js';
+import { isDialogueRow } from './memory-core.js';
 
 export const SETTING_RETRIEVER_VERSION = '5.5-e1';
 
@@ -37,11 +38,11 @@ function uniqueStrings(values, limit = 24) {
 }
 
 function isAssistantRow(row) {
-    return Boolean(row && row.is_user !== true && !row.is_system && cleanText(row.mes, 10_000));
+    return Boolean(row && row.is_user !== true && isDialogueRow(row) && cleanText(row.mes, 10_000));
 }
 
 function isUserRow(row) {
-    return Boolean(row && row.is_user === true && !row.is_system && cleanText(row.mes, 10_000));
+    return Boolean(row && row.is_user === true && isDialogueRow(row) && cleanText(row.mes, 10_000));
 }
 
 function latestIndex(rows, predicate, before = Infinity) {

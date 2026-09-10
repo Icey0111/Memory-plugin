@@ -267,3 +267,94 @@ Two defects appeared that the offline suites cannot reach, plus one confirmation
 The main connection in that session was also configured with a 300-token budget for a reasoning model, so
 its visible replies were truncated to a few words. That is a host-side configuration issue rather than a
 plugin defect, but it is what starved extraction before fix 2.
+
+
+## Hotfix 4 — summarize every ten floors, then fold them out of the prompt
+
+The hierarchy now runs on a fixed cadence — one Level-1 summary per **ten completed floors** — and a
+floor a Level-1 summary already covers **leaves the model prompt**. The summary stands in for it, the
+original wording stays in the chat file, in the transcript (collapsed) and in the cold snapshot, and the
+whole thing is reversible from the settings panel.
+
+### How a floor leaves the prompt
+
+SillyTavern expresses exactly one thing with `message.is_system`: "not part of the prompt". Its own
+`/hide` command sets the same flag. Folding is therefore that flag plus a plugin-owned marker in
+`message.extra`, and every reader of chat history in the extension distinguishes the two:
+
+```text
+isFoldedRow(row)     is_system && extra.aetheria_v55_folded    ours, still dialogue
+isHostHiddenRow(row) is_system && !isFoldedRow(row)            a /hide, not remembered
+isDialogueRow(row)   !isHostHiddenRow(row)                     what every reader uses
+```
+
+A folded floor stays load-bearing for extraction, for the dialogue-pair fingerprints, for branch identity
+(`deriveBranchId`) and for on-demand evidence expansion. Without that distinction the memory system
+would forget the very floors it had just summarized, and every fingerprint would rebind the moment a
+floor was folded. Readers updated: `memory-core`, `index.js`, `v55-runtime`, `v55-consistency`,
+`v55-finalizer`, `v55-evidence`, `setting-retriever`.
+
+### Live verification — 42 floors, real provider, real Jina
+
+One scripted 42-floor conversation on a dedicated test character, driven over WebView2 CDP against the
+real `agy-gemini-3.7-flash` connection profile and real Jina embeddings. Every floor was pushed one at a
+time (user turn, assistant turn) and awaited until its extraction landed.
+
+| turn | Level-1 | Level-2 | Level-3 | folded messages | prompt-visible messages |
+|---|---|---|---|---|---|
+| 1–9 | 0 | 0 | 0 | 0 | grows 3 → 19 |
+| 10 | **1** | 0 | 0 | **17** | **4** |
+| 11–20 | 1 | 0 | 0 | 17 | grows 6 → 24 |
+| 21 | **2** | **1** | 0 | **37** | **6** |
+| 30 | **3** | 1 | 0 | **57** | **4** |
+| 40 | **4** | 1 | 0 | 57 | 24 |
+| 41 | 4 | **2** | 0 | 57 | 26 |
+| 42 | 4 | 2 | **1** | **77** | **8** |
+
+Final state: 85 chat rows, **77 folded, 8 prompt-visible**, `l1=4 / l2=2 / l3=1` with
+`processed_turn_ids=40` and `last_error: null`, 53 memories, 43 extraction transactions, four fold runs,
+hidden indexes `0..76` contiguous.
+
+Each Level-1 summary carries exactly `n=10` source turns; each Level-2 carries `n=2` Level-1 ids; the
+Level-3 carries `n=2` Level-2 ids. The Level-3 output is a structured long-arc skeleton (core cast and
+relationships, the merchant guild's scheme, the well, the escape plan) rather than a paraphrase.
+
+### The prompt that actually reaches the model
+
+Calling the installed interceptor with the live chat produced a Reference block of 3697 characters at
+`position=1, depth=4` and a Current State block of 1452 characters at `position=1, depth=1`. Five
+verbatim probes drawn from folded floors (`把门闩落下两道`, `铜碟收进木匣`, `舵轮下面有个暗格`, …)
+**do not appear anywhere in the injected text**, while the folded content is present in summarized form:
+the Level-2 stage summaries and the Level-1 recent summaries describe the gray-cough outbreak, Su Wan's
+disappearance, the brass key changing hands and the inn being sealed — i.e. exactly the floors that are
+no longer in the prompt.
+
+Because a folded floor has no raw representation left, the injected summary shape had to change. The old
+`format()` injected the newest three or five items per level and dropped every item a higher level had
+consumed, which on a forty-floor chat collapsed the whole injection to a single skeleton paragraph. Each
+level now receives a share of the summary sub-budget and is filled newest-first, and while floors are
+folded the lower levels stay in even after a higher level consumed them.
+
+### Defects the live run exposed
+
+1. **The summary tree was orphaned from the store that reached disk.** The ownership guard preserves
+   module-owned state across a Canonical replay by *cloning* it into the replacement store object, so a
+   tree reference captured before a model call is detached from then on. The run summarized correctly in
+   memory and reloaded from disk with `l1=0` while the folded rows survived. `processSummaryHierarchy`
+   now re-reads the tree from chat metadata before every mutation.
+2. **An auxiliary key present as `undefined` erased owned state.** `mergeAuxiliaryChatState` treated
+   "property present" as authoritative and `normalizeStore` spreads its input, so a store that merely
+   omitted `hierarchical_summaries` could still carry it as `undefined`. Only non-`undefined` values are
+   authoritative now.
+
+### Deliberate bounds
+
+- Only a floor a Level-1 summary covers is folded, and the newest floor is never folded: SillyTavern's
+  swipes act on the last message, and its own hide helper refreshes the swipe buttons precisely because
+  hiding the tail breaks them.
+- A summary-tree reset restores the raw text **before** it drops the tree, so nothing is ever missing
+  from the prompt with nothing standing in for it.
+- Folding is idempotent, audited per row in `store.floor_folds` with a content fingerprint so a shifted
+  chat cannot unhide the wrong message, and reversible from the settings panel or `unfoldAllFloors()`.
+- The transcript shows a folded floor collapsed (two lines, dimmed, expanding on hover) rather than
+  removed, so an accidental fold is visible and the original wording stays one hover away.

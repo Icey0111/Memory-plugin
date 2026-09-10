@@ -14,6 +14,7 @@ import {
     fnv1a32Runtime,
     stampRuntimeIdentity,
 } from './v55-runtime.js';
+import { isDialogueRow } from './memory-core.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -357,7 +358,7 @@ export function injectSceneEvidenceBlock(referenceBlock, evidenceBlock) {
 
 function latestQuery(chatInput) {
     const rows = Array.isArray(chatInput) ? chatInput : [];
-    return rows.filter(row => row && !row.is_system).slice(-3).map(row => clean(row.mes, 5000)).filter(Boolean).join('\n');
+    return rows.filter(row => row && isDialogueRow(row)).slice(-3).map(row => clean(row.mes, 5000)).filter(Boolean).join('\n');
 }
 
 function actorIdentity(ctx, store) {

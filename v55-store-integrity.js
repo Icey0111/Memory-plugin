@@ -49,12 +49,30 @@ export function mergeAuxiliaryChatState(previousInput, nextInput) {
 
     for (const [key, value] of Object.entries(previous)) {
         if (CANONICAL_OWNED_KEYS.has(key) || DERIVED_DROP_KEYS.has(key)) continue;
-        // Explicit null / empty / replacement values in the incoming store are authoritative.
-        // We only restore fields that a Canonical replay omitted entirely.
-        if (Object.prototype.hasOwnProperty.call(next, key)) continue;
+        // Explicit null / empty / replacement values in the incoming store are authoritative; a key
+        // that is merely absent, or present holding undefined, is not. normalizeStore spreads its
+        // input, so an omitted auxiliary field can still arrive as an own property set to undefined,
+        // and treating that as authoritative erased independently-owned state such as the summary tree
+        // and the floor-fold audit.
+        if (next[key] !== undefined) continue;
         out[key] = clone(value);
     }
     return out;
+}
+
+/**
+ * Write a Canonical store without dropping independently-owned state.
+ *
+ * The property guard below only exists on the metadata object it was installed on, and SillyTavern
+ * loads a chat by *assigning a brand-new* `chat_metadata` object (`chat_metadata = chatHeader.chat_metadata`)
+ * — which no plugin can intercept. A store write that runs before the guard is re-installed would then
+ * replace the store wholesale and take the summary tree and the floor-fold audit with it. Merging at
+ * the write site makes the guarantee independent of whether the guard happens to be installed yet.
+ */
+export function writeMergedChatStore(chatMetadata, key, store) {
+    if (!isObject(chatMetadata)) return false;
+    chatMetadata[key] = mergeAuxiliaryChatState(chatMetadata[key], store);
+    return true;
 }
 
 export function installMetadataIntegrityForContext(ctx) {
@@ -96,6 +114,9 @@ export function installV55StoreIntegrity(getContext = () => globalThis.SillyTave
         const events = ctx.eventTypes || {};
         if (events.CHAT_CHANGED) {
             ctx.eventSource.on(events.CHAT_CHANGED, () => {
+                // Synchronous first: a new chat_metadata object is unguarded until this runs, and a
+                // store write from another handler in the same tick would otherwise be unguarded too.
+                installMetadataIntegrityForContext(getContext?.());
                 setTimeout(() => installMetadataIntegrityForContext(getContext?.()), 0);
             });
         }

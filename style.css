@@ -235,3 +235,29 @@
     #aum-v54-settings .aum-v54-section.aum-v55-collapsible-section { padding: 0 !important; }
     #aum-v55-settings-window { height: min(66vh, 620px); }
 }
+
+/* v5.5 floor folding — a floor a Level-1 summary already covers keeps its place in the transcript but
+   leaves the model prompt. It is collapsed rather than removed so the original wording stays one
+   hover away, and so an accidental fold is obvious and reversible. */
+.mes.aum-v55-folded {
+    opacity: 0.62;
+}
+
+.mes.aum-v55-folded .mes_text {
+    max-height: 2.9em;
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+
+.mes.aum-v55-folded:hover,
+.mes.aum-v55-folded:focus-within {
+    opacity: 1;
+}
+
+.mes.aum-v55-folded:hover .mes_text,
+.mes.aum-v55-folded:focus-within .mes_text {
+    max-height: none;
+    mask-image: none;
+    -webkit-mask-image: none;
+}

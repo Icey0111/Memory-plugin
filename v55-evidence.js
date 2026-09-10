@@ -12,7 +12,7 @@
 // The host parses that block, resolves it against the live chat first and the cold snapshot
 // second, and returns bounded original-text evidence for the next generation.
 
-import { computeDialoguePairFingerprint, lexicalSearchMemories, normalizeStore } from './memory-core.js';
+import { computeDialoguePairFingerprint, isDialogueRow, lexicalSearchMemories, normalizeStore } from './memory-core.js';
 
 export const EVIDENCE_VERSION = '5.5-ev1';
 export const LOOKUP_MARKER = '【查阅记忆】';
@@ -91,7 +91,7 @@ export function getColdTurn(storeInput, sourceKey) {
 function readLivePair(chat, assistantIndex, expectedHash) {
     const rows = Array.isArray(chat) ? chat : [];
     const assistant = rows[assistantIndex];
-    if (!assistant || assistant.is_user || assistant.is_system) return null;
+    if (!assistant || assistant.is_user || !isDialogueRow(assistant)) return null;
     const pair = computeDialoguePairFingerprint(rows, assistantIndex);
     if (!pair) return null;
     if (expectedHash !== null && expectedHash !== undefined && Number(pair.hash) !== Number(expectedHash)) return null;

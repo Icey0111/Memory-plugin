@@ -16,6 +16,7 @@ import {
     getIndexableMemories,
     lexicalSearchMemories,
     isMemorySettled,
+    isDialogueRow,
     normalizeStore,
     replayStoreFromExtractions,
     computeDialoguePairFingerprint,
@@ -69,6 +70,7 @@ import {
 import { assembleGenerationContext } from './context-assembler.js';
 import { deriveActorIdentity } from './v55-runtime.js';
 import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
+import { writeMergedChatStore } from './v55-store-integrity.js';
 import { formatMetrics, recordEmbeddingCall, recordModelCall, resetMetrics } from './v55-metrics.js';
 import { formatSelfCheck, runRetrievalSelfCheck } from './v55-selfcheck.js';
 
@@ -382,13 +384,16 @@ function getStore(ctx) {
     const source = ctx.chatMetadata?.[METADATA_KEY] ?? legacySource;
     const normalized = normalizeStore(source);
     if (!ctx.chatMetadata) return normalized;
-    ctx.chatMetadata[METADATA_KEY] = normalized;
+    writeMergedChatStore(ctx.chatMetadata, METADATA_KEY, normalized);
     return normalized;
 }
 
 function setStore(ctx, store, save = true) {
     if (!ctx.chatMetadata) return;
-    ctx.chatMetadata[METADATA_KEY] = normalizeStore(store);
+    // Merge rather than assign: a Canonical replay must never erase the v5.5 tree and fold audit, and
+    // the ownership guard cannot be relied on here because SillyTavern replaces chat_metadata wholesale
+    // when it loads a chat.
+    writeMergedChatStore(ctx.chatMetadata, METADATA_KEY, normalizeStore(store));
     if (save) ctx.saveMetadataDebounced?.();
     scheduleStatusUpdate();
 }
@@ -777,7 +782,9 @@ async function filterOperationsAgainstBaseline(ctx, ops, preparedHost, pluginDed
 }
 
 function isAssistantMessage(message) {
-    return Boolean(message && message.is_user !== true && !message.is_system && String(message.mes ?? '').trim());
+    // Folded rows are excluded from the prompt but remain dialogue: dropping them here would make
+    // extraction and its dialogue-pair fingerprints change identity the moment a floor is folded.
+    return Boolean(message && message.is_user !== true && isDialogueRow(message) && String(message.mes ?? '').trim());
 }
 
 function findLatestAssistantIndex(chat) {
@@ -796,7 +803,7 @@ function buildRecentContextForExtraction(chat, assistantIndex, maxMessages = 4) 
     const lines = [];
     for (let i = start; i < assistantIndex - 1; i++) {
         const msg = rows[i];
-        if (!msg || msg.is_system) continue;
+        if (!msg || !isDialogueRow(msg)) continue;
         const text = stripSummaryForQuery(String(msg.mes ?? '')).trim();
         if (!text) continue;
         lines.push(`${msg.is_user ? '[USER]' : '[ASSISTANT]'} ${text}`);
@@ -1147,7 +1154,7 @@ function countAssistantTurns(chat, upToIndex) {
     const rows = Array.isArray(chat) ? chat : [];
     let count = 0;
     for (let i = 0; i <= upToIndex && i < rows.length; i++) {
-        if (rows[i] && !rows[i].is_user && !rows[i].is_system) count += 1;
+        if (rows[i] && !rows[i].is_user && isDialogueRow(rows[i])) count += 1;
     }
     return count;
 }

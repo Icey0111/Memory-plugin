@@ -598,12 +598,50 @@ export function replayStoreFromChat(chat) {
 }
 
 
+/**
+ * Extra flag this plugin stamps on a chat row it folded into a hierarchical summary.
+ *
+ * Folding marks the row `is_system = true` so SillyTavern drops it from the model prompt, which is
+ * the only prompt-visible effect the host offers. That flag is simultaneously how the host expresses
+ * "the user hid this with /hide", so every plugin-side reader of chat history has to tell the two
+ * apart: a folded row is still real dialogue for extraction, identity and evidence purposes, it is
+ * only gone from the prompt. Without this distinction the memory system would forget the very turns
+ * it just summarized.
+ */
+export const FOLD_EXTRA_KEY = 'aetheria_v55_folded';
+
+/** True only for rows this plugin folded out of the prompt (as opposed to a host /hide). */
+export function isFoldedRow(row) {
+    return Boolean(row && row.is_system === true && row.extra && typeof row.extra === 'object' && row.extra[FOLD_EXTRA_KEY]);
+}
+
+/** True when a row is absent from the model prompt for any reason, ours or the host's. */
+export function isPromptHiddenRow(row) {
+    return Boolean(row && row.is_system === true);
+}
+
+/**
+ * True when the *host* hid a row and this plugin did not — SillyTavern's own /hide, or an inserted
+ * system note. Those rows are absent from the prompt and were never meant to be remembered.
+ */
+export function isHostHiddenRow(row) {
+    return Boolean(row && row.is_system === true && !isFoldedRow(row));
+}
+
+/**
+ * True when a row still counts as dialogue for the memory system. Folded rows do; rows the user hid
+ * with the host's own /hide command do not, because the user never meant those to be remembered.
+ */
+export function isDialogueRow(row) {
+    return Boolean(row && !isHostHiddenRow(row));
+}
+
 /** Return the nearest preceding user message for an assistant message index. */
 export function findPrecedingUserMessage(chat, assistantIndex) {
     const rows = Array.isArray(chat) ? chat : [];
     for (let i = Number(assistantIndex) - 1; i >= 0; i--) {
         const msg = rows[i];
-        if (!msg || msg.is_system) continue;
+        if (!msg || !isDialogueRow(msg)) continue;
         if (msg.is_user === true) return { index: i, text: String(msg.mes ?? '') };
         // Stop at another assistant message: this keeps the source pair local and deterministic.
         if (msg.is_user === false) break;
@@ -618,7 +656,7 @@ export function findPrecedingUserMessage(chat, assistantIndex) {
 export function computeDialoguePairFingerprint(chat, assistantIndex) {
     const rows = Array.isArray(chat) ? chat : [];
     const assistant = rows[assistantIndex];
-    if (!assistant || assistant.is_user === true || assistant.is_system) return null;
+    if (!assistant || assistant.is_user === true || !isDialogueRow(assistant)) return null;
     const user = findPrecedingUserMessage(rows, assistantIndex);
     const userText = stripSummaryForQuery(user.text);
     const assistantText = stripSummaryForQuery(String(assistant.mes ?? ''));
@@ -731,7 +769,7 @@ export function getActiveMemories(storeInput, queryText = '', maxItems = 12) {
 
 export function buildQueryText(chat, queryMessages = 3, maxChars = 8000) {
     const messages = (Array.isArray(chat) ? chat : [])
-        .filter(m => !m?.is_system)
+        .filter(m => isDialogueRow(m))
         .map(m => ({ ...m, clean: stripSummaryForQuery(m?.mes) }))
         .filter(m => m.clean)
         .slice(-Math.max(1, Number(queryMessages) || 1));
@@ -880,7 +918,7 @@ export function filterRecalledMemories(storeInput, vectorMetadata, options = {})
 /** Build two dense query views: immediate focus and broader recent context. */
 export function buildQueryVariants(chat, queryMessages = 3, maxChars = 8000) {
     const clean = (Array.isArray(chat) ? chat : [])
-        .filter(m => !m?.is_system)
+        .filter(m => isDialogueRow(m))
         .map(m => ({ ...m, clean: stripSummaryForQuery(m?.mes) }))
         .filter(m => m.clean);
     if (!clean.length) return [];

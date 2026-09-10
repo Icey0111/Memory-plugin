@@ -18,6 +18,7 @@ import {
     selectSceneSummaries,
 } from './v55-finalizer.js';
 import { sanitizeStoreForActor } from './v55-privacy.js';
+import { isDialogueRow } from './memory-core.js';
 import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
 import { formatEvidenceBlock, resolveMemoryLookupRequests } from './v55-evidence.js';
@@ -36,7 +37,7 @@ function clean(value, max = 10_000) {
 
 function latestQuery(chatInput) {
     return (Array.isArray(chatInput) ? chatInput : [])
-        .filter(row => row && !row.is_system)
+        .filter(row => isDialogueRow(row))
         .slice(-3)
         .map(row => clean(row.mes, 5000))
         .filter(Boolean)
@@ -173,7 +174,7 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
     // against the live chat first and the cold snapshot second, and add bounded原文 evidence.
     const evidenceBlock = settings.memory_evidence_enabled === false ? '' : (() => {
         const rows = Array.isArray(ctx.chat) ? ctx.chat : [];
-        const lastAssistant = [...rows].reverse().find(row => row && !row.is_user && !row.is_system);
+        const lastAssistant = [...rows].reverse().find(row => row && !row.is_user && isDialogueRow(row));
         if (!lastAssistant) return '';
         const resolved = resolveMemoryLookupRequests(store, rows, String(lastAssistant.mes || ''), {
             maxChars: settings.memory_evidence_max_chars,

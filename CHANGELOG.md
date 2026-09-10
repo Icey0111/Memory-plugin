@@ -1,5 +1,90 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix 8 — summarize every ten floors, then fold them out of the prompt
+
+The memory system now summarizes on a fixed cadence — one Level-1 summary per **ten completed floors** —
+and a floor a Level-1 summary already covers **leaves the model prompt entirely**. The summary stands in
+for it, the original wording stays in the chat file, in the transcript and in the cold snapshot, and the
+whole thing is reversible from the settings panel.
+
+### Added
+- **Floor folding (冷原文 / cold original text).** `v55-floor-fold.js` marks a summarized floor
+  `is_system = true` — SillyTavern's only prompt-visible lever, and the same flag its own `/hide`
+  command uses — plus a plugin-owned marker in `message.extra`. SillyTavern's prompt builder filters
+  `!x.is_system`, so the floor stops reaching the model while remaining in the transcript, collapsed
+  rather than removed (`.mes.aum-v55-folded`).
+- **Fold-aware row classification.** Telling the two uses of `is_system` apart is what makes folding
+  safe: a folded row is still dialogue for extraction, for the dialogue-pair fingerprints, for branch
+  identity and for on-demand evidence expansion, while a host `/hide` is not and was never meant to be
+  remembered. `memory-core.js` now exports `isFoldedRow` / `isHostHiddenRow` / `isDialogueRow` and
+  every reader of chat history in the extension goes through them — `memory-core`, `index.js`,
+  `v55-runtime` (branch id), `v55-consistency`, `v55-finalizer`, `v55-evidence` and
+  `setting-retriever`. Without this the memory system would forget the very floors it had just
+  summarized, and every fingerprint would rebind the moment a floor was folded.
+- **Reversibility and audit.** Folds are recorded in chat metadata under `store.floor_folds` with a
+  per-row content fingerprint, so a shifted or rewritten chat cannot make the plugin unhide the wrong
+  message. `unfoldAllFloors()` restores everything and is wired to a settings button.
+- **Settings.** `summary_fold_hidden_floors` (default on), `summary_fold_keep_recent_floors` (default 1)
+  and `summary_source_max_chars` (default 24000), with UI controls, a fold counter in the status line and
+  a "恢复全部已折叠楼层" button.
+- `test-v55-floor-fold.mjs` covers the fold, idempotency, host-`/hide` separation, unfold, index-shift
+  safety, the tree-reset invariant and the injected summary shape.
+- `test-v55-summary-store-swap.mjs` and the new `writeMergedChatStore` case in
+  `test-v55-store-integrity.mjs` cover a store replacement landing in the middle of a summary model call
+  and a store write running before the ownership guard exists.
+- `test-v55-summary-error-string.mjs` covers every error shape the host and the transport actually emit,
+  and asserts that ordinary narrative text mentioning a number is still accepted.
+- **The summary tree was destroyed every time a chat was loaded.** SillyTavern loads a chat by
+  *assigning a brand-new* `chat_metadata` object, which no plugin can intercept. The ownership guard is
+  therefore not installed yet when the plugin's own store write runs, and `setStore` replaced the store
+  wholesale — taking the summary tree and the floor-fold audit with it. A live reload recreated this
+  exactly: the chat file held `l1=4 / l2=2 / l3=1` and `floor_folds.hidden=77`, the app loaded the same
+  file with `l1=0` and `hidden=0`, and then wrote the empty tree back. Store writes now merge through
+  `writeMergedChatStore()` so the guarantee no longer depends on whether the guard happens to be
+  installed, and `CHAT_CHANGED` re-installs the guard synchronously as well as on the next tick.
+- **A failed provider generation was stored as a summary.** A host generation that fails resolves with a
+  short error string — `"[API 错误]\nToo many requests: … status 429: AGY quota exhausted for requested
+  model"` — rather than throwing. The summarizer accepted it, stored the provider's error text as the
+  level-1/2/3 summary and permanently marked the batch as summarized, so floors were folded with an error
+  message standing in for them. Error-shaped completions are now rejected, the batch stays pending and the
+  failure lands in `last_error`.
+
+
+### Fixed
+- **A summary tree captured across a model call was orphaned from the store that reached disk.** The
+  ownership guard keeps independently-owned chat state across a Canonical replay by cloning it into the
+  replacement store object. `processSummaryHierarchy` held the tree it had read *before* the model call,
+  so every batch created after a replay landed in an object nothing ever persisted: a live 42-floor run
+  summarized correctly in memory (`l1=4 / l2=2 / l3=1`) and came back from disk with `l1=0`. Each
+  mutation now re-reads the tree from chat metadata, and a batch whose record was lost with the store is
+  simply re-summarized. `test-v55-summary-store-swap.mjs` reproduces the swap mid-call.
+- **An auxiliary key that arrived as an own property holding `undefined` erased owned state.**
+  `mergeAuxiliaryChatState` treated "property present" as authoritative, and `normalizeStore` spreads its
+  input, so a store that merely *omitted* `hierarchical_summaries` could still carry the key as
+  `undefined` and drop both the tree and the floor-fold audit. Only a non-`undefined` incoming value is
+  authoritative now; an explicit `null` or a replacement value still is.
+
+### Changed
+- `summary_level1_every_turns` default **1 → 10**: one Level-1 summary per ten completed floors.
+  `summary_max_tokens` default **600 → 2048**, because a reasoning model bills its hidden reasoning
+  against the same budget and 600 truncated the visible summary mid-sentence in a live session.
+- **The injected summary shape had to change to match.** The old `format()` injected three or five newest
+  items per level and dropped every item a higher level had consumed. That is correct when the raw floors
+  are still in the prompt, and wrong once they are folded: a forty-floor chat could collapse to a single
+  skeleton paragraph. Each level now gets a share of the sub-budget and is filled newest-first, and while
+  floors are folded the lower levels stay in even after a higher level consumed them, because they are
+  now the only surviving record of those floors.
+- `summary_max_context_chars` default **6000 → 9000** to fit the extra levels.
+
+### Guarantees
+- Only a floor a Level-1 summary actually covers is folded, and the newest floor is never folded —
+  SillyTavern's swipes and regeneration act on the last message, and its own hide helper refreshes the
+  swipe buttons precisely because hiding the tail breaks them.
+- A summary-tree reset **restores the raw text before it drops the tree**, so no content is ever missing
+  from the prompt with nothing standing in for it.
+- Folding is idempotent and persists through the host's own `saveChat()`; the transcript styling is
+  re-applied after every chat load.
+
 ## 5.5-dev Iteration 13 hotfix 7 — the injected memory finally reaches the model
 
 Verified against a live TauriTavern session with the real provider (WebView2 CDP, retained host request

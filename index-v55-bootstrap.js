@@ -5,6 +5,7 @@ import { installV55StoreIntegrity } from './v55-store-integrity.js';
 import { init as coreInit } from './index-v55.js';
 import { installV55UiPolish, localizeV55Ui } from './v55-ui-polish.js';
 import { installV55HierarchicalSummary } from './v55-summary-runtime.js';
+import { installV55FloorFoldUi } from './v55-floor-fold.js';
 import { installV55DirectApiSettings } from './v55-api-connections.js';
 import { installV55PrivateVectorTransport, configurePrivateVectorTransport } from './v55-private-vector-transport.js';
 import { installV55VectorPolicy, configureV55VectorPolicy } from './v55-vector-policy.js';
@@ -15,6 +16,7 @@ function installUi() {
     installV55UiPolish();
     localizeV55Ui();
     installV55HierarchicalSummary();
+    installV55FloorFoldUi();
     installV55DirectApiSettings();
     configurePrivateVectorTransport();
     configureV55VectorPolicy();

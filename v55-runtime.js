@@ -2,6 +2,8 @@
 // Host-facing glue that preserves the mature v5.4 runtime while enforcing v5.5
 // chat-scoped setting identity, canonical state authority and a combined prompt budget.
 
+import { isDialogueRow } from './memory-core.js';
+
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const REFERENCE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_reference';
@@ -142,7 +144,7 @@ function currentChatId(ctx) {
 export function deriveBranchId(chatInput) {
     const rows = Array.isArray(chatInput) ? chatInput : [];
     const payload = rows.map((row, index) => {
-        if (!row || row.is_system) return '';
+        if (!row || !isDialogueRow(row)) return '';
         const role = row.is_user === true ? 'u' : 'a';
         const mes = clean(row.mes);
         const swipe = row.swipe_id ?? row.swipeId ?? '';
