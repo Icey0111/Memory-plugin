@@ -908,6 +908,29 @@ function looksLikeStarvedJson(raw) {
 // plain-text path instead of paying for a request that is already known to be rejected every turn.
 let structuredOutputRefused = false;
 
+/**
+ * The three budgets one extraction is allowed to spend, in order.
+ *
+ * Measured live on a reasoning model: the first attempt at 2048 tokens routinely comes back as the
+ * host's "No message generated", because the visible answer never starts before the budget is gone.
+ * The retry ladder therefore has to ESCALATE. The third rung used to pass no override at all, i.e. it
+ * fell back to the base budget — so a request that had just starved at double the room was retried
+ * with half of it. That is the shape of a retry that cannot succeed, and it is why a live 40-turn run
+ * ended with 9 of 40 extractions.
+ */
+export function extractionBudgetLadder(configuredBudget) {
+    const base = Math.max(128, Math.min(8192, Number(configuredBudget) || 2048));
+    return {
+        first: base,
+        retry: Math.min(8192, base * 2),
+        plain: Math.min(8192, base * 4),
+    };
+}
+
+export function __testExtractionBudgetLadder(configuredBudget) {
+    return extractionBudgetLadder(configuredBudget);
+}
+
 async function runQuietExtraction(ctx, prompt, useStructured = true, budgetOverride = null) {
     if (typeof ctx.generateRaw !== 'function' && typeof ctx.generateQuietPrompt !== 'function') {
         throw new Error('当前 SillyTavern Context 未提供 generateRaw / generateQuietPrompt，无法执行自动记忆抽取。');
@@ -1033,15 +1056,18 @@ ${pair.assistantText}`,
         // reasoning model can also spend the whole budget before it emits its first brace, and that
         // shape is indistinguishable from a formatting mistake. The doubled budget is the fix for
         // both, so the gate is deliberately just "did not parse".
+        const ladder = extractionBudgetLadder(configuredBudget);
         if (!parsed.ok && configuredBudget < 8192) {
             mode = 'budget-retry';
-            step = await attemptExtraction('budget-retry', wantsStructured && !structuredOutputRefused, Math.min(8192, configuredBudget * 2), prompt);
+            step = await attemptExtraction('budget-retry', wantsStructured && !structuredOutputRefused, ladder.retry, prompt);
             raw = step.value;
             parsed = step.result;
         }
         if ((!parsed.ok || (typeof raw === 'string' && raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json !== false) {
             mode = 'plain-json-retry';
-            step = await attemptExtraction('plain-json-retry', false, null, prompt + '\n\n严格只输出JSON，不要代码围栏。');
+            // The plain-text rung keeps the escalated budget. Passing no override here made the last
+            // attempt smaller than the one that had already failed.
+            step = await attemptExtraction('plain-json-retry', false, ladder.plain, prompt + '\n\n严格只输出JSON，不要代码围栏。');
             raw = step.value;
             parsed = step.result;
         }

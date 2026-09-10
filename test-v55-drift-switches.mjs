@@ -42,6 +42,7 @@ const ctx = {
 globalThis.SillyTavern = { getContext: () => ctx };
 
 const {
+  __testExtractionBudgetLadder,
   __testCreatePluginBaselineDeduper,
   __testResolveCurrentStateScope,
   __testRetrieveGenerationSettings,
@@ -99,7 +100,20 @@ const narrow = buildCurrentStateBlock({ activeState: '', activeMemories: [irreve
 assert.ok(narrow.includes('罗盘'), 'mandatory-only still carries the irreversible change');
 assert.equal(narrow.includes('钟楼旅店'), false, 'and nothing else, which is what makes the comparison constructible');
 
-// --- 4. The archived original text and the model-initiated lookup are a cache and a supplement.
+// --- 4. The extraction retry ladder must escalate, never shrink.
+// Measured live: a reasoning model at 2048 tokens routinely answers "No message generated", so the
+// first rung starves. The third rung used to fall back to the base budget, which meant retrying a
+// starved request with half the room it had just failed with.
+const ladder = __testExtractionBudgetLadder(2048);
+assert.deepEqual(ladder, { first: 2048, retry: 4096, plain: 8192 }, 'the ladder escalates for the measured live budget');
+assert.ok(ladder.first <= ladder.retry && ladder.retry <= ladder.plain, 'budgets never decrease');
+const capped = __testExtractionBudgetLadder(6000);
+assert.equal(capped.plain, 8192, 'the last rung is capped, not unbounded');
+assert.ok(capped.plain >= capped.retry && capped.retry >= capped.first);
+const floor = __testExtractionBudgetLadder(10);
+assert.equal(floor.first, 128, 'a nonsense budget falls back to the floor');
+
+// --- 5. The archived original text and the model-initiated lookup are a cache and a supplement.
 // Canonical memory must never read either. If it ever does, memory has started depending on a copy of
 // the transcript, or on the model choosing to speak — which is the AIRP failure in a different costume.
 const { readFileSync } = await import('node:fs');
