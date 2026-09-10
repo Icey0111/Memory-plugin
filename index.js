@@ -34,6 +34,7 @@ import {
     EXTRACTION_JSON_SCHEMA,
     buildAutonomousExtractionPrompt,
     parseExtractionResult,
+    planExtractionPromptBudget,
 } from './memory-extractor.js';
 
 // A8: the quality side of the measurement story. v55-metrics.js meters cost; this meters whether
@@ -121,6 +122,9 @@ const DEFAULT_SETTINGS = Object.freeze({
     // parser correctly rejects. A live session showed 1024 still being exhausted by ~2500 characters of
     // reasoning, so the default is 2048 and a starved JSON completion triggers one doubled retry.
     extraction_response_tokens: 2048,
+    // Measured: the gateway answers an oversized quiet request with 502, which costs the turn its
+    // extraction entirely. The pair under review is mandatory; the context windows are planned to fit.
+    extraction_prompt_max_chars: 20000,
     memory_freshness_wait_ms: 800,
     extraction_notifications: false,
     parse_ops: true,
@@ -1001,13 +1005,22 @@ async function extractMemoryForAssistant(ctx, assistantIndex, { force = false } 
 ${pair.assistantText}`,
         Math.min(4500, Math.max(1200, Math.floor(settings.setting_extraction_max_chars * 0.55))),
     );
-    const prompt = buildAutonomousExtractionPrompt({
-        userText: pair.userText,
-        assistantText: pair.assistantText,
+    const promptLayers = {
         recentContext: buildRecentContextForExtraction(rows, assistantIndex, extractionContextMessages(settings)),
         canonicalState: formatCanonicalStateForExtraction(store),
         relevantSettingContext,
         hostBaselineContext: relevantHostBaseline,
+    };
+    const promptPlan = planExtractionPromptBudget({
+        limit: settings.extraction_prompt_max_chars,
+        pairChars: String(pair.userText || '').length + String(pair.assistantText || '').length,
+        layerChars: Object.fromEntries(Object.entries(promptLayers).map(([key, value]) => [key, String(value || '').length])),
+    });
+    const prompt = buildAutonomousExtractionPrompt({
+        userText: pair.userText,
+        assistantText: pair.assistantText,
+        ...promptLayers,
+        optionalCeilings: promptPlan.ceilings,
     });
 
     const started = performance.now?.() ?? Date.now();
@@ -1149,6 +1162,7 @@ ${pair.assistantText}`,
         setting_index_fingerprint: preparedSettingIndex.fingerprint || null,
         relevant_setting_ids: extractionSettingRetrieval.results.map(row => row.entry_id),
         baseline_rejections: baselineRejections,
+        prompt_plan: promptPlan,
         generated_at: Date.now(),
         generation_mode: mode,
     };
@@ -3351,7 +3365,7 @@ export function __testGetLastSettingSeedDebug() {
  * the compression curve. Reads only the store and the last published bundle, so it spends no model
  * call and can be run at any time — including by the live acceptance harness.
  */
-export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit = 60 } = {}) {
+export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit = 60, injectedText = null, renderedBlock = null } = {}) {
     const ctx = ctxInput || getContext();
     if (!ctx) return null;
     const settings = getSettings(ctx);
@@ -3361,18 +3375,23 @@ export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit
         .filter(row => isDialogueRow(row))
         .map(row => String(row.mes ?? ''));
     const published = ctx.chatMetadata?.[METADATA_KEY]?.v55_inner_bundle || null;
-    const injectedText = [published?.reference_block, published?.current_state_block].filter(Boolean).join('\n\n');
+    // A harness measuring at injection time passes the blocks it just read, which is the only moment
+    // they are guaranteed to exist.
+    const supplied = injectedText !== null || renderedBlock !== null;
+    const effectiveInjected = injectedText !== null
+        ? String(injectedText)
+        : [published?.reference_block, published?.current_state_block].filter(Boolean).join('\n\n');
     const mandatory = settings.inject_current_state
         ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
         : [];
     return computeQualityReport({
         store,
-        rendered: String(published?.current_state_block || ''),
-        injectedText,
+        rendered: renderedBlock !== null ? String(renderedBlock) : String(published?.current_state_block || ''),
+        injectedText: effectiveInjected,
         // The published bundle lives in the derived record, so it can legitimately be absent — for
         // example when this runs after the chat was reloaded. Pass that through: an unmeasured metric
         // must not be published as a zero.
-        injectedAvailable: published !== null,
+        injectedAvailable: supplied || published !== null,
         mandatory,
         dialogueTextsPerFloor,
         everyFloors,

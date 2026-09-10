@@ -219,6 +219,10 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
         scene_count: scenes.length,
         generation_type: lifecycle.generationType || 'normal',
         summary_in_reference_chars: hierarchicalBlock.length,
+        // The published bundle lives in the derived record and is gone after a chat reload, so the
+        // sizes of what actually reached the prompt are recorded here, where they survive.
+        injected_reference_chars: String(bounded.referenceBlock || '').length,
+        injected_current_state_chars: currentStateText.length,
         ...bounded.diagnostics,
         at: Date.now(),
     };

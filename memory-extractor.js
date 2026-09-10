@@ -142,6 +142,51 @@ export function parseExtractionResult(raw) {
     };
 }
 
+/**
+ * Which optional context windows an extraction prompt can afford.
+ *
+ * Measured live: attaching every window at once produced `Got response status 502` from the gateway,
+ * and a refused request costs that turn its extraction completely. The dialogue pair under review is
+ * mandatory; every other window is context and has to yield. Layers are admitted in usefulness order,
+ * and a layer that does not fit is dropped WHOLE — never sliced mid-sentence, because a half window is
+ * worse than no window: it reads as complete to the model.
+ */
+export const EXTRACTION_CONTEXT_LAYERS = Object.freeze([
+    'canonicalState',
+    'recentContext',
+    'relevantSettingContext',
+    'hostBaselineContext',
+]);
+
+export function planExtractionPromptBudget({
+    limit = 20000,
+    pairChars = 0,
+    layerChars = {},
+    reserveChars = 1200,
+} = {}) {
+    const cap = Math.max(2000, Number(limit) || 20000);
+    const pair = Math.max(0, Number(pairChars) || 0);
+    const reserve = Math.max(0, Number(reserveChars) || 0);
+    let available = cap - pair - reserve;
+    const ceilings = { canonicalState: 0, recentContext: 0, relevantSettingContext: 0, hostBaselineContext: 0 };
+    const dropped = [];
+    for (const layer of EXTRACTION_CONTEXT_LAYERS) {
+        const want = Math.max(0, Number(layerChars?.[layer]) || 0);
+        if (!want) { ceilings[layer] = 0; continue; }
+        if (available <= 0) { ceilings[layer] = 0; dropped.push(layer); continue; }
+        ceilings[layer] = Math.min(want, available);
+        available -= ceilings[layer];
+    }
+    return {
+        limit: cap,
+        pair_chars: pair,
+        reserve_chars: reserve,
+        ceilings,
+        dropped,
+        planned_chars: pair + reserve + EXTRACTION_CONTEXT_LAYERS.reduce((sum, layer) => sum + ceilings[layer], 0),
+    };
+}
+
 export function buildAutonomousExtractionPrompt({
     userText,
     assistantText,
@@ -150,13 +195,17 @@ export function buildAutonomousExtractionPrompt({
     relevantSettingContext = '',
     hostBaselineContext = '',
     baselineHint = '', // compatibility with older callers
+    optionalCeilings = null,
 } = {}) {
+    // The pair is never budgeted away; only the context windows are.
+    const ceilings = optionalCeilings && typeof optionalCeilings === 'object' ? optionalCeilings : null;
+    const capFor = (layer, fallback) => (ceilings ? Math.max(0, Number(ceilings[layer]) || 0) : fallback);
     const user = cleanString(userText, 12000);
     const assistant = cleanString(assistantText, 24000);
-    const recent = cleanString(recentContext, 16000);
-    const canonical = cleanString(canonicalState, 12000);
-    const relevantSetting = cleanString(relevantSettingContext, 12000);
-    const hostBaseline = cleanString(hostBaselineContext, 8000);
+    const recent = cleanString(recentContext, capFor('recentContext', 16000));
+    const canonical = cleanString(canonicalState, capFor('canonicalState', 12000));
+    const relevantSetting = cleanString(relevantSettingContext, capFor('relevantSettingContext', 12000));
+    const hostBaseline = cleanString(hostBaselineContext, capFor('hostBaselineContext', 8000));
     const legacyBaseline = cleanString(baselineHint, 16000);
 
     return `你是一个后台记忆抽取器。你不参与角色扮演，不续写故事，不改变正文。\n\n你的唯一任务：分析“最新一组用户消息 + AI回复”，生成艾瑟瑞亚 Unified Memory v5.4 的机器记忆结果。\n\n【重要架构】\n1. 不区分短期记忆/长期记忆。\n2. event_summary = 只概括这一次回复真正发生了什么。\n3. active_state = 当前此刻仍成立、下一轮直接续写需要知道的动态状态。已完成、已恢复、已离开场景的状态不要保留。\n4. operations = 对统一记忆池的增量操作；不是全量快照。\n5. 只有未来具有回忆/状态价值的内容才写 operations。普通动作、一次性饮食过程、无后果小额消费通常不写。\n\n【Baseline Filter】\n角色卡、Persona、World Info/世界书中本来就存在且没有被剧情改变的事实，不得重复 add。\n例如：既有住址、专业、兴趣、基础性格、外貌、固有能力、既有宠物/契约、既有账号/A网络权限、世界规则。\n如果世界书早已存在事实 X，但本轮剧情真正新增的是“某角色现在知道/确认了 X”，写 knowledge（谁知道了什么），不要重新登记 X 作为世界事实。
