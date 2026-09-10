@@ -20,9 +20,23 @@ function cleanString(value) {
     return String(value ?? '').replace(/\u0000/g, '').trim();
 }
 
-function numericOrder(value) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+// One ordering rule shared by the list view (setting-store) and the index view: entries with an
+// explicit numeric order come first in ascending order; entries without one follow and fall back
+// to source_entry_id, then entry_id. Without this, `order: null` meant "first" in one view and
+// "last" in the other.
+function compareSettingOrder(a, b) {
+    const ao = a?.order == null ? null : Number(a.order);
+    const bo = b?.order == null ? null : Number(b.order);
+    const aFinite = Number.isFinite(ao);
+    const bFinite = Number.isFinite(bo);
+    if (aFinite && bFinite) {
+        if (ao !== bo) return ao - bo;
+    } else if (aFinite !== bFinite) {
+        return aFinite ? -1 : 1;
+    }
+    const so = stableSourceEntryId(a?.source_entry_id).localeCompare(stableSourceEntryId(b?.source_entry_id), undefined, { numeric: true });
+    if (so) return so;
+    return String(a?.entry_id ?? '').localeCompare(String(b?.entry_id ?? ''));
 }
 
 function stableSourceEntryId(value) {
@@ -37,11 +51,7 @@ function orderedEntries(store, revisionIds) {
         .sort((a, b) => {
             const rr = rank.get(a.revision_id) - rank.get(b.revision_id);
             if (rr) return rr;
-            const oo = numericOrder(a.order) - numericOrder(b.order);
-            if (Number.isFinite(oo) && oo) return oo;
-            const so = stableSourceEntryId(a.source_entry_id).localeCompare(stableSourceEntryId(b.source_entry_id), undefined, { numeric: true });
-            if (so) return so;
-            return a.entry_id.localeCompare(b.entry_id);
+            return compareSettingOrder(a, b);
         });
 }
 
@@ -369,7 +379,7 @@ export function lexicalSearchSettingChunks(chunksInput, queryInput, {
         .filter(row => row.score >= floor)
         .sort((a, b) => b.score - a.score
             || Number(Boolean(b.chunk.constant)) - Number(Boolean(a.chunk.constant))
-            || numericOrder(a.chunk.order) - numericOrder(b.chunk.order)
+            || compareSettingOrder(a.chunk, b.chunk)
             || a.index - b.index)
         .slice(0, k);
 }

@@ -112,30 +112,6 @@ function formatHistoryRow(input, { includeEvidence = true, maxBodyChars = 2200 }
     ].filter(Boolean).join('');
 }
 
-function appendRowsWithBudget(rows, budget, formatter, { alwaysAllowFirst = false } = {}) {
-    const selected = [];
-    const dropped = [...preDroppedConstants];
-    let used = 0;
-    const cap = Math.max(0, Number(budget) || 0);
-    for (const row of rows) {
-        const formatted = formatter(row);
-        if (!formatted) continue;
-        const cost = formatted.length + 2;
-        if (used + cost > cap && !(alwaysAllowFirst && !selected.length)) {
-            dropped.push(row?.entry_id || row?.memory?.id || row?.id || 'unknown');
-            continue;
-        }
-        if (used + cost > cap && alwaysAllowFirst && !selected.length) {
-            // A single oversized row is truncated by the formatter's caller before this point.
-            dropped.push(row?.entry_id || row?.memory?.id || row?.id || 'unknown');
-            continue;
-        }
-        selected.push({ row, formatted });
-        used += cost;
-    }
-    return { selected, dropped, used };
-}
-
 function fitSettingRowToBudget(row, budget, className) {
     const cap = Math.max(0, Number(budget) || 0);
     if (cap < 220) return '';
@@ -149,7 +125,11 @@ function fitHistoryRowToBudget(row, budget, includeEvidence) {
     if (cap < 180) return '';
     const memory = row?.memory || row;
     const probe = formatHistoryRow({ ...memory, text: 'x', evidence_excerpt: '' }, { includeEvidence: false, maxBodyChars: 1 });
-    const bodyCap = Math.max(80, cap - probe.length - 8);
+    // The probe above excludes <evidence>; charge for it explicitly or a memory that would fit
+    // with a trimmed body is dropped instead of being admitted with its evidence clipped.
+    const evidenceText = includeEvidence ? cleanText(memory?.evidence_excerpt, 900) : '';
+    const evidenceCost = evidenceText ? xmlEscape(evidenceText).length + '<evidence></evidence>'.length : 0;
+    const bodyCap = Math.max(80, cap - probe.length - evidenceCost - 8);
     return formatHistoryRow(row, { includeEvidence, maxBodyChars: bodyCap });
 }
 
@@ -209,7 +189,7 @@ function buildReferenceBlock({
     const constantSelected = [];
     const relevantSelected = [];
     const historySelected = [];
-    const dropped = [];
+    const dropped = [...preDroppedConstants];
     let constantUsed = 0;
     let relevantUsed = 0;
     let historyUsed = 0;

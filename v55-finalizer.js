@@ -385,14 +385,18 @@ function isPrivateMemoryVisible(memory, actor) {
 }
 
 function removeExactMemoryFromPrompt(block, memory) {
-    const escaped = xmlEscape(clean(memory?.text, 5000));
-    if (!escaped) return block;
+    const raw = clean(memory?.text, 5000);
+    if (!raw) return block;
+    const escaped = xmlEscape(raw);
+    // Current-state lines carry the raw text while reference records carry escaped text; a
+    // one-sided comparison leaves XML-special-char secrets in the prompt while reporting them hidden.
+    const matches = (text) => text.includes(raw) || (escaped !== raw && text.includes(escaped));
     let out = String(block ?? '');
     // Historical memories are XML-like records in Reference.
-    out = out.replace(/<memory\b[^>]*>[\s\S]*?<\/memory>/g, tag => tag.includes(`<summary>${escaped}</summary>`) ? '' : tag);
+    out = out.replace(/<memory\b[^>]*>[\s\S]*?<\/memory>/g, tag => (tag.includes(`<summary>${raw}</summary>`) || tag.includes(`<summary>${escaped}</summary>`)) ? '' : tag);
     // Current-state records are line based. Both the canonical-state summary and
     // the grouped active-memory view contain the same escaped memory text.
-    out = out.split('\n').filter(line => !line.includes(escaped)).join('\n');
+    out = out.split('\n').filter(line => !matches(line)).join('\n');
     return out;
 }
 
@@ -664,7 +668,7 @@ export async function runWithV55Finalizer(ctx, innerInterceptor, args) {
     // payloads emitted by the legacy interceptor; re-adding scene locators here would defeat
     // the documented cleanup contract.
     const generationType = String(args?.[3] || '').toLowerCase();
-    const pluginOwnedQuiet = settingsRoot.__quiet_extraction_in_progress === true;
+    const pluginOwnedQuiet = settingsRoot.__quiet_extraction_in_progress === true || settingsRoot.__hierarchical_summary_in_progress === true;
     const thirdPartyQuietInjection = settingsRoot.quiet_allow_third_party_injection === true && !pluginOwnedQuiet;
     const suppressed = settingsRoot.enabled === false
         || generationType === 'impersonate'
@@ -679,10 +683,11 @@ export async function runWithV55Finalizer(ctx, innerInterceptor, args) {
         const current = captured.get(CURRENT_STATE_PROMPT_KEY) || { key: CURRENT_STATE_PROMPT_KEY, value: '', rest: [] };
         const actor = actorIdentity(ctx, chatStore);
         const visible = filterPrivateKnowledge(reference.value, current.value, chatStore, actor);
+        // Scene summary + linked evidence are injected exactly once, by v55-consistency, from the
+        // actor-sanitized store. Re-deriving them here duplicated both blocks and could carry
+        // un-sanitized derivation text into the reference the outer wrapper re-emitted.
         const selectedScenes = selectSceneSummaries(scenes, latestQuery(args?.[0] || ctx.chat || []), { limit: 3 });
-        const withScenes = injectSceneSummaryBlock(visible.referenceBlock, formatSceneSummaryBlock(selectedScenes));
-        const withEvidence = injectSceneEvidenceBlock(withScenes, collectSceneEvidence(chatStore, selectedScenes, { maxChars: 1200 }));
-        const bounded = budgetPromptPair(withEvidence, visible.currentStateBlock, {
+        const bounded = budgetPromptPair(visible.referenceBlock, visible.currentStateBlock, {
             contextSize: args?.[1],
             replyReserve: settingsRoot.context_reply_reserve_tokens,
             maxReferenceChars: settingsRoot.reference_context_max_chars,

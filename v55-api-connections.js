@@ -11,6 +11,7 @@ import {
     resolveOpenAiCompatibleBaseUrl,
     setTauriVectorApiKey,
 } from './v55-tauri-vector-backend.js';
+import { discoverModelsViaTauriNative } from './v55-tauri-native-http-bridge.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const SUMMARY_PROFILE_NAME = 'Aetheria · Summary API';
@@ -48,7 +49,7 @@ function normalizeUrl(value) { return String(value || '').trim().replace(/\/+$/,
 function normalizeEmbeddingUrl(value) { return resolveOpenAiCompatibleBaseUrl(value); }
 function uuid() { return globalThis.crypto?.randomUUID?.() || `aum-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 function notify(type, message) { const toast = globalThis.toastr; if (toast && typeof toast[type] === 'function') toast[type](message, 'Aetheria API'); }
-async function getSecretsModule() { if (!secretsModulePromise) secretsModulePromise = import('/scripts/secrets.js').catch(() => null); return secretsModulePromise; }
+async function getSecretsModule() { if (!secretsModulePromise) secretsModulePromise = import('/scripts/secrets.js').catch(() => { secretsModulePromise = null; return null; }); return secretsModulePromise; }
 async function saveSecret(secretKeyName, value, label) {
     const key = String(value || '').trim();
     if (!key) return null;
@@ -130,7 +131,9 @@ export async function probeDirectVectorTransport(ctxInput = getContext()) {
         const result = await vectorRequest(ctx, 'query', { source: 'vllm', apiUrl, model: settings.vector_direct_api_model, collectionId, searchText: item.text, topK: 1, threshold: 0 });
         if (!Array.isArray(result?.metadata) || !result.metadata.length) throw new Error('Embedding 请求成功，但测试集合没有返回检索结果。');
         return true;
-    } finally { await vectorRequest(ctx, 'purge', { collectionId }).catch(() => {}); }
+    } finally {
+        await vectorRequest(ctx, 'purge', { source: 'vllm', apiUrl, model: settings.vector_direct_api_model, collectionId }).catch(() => {});
+    }
 }
 
 function fillModelList(list, models) {
@@ -180,13 +183,22 @@ async function connectSummary(ctx, settings, root, key) {
     status(root, 'summary', `连接成功，发现 ${models.length} 个聊天模型。`, true);
 }
 
+async function discoverEmbeddingModels(rawUrl, key) {
+    // TauriTavern WebView fetch can be CORS-blocked; prefer the native Host ABI when present.
+    if (isNativeTauriTavern()) {
+        const viaNative = await discoverModelsViaTauriNative({ baseUrl: normalizeEmbeddingUrl(rawUrl), apiKey: key });
+        if (Array.isArray(viaNative) && viaNative.length) return viaNative;
+    }
+    return await discoverEmbeddingModelsDirect(rawUrl, key);
+}
+
 async function connectVector(ctx, settings, root, key) {
     let runtimeSecretId = settings.vector_direct_api_secret_id;
     let probeSecretId = settings.vector_direct_api_probe_secret_id;
     let discovered = [];
     const effectiveKey = String(key || (isNativeTauriTavern() ? getTauriVectorApiKey() : '') || '').trim();
     if (effectiveKey) {
-        discovered = await discoverEmbeddingModelsDirect(settings.vector_direct_api_url, effectiveKey);
+        discovered = await discoverEmbeddingModels(settings.vector_direct_api_url, effectiveKey);
         if (key) {
             const saved = await saveConnectionSecret('vector', key);
             runtimeSecretId = saved.runtimeSecretId; probeSecretId = saved.probeSecretId;
@@ -205,8 +217,18 @@ async function connectVector(ctx, settings, root, key) {
     configurePrivateVectorTransport(ctx);
     if (settings.vector_direct_api_model) {
         status(root, 'vector', '连接已保存，正在进行真实 Embedding 测试…');
-        await probeDirectVectorTransport(ctx);
-        status(root, 'vector', `Embedding 连接成功：${settings.vector_direct_api_model}${isNativeTauriTavern() ? ' ｜ Aetheria 自有凭据' : ''}`, true);
+        try {
+            await probeDirectVectorTransport(ctx);
+            settings.vector_direct_api_verified = true;
+            configurePrivateVectorTransport(ctx);
+            status(root, 'vector', `Embedding 连接成功：${settings.vector_direct_api_model}${isNativeTauriTavern() ? ' ｜ Aetheria 自有凭据' : ''}`, true);
+        } catch (error) {
+            // Persisting enabled=true before the probe is fine, but the UI must not claim the
+            // connection works until the probe actually succeeded.
+            settings.vector_direct_api_verified = false;
+            configurePrivateVectorTransport(ctx);
+            status(root, 'vector', `连接已保存，但 Embedding 测试失败：${String(error?.message || error)}`, false);
+        }
     } else {
         status(root, 'vector', discovered.length ? `连接已保存，发现 ${discovered.length} 个模型；请选择或填写 Embedding 模型后测试。` : '连接已保存。供应商未返回模型列表，请手动填写 Embedding 模型名后点击“测试 Embedding”。', true);
     }
@@ -260,7 +282,7 @@ function mountCard() {
                         settings.summary_direct_api_models = models; fillModelList(root.querySelector('#aum-v55-summary-direct-model-list'), models); status(root, kind, `模型列表已刷新，共 ${models.length} 个。`, true);
                     } else {
                         const key = isNativeTauriTavern() ? getTauriVectorApiKey() : '';
-                        const models = key ? await discoverEmbeddingModelsDirect(settings.vector_direct_api_url, key) : [];
+                        const models = key ? await discoverEmbeddingModels(settings.vector_direct_api_url, key) : [];
                         if (models.length) { settings.vector_direct_api_models = models; fillModelList(root.querySelector('#aum-v55-vector-direct-model-list'), models); status(root, kind, `模型列表已刷新，共 ${models.length} 个。`, true); }
                         else status(root, kind, '供应商未提供可用 /models；请直接手动填写 Embedding 模型名。');
                     }
@@ -292,7 +314,8 @@ export function renderDirectApiSettings() {
         if (hasKey && settings[`${kind}_direct_api_url`]) {
             const suffix = settings[`${kind}_direct_api_model`] ? ` / ${settings[`${kind}_direct_api_model`]}` : '';
             const active = kind === 'vector' && privateStatus.active ? (isNativeTauriTavern() ? '；Aetheria 自有 Tauri 向量后端' : '；Aetheria 私有 transport 已启用') : '';
-            status(root, kind, `已保存连接：${settings[`${kind}_direct_api_url`]}${suffix}${active}`, true);
+            if (settings[`${kind}_direct_api_verified`] === false) status(root, kind, `连接已保存但未通过验证：${settings[`${kind}_direct_api_url`]}${suffix}`, false);
+            else status(root, kind, `已保存连接：${settings[`${kind}_direct_api_url`]}${suffix}${active}`, true);
         }
     }
     return true;

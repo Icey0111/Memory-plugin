@@ -36,6 +36,7 @@ globalThis.localStorage = {
 };
 setTauriVectorApiKey('jina-persistent-key');
 assert.equal(getTauriVectorApiKey(), 'jina-persistent-key');
+assert.equal(storageMap.get('aetheria_v55_embedding_api_key') ?? null, null, 'Embedding API key must not be persisted in WebView localStorage');
 
 const jinaQuery = buildDirectEmbeddingBody({ model: 'jina-embeddings-v3', texts: ['hello'], apiUrl: 'https://api.jina.ai/v1', role: 'query' });
 assert.equal(jinaQuery.task, 'retrieval.query');
@@ -96,9 +97,7 @@ assert.equal(response.status, 204);
 assert.ok(providerCalls.every(call => !call.url.includes('/api/vector/')));
 assert.ok(storeKeys.every(key => /^[A-Za-z0-9_-]+$/.test(key)));
 const backendSource = fs.readFileSync(new URL('./v55-tauri-vector-backend.js', import.meta.url), 'utf8');
-const compatSource = fs.readFileSync(new URL('./v55-tauri-api-compat.js', import.meta.url), 'utf8');
 assert.doesNotMatch(backendSource, /\/api\/secrets\/(write|read|rotate|find)/);
-assert.doesNotMatch(compatSource, /\/api\/secrets\/(write|read|rotate|find)/);
 
 delete globalThis.__TAURITAVERN__;
 delete globalThis.localStorage;

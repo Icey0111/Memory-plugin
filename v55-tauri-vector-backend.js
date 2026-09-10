@@ -4,7 +4,6 @@ import { hasTauriNativeHttpBridge, requestEmbeddingJsonViaTauriNative } from './
 const STORE_NAMESPACE = 'aetheria-unified-memory-v55';
 const STORE_TABLE = 'vectors';
 const STORE_VERSION = 3;
-const LOCAL_API_KEY = 'aetheria_v55_embedding_api_key';
 const sessionSecrets = new Map();
 const collectionCache = new Map();
 const collectionLocks = new Map();
@@ -13,21 +12,17 @@ let lastDebug = null;
 const clean = (value, max = 10000) => String(value ?? '').replace(/\u0000/g, '').trim().slice(0, max);
 const getHost = () => globalThis.__TAURITAVERN__ || globalThis.window?.__TAURITAVERN__ || null;
 export const isNativeTauriTavern = () => Boolean(getHost());
-function localStore() { try { return globalThis.localStorage || globalThis.window?.localStorage || null; } catch { return null; } }
 
 export function setTauriVectorApiKey(value) {
     const key = clean(value, 20000); if (!key) return false;
+    // Session-only: the provider Bearer key must not be readable from WebView localStorage.
     sessionSecrets.set('aetheria', key);
-    try { localStore()?.setItem(LOCAL_API_KEY, key); } catch {}
     return true;
 }
 export function getTauriVectorApiKey() {
-    const cached = sessionSecrets.get('aetheria'); if (cached) return cached;
-    let value = ''; try { value = clean(localStore()?.getItem(LOCAL_API_KEY), 20000); } catch {}
-    if (value) sessionSecrets.set('aetheria', value);
-    return value;
+    return sessionSecrets.get('aetheria') || '';
 }
-export function clearTauriVectorApiKey() { sessionSecrets.delete('aetheria'); try { localStore()?.removeItem(LOCAL_API_KEY); } catch {} }
+export function clearTauriVectorApiKey() { sessionSecrets.delete('aetheria'); }
 export function rememberTauriVectorSessionSecret(_id, value) { return setTauriVectorApiKey(value); }
 export function forgetTauriVectorSessionSecret(_id) { clearTauriVectorApiKey(); return true; }
 export function hasTauriVectorSessionSecret(_id) { return Boolean(getTauriVectorApiKey()); }
@@ -63,7 +58,7 @@ function normalizeCollection(rawInput, id) {
 async function loadCollection(id) {
     const key = safeCollectionStoreKey(id); if (collectionCache.has(key)) return collectionCache.get(key);
     const store = await extensionStore(); let raw = null;
-    try { raw = await store.tryGetJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key }); } catch {}
+    raw = await store.tryGetJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key });
     const collection = normalizeCollection(raw?.value ?? raw, id); collectionCache.set(key, collection); return collection;
 }
 async function saveCollection(collection) {
@@ -72,7 +67,7 @@ async function saveCollection(collection) {
 }
 async function deleteCollection(id) {
     const key = safeCollectionStoreKey(id); const store = await extensionStore();
-    if (typeof store.deleteJson === 'function') await store.deleteJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key }).catch(() => {});
+    if (typeof store.deleteJson === 'function') await store.deleteJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key });
     else await store.setJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key, value: blankCollection(id) });
     collectionCache.delete(key);
 }
@@ -92,7 +87,6 @@ export function cosineSimilarity(aInput,bInput,naInput=null,nbInput=null) { cons
 function isJina(apiUrl, model) { try { const h=new URL(apiUrl).hostname.toLowerCase(); if(h==='api.jina.ai'||h.endsWith('.jina.ai')) return true; } catch {} return /^jina-/i.test(String(model||'')); }
 export function buildDirectEmbeddingBody({model,texts,apiUrl,role='document'}) { const body={model:clean(model,1000),input:Array.from(texts||[],v=>clean(v,200000))}; if(!body.model||!body.input.length||body.input.some(v=>!v)) throw new Error('Embedding model/input 配置无效。'); if(isJina(apiUrl,model)) body.task=role==='query'?'retrieval.query':'retrieval.passage'; return body; }
 export function resolveOpenAiCompatibleBaseUrl(value) { let base=clean(value,4000).replace(/[?#].*$/,'').replace(/\/+$/,''); if(!base) return ''; base=base.replace(/\/(?:embeddings|models)$/i,'').replace(/\/chat\/completions$/i,'').replace(/\/+$/,''); if(!/\/v\d[\w.-]*$/i.test(base)) base=`${base}/v1`; return base; }
-export function embeddingEndpoint(value) { const base=resolveOpenAiCompatibleBaseUrl(value); if(!base) throw new Error('Embedding API URL 为空。'); return `${base}/embeddings`; }
 
 function parseEmbeddingPayload(payload, expectedCount) {
     if(!Array.isArray(payload?.data)) throw new Error('Embedding provider 返回格式无效：缺少 data 数组。');
@@ -129,5 +123,5 @@ async function deleteItems(payload){const hashes=new Set((Array.isArray(payload.
 async function purgeCollection(payload){return withCollectionLock(payload.collectionId,async()=>{await deleteCollection(payload.collectionId);lastDebug={at:Date.now(),action:'purge',collection_id:payload.collectionId};return noContentResponse();});}
 
 export async function handleTauriVectorRequest(endpoint,payloadInput,configInput,fetchImpl=globalThis.fetch?.bind(globalThis)){if(!isNativeTauriTavern())return null;const payload=payloadInput&&typeof payloadInput==='object'?payloadInput:{},config=configInput&&typeof configInput==='object'?configInput:{};if(!clean(payload.collectionId,4000))throw new Error('Tauri vector request 缺少 collectionId。');if(['insert','query'].includes(endpoint)&&(!clean(config.apiUrl,4000)||!clean(config.model,1000)))throw new Error('Tauri direct Embedding transport 配置不完整。');if(['insert','query'].includes(endpoint)&&!hasTauriNativeHttpBridge()&&typeof fetchImpl!=='function')throw new Error('Embedding transport 不可用。');switch(endpoint){case'insert':return insertCollection(payload,config,fetchImpl);case'query':return queryCollection(payload,config,fetchImpl);case'list':return listCollection(payload);case'delete':return deleteItems(payload);case'purge':return purgeCollection(payload);default:throw new Error(`Tauri plugin vector backend 不支持 endpoint: ${endpoint}`);}}
-export function getTauriVectorBackendStatus(){return{active:isNativeTauriTavern(),backend:'tauritavern-plugin-vector-v3',persistence:'window.__TAURITAVERN__.api.extension.store',credential_scope:'aetheria-localStorage',transport:hasTauriNativeHttpBridge()?'tauri-native-http':'web-fetch-fallback',has_api_key:Boolean(getTauriVectorApiKey()),cached_collection_count:collectionCache.size,last_debug:lastDebug?structuredClone(lastDebug):null};}
+export function getTauriVectorBackendStatus(){return{active:isNativeTauriTavern(),backend:'tauritavern-plugin-vector-v3',persistence:'window.__TAURITAVERN__.api.extension.store',credential_scope:'session-only',transport:hasTauriNativeHttpBridge()?'tauri-native-http':'web-fetch-fallback',has_api_key:Boolean(getTauriVectorApiKey()),cached_collection_count:collectionCache.size,last_debug:lastDebug?structuredClone(lastDebug):null};}
 export function __testResetTauriVectorBackend(){sessionSecrets.clear();collectionCache.clear();collectionLocks.clear();lastDebug=null;}

@@ -251,17 +251,3 @@ export function evaluateBaselineDuplicate(op, recordsInput, {
     return { blocked: false, reason: 'no-baseline-duplicate', best_lexical: best?.score ?? 0 };
 }
 
-export function buildBaselineHint(recordsInput, maxChars = 12000) {
-    const records = Array.isArray(recordsInput) ? recordsInput : [];
-    const max = Math.max(1000, Math.min(30000, Number(maxChars) || 12000));
-    const lines = [];
-    let used = 0;
-    for (const r of records) {
-        const line = `- [${r.source_type}:${r.title}] ${r.text}`;
-        if (used + line.length + 1 > max) break;
-        lines.push(line);
-        used += line.length + 1;
-    }
-    if (records.length > lines.length) lines.push(`- ……另有 ${records.length - lines.length} 个基线分块由写入层硬过滤器处理。`);
-    return lines.join('\n');
-}

@@ -259,7 +259,7 @@ export function validateSettingStore(input) {
 
     for (const [id, source] of Object.entries(store.sources)) {
         if (id !== source.source_id) errors.push(`source key/id mismatch: ${id}`);
-        if (!store.worlds[source.world_id]) errors.push(`source ${id} points to missing world ${source.world_id}`);
+        if (!Object.prototype.hasOwnProperty.call(store.worlds, source.world_id)) errors.push(`source ${id} points to missing world ${source.world_id}`);
         if (!source.content_hash) warnings.push(`source ${id} has no content_hash yet`);
     }
 

@@ -393,3 +393,114 @@ Iteration 08 also implements the remaining proposal items:
 - failed Setting vector refresh reuses the last known-good active profile for the same provider;
 - bounded scene-evidence expansion (`collectSceneEvidence` / `injectSceneEvidenceBlock`);
 - depth `null`/blank normalization and removal of the dead eager baseline-hint computation.
+
+## 19. Iterations 09-13 boundary — retrieval profiles, Tauri backend, and the evidence loop
+
+Iterations 09-13 keep the Canonical/derived split and the setting-plane/story-plane separation from
+Sections 13-18. They add provider-neutral dense-retrieval policy, a plugin-owned vector backend for
+TauriTavern, and an on-demand evidence loop back to original chat wording.
+
+### Embedding Space Profile and vector policy (Iteration 09)
+
+`embedding-profile.js` separates representation-space identity from retrieval policy:
+
+```text
+space_fingerprint            = provider/model/endpoint/family/role transforms/dimension+norm hints
+retrieval_policy_fingerprint = calibrated thresholds + Setting multi-view RRF
+```
+
+A space change requires a derived-vector rebuild; a threshold/RRF change does not. Canonical Memory is
+never deleted on a model change, and pre-profile derived vectors are invalidated once because they lack
+the new representation-space identity. `v55-vector-policy.js` applies document/query transforms and the
+embedding-space namespacing only to Aetheria `/api/vector/*` requests; non-Aetheria collections are
+never rewritten. Labelled multi-view Setting retrieval (focus, assistant context, entity/location
+context, active-state/objective) is fused through weighted RRF and falls back to the mature single-query
+path. `retrieval-eval.js` provides provider-neutral Recall@K, Precision@K, MRR, hit rate and
+candidate-vs-baseline deltas, so threshold tuning lives in policy/evaluation rather than Canonical
+Memory semantics.
+
+### Integration closure and host compatibility (Iteration 10)
+
+Iteration 10 makes the newer v5.5 modules obey shared state ownership, privacy, generation lifecycle,
+prompt-budget, embedding-space and failure rules. The ownership guard preserves omitted module-owned
+chat fields (`setting_binding`, `entity_registry`, `hierarchical_summaries`) across Canonical replay
+while invalidating rebuildable derivatives. Private knowledge is filtered before any derived scene text
+exists. The hierarchical summary runtime (`v55-summary-runtime.js`, level1/level2/level3) shares the
+normal generation lifecycle and the single Reference budget instead of a third prompt. The host note
+stands: SillyTavern `release` does not forward a vector `secret_id`, so the serialized
+rotate/request/restore bridge was the only available isolation until Iteration 11.
+
+### TauriTavern plugin-owned vector backend (Iteration 11) and credential isolation (Iteration 12)
+
+When the Tauri Host ABI is present, Aetheria owns its derived vector backend
+(`v55-tauri-vector-backend.js`) and reaches the provider through the native HTTP bridge
+(`v55-tauri-native-http-bridge.js`). Only rebuildable derived vectors are persisted in the documented
+extension store; Canonical memories are not moved there. Native TauriTavern compatibility vector routes
+return HTTP 501, so the plugin intercepts the logical vector contract before it reaches them and the
+probe reports the real provider error. The SillyTavern `/api/vector` path and its selected-secret
+rotation bridge remain unchanged and are used only when the Tauri ABI is absent. Iteration 12 replaces
+the host secret bridge with an Aetheria-owned key, keeps the key session-only (never in WebView
+localStorage or in a vector collection), and normalizes provider URL/store keys.
+
+### Time and scope model plus the evidence loop (Iteration 13)
+
+Each memory now carries three separate notions instead of one timestamp:
+
+```text
+recorded_at      -> when it was said
+effective_from / effective_until -> the interval it applies to
+scope            -> the situation it applies in (free text, <= 200 chars)
+```
+
+`selectTemporalCandidates` is the query-time temporal channel, and `fuseHybridCandidates` accepts a
+labelled `structuredLists` structured-RRF channel beside the lexical and dense channels. The evidence
+loop closes the gap between a recalled, compressed memory and its original wording:
+
+```text
+cold turn snapshot (store.cold_turns, per-fingerprint, character-capped, oldest-first prune)
+        -> expandMemoryEvidence: live chat first, cold snapshot second
+        -> text protocol 【查阅记忆】 / 对象 / 事项 resolved on demand
+        -> bounded [MEMORY EVIDENCE — ORIGINAL TEXT, RESOLVED ON DEMAND] block
+```
+
+`v55-consistency.js` resolves the previous assistant turn's `【查阅记忆】` block and appends the evidence
+block to Reference, recording `store.last_evidence_resolution`. The cold snapshot is bounded and is not
+an unbounded archive. `v55-metrics.js` meters model calls (extraction/summary/other), embed calls/items
+and prompt/completion/embed characters with estimated tokens (chars / 4). `v55-selfcheck.js` runs six
+fixed hard cases (数字 / 否定 / 条件 / 承诺 / 偏好变化 / 跨轮) through the production fusion path (lexical +
+temporal + structured RRF + MMR) and records 6/6 with `MRR 0.750` as the regression floor.
+
+### Reliability hardening (Iteration 13)
+
+The same iteration closes reliability defects across the runtime: privacy filtering now matches raw and
+XML-escaped prompt text; vector synchronization inserts, deletes and commits hashes in that order so a
+failed transport keeps the old hashes; finalizer duplicate scene injection was removed; `/api/vector`
+responses are structurally validated and a dense query failure no longer aborts lexical recall; the
+shared interceptor prompt key is serialized across awaits; Tauri extension-store read/delete errors
+propagate; the extraction contract reports missing `event_summary`/`active_state` as warnings instead of
+wiping canonical state; op accounting no longer counts an injected noop as a committed operation; dense
+Setting metadata mapping is hash-first; the history budget probe charges for evidence; the store-integrity
+install reports failure; and a direct API connection only renders success with a verified flag. Entry
+ordering (`null`/`undefined` order) is unified through `compareSettingOrder`.
+
+### Collection lifecycle
+
+A plugin vector-collection registry records the memory and baseline collections per chat, so
+`CHAT_DELETED` purges that chat's collections and a manual purge action can clear every Aetheria-owned
+collection. Collections are derived data and remain rebuildable; Canonical Memory, extraction
+transactions and chat正文 are not stored in them.
+
+### Deliberate boundaries after Iteration 13
+
+- no real SillyTavern or Tauri runtime acceptance yet;
+- the cold snapshot is bounded rather than an unbounded archive;
+- `scope` is free text, with no natural-language time parsing;
+- token counts are estimates (chars / 4);
+- the self-check hard cases are a fixed regression floor, not a general benchmark.
+
+### Tests
+
+`npm run check` passes and 47 offline test suites pass, including the new
+`test-v55-reliability-fixes.mjs`, `test-v55-evidence.mjs`, `test-v55-temporal.mjs` and
+`test-retrieval-hard-cases.mjs`.
+

@@ -109,9 +109,13 @@ export function validateMemoryOp(op) {
     if (op.status !== undefined && !MEMORY_STATUSES.has(op.status)) errors.push(`invalid status: ${String(op.status)}`);
     if (op.importance !== undefined && !MEMORY_IMPORTANCE.has(op.importance)) errors.push(`invalid importance: ${String(op.importance)}`);
     if (op.epistemic !== undefined && !MEMORY_EPISTEMIC.has(op.epistemic)) errors.push(`invalid epistemic: ${String(op.epistemic)}`);
+    if (op.scope !== undefined && op.scope !== null && (typeof op.scope !== 'string' || op.scope.length > 200)) errors.push('scope must be a string of at most 200 characters');
+    if (typeof op.text === 'string' && op.text.length > 1200) errors.push('text exceeds 1200 characters');
     for (const key of ['entities', 'topics', 'known_by']) {
         if (op[key] !== undefined && (!Array.isArray(op[key]) || op[key].some(x => typeof x !== 'string'))) {
             errors.push(`${key} must be an array of strings`);
+        } else if (Array.isArray(op[key]) && op[key].length > 20) {
+            errors.push(`${key} must contain at most 20 items`);
         }
     }
     if (op.indexable !== undefined && typeof op.indexable !== 'boolean') errors.push('indexable must be boolean');
@@ -204,8 +208,8 @@ export function normalizeStore(store) {
     const base = createEmptyStore();
     if (!store || typeof store !== 'object') return base;
     const out = { ...base, ...store };
-    out.memories = store.memories && typeof store.memories === 'object' ? store.memories : {};
-    out.slots = store.slots && typeof store.slots === 'object' ? store.slots : {};
+    out.memories = store.memories && typeof store.memories === 'object' && !Array.isArray(store.memories) ? store.memories : {};
+    out.slots = store.slots && typeof store.slots === 'object' && !Array.isArray(store.slots) ? store.slots : {};
     out.source_fingerprints = Array.isArray(store.source_fingerprints) ? store.source_fingerprints : [];
     out.extractions = store.extractions && typeof store.extractions === 'object' && !Array.isArray(store.extractions) ? store.extractions : {};
     out.last_event_summary = typeof store.last_event_summary === 'string' ? store.last_event_summary : '';
@@ -230,7 +234,9 @@ export function getDefaultStatus(kind) {
 
 export function deriveMemoryId(sourceMessageIndex, opIndex, op) {
     const hash = fnv1a32(stableStringify(op)).toString(36);
-    return `m_${Number(sourceMessageIndex)}_${Number(opIndex)}_${hash}`;
+    const source = Number(sourceMessageIndex);
+    const index = Number(opIndex);
+    return `m_${Number.isFinite(source) ? source : -1}_${Number.isFinite(index) ? index : -1}_${hash}`;
 }
 
 function uniqueStrings(input) {
@@ -261,6 +267,7 @@ function activateSlot(store, memory, changedIds, sourceMessageIndex) {
         // Same semantic slot means the previous current state is historical now.
         previous.status = ['belief', 'knowledge'].includes(memory.kind) ? 'superseded' : 'closed';
         previous.valid_until = sourceMessageIndex;
+        previous.effective_until = sourceMessageIndex;
         previous.superseded_by = memory.id;
         changedIds.add(previous.id);
     }
@@ -348,8 +355,14 @@ function memoryFromAdd(store, op, context) {
         source_op_index: context.opIndex,
         source_hash: context.sourceHash ?? null,
         evidence_excerpt: findEvidenceExcerpt(context.sourceMessageText || '', op),
+        // Three separate time/scope notions: when it was said (recorded_at), the interval it
+        // applies to (effective_*), and the situation it applies in (scope).
+        recorded_at: context.sourceMessageIndex,
+        scope: typeof op.scope === 'string' && op.scope.trim() ? op.scope.trim().slice(0, 200) : null,
         valid_from: context.sourceMessageIndex,
         valid_until: ['closed', 'superseded', 'invalid'].includes(status) ? context.sourceMessageIndex : null,
+        effective_from: context.sourceMessageIndex,
+        effective_until: ['closed', 'superseded', 'invalid'].includes(status) ? context.sourceMessageIndex : null,
         created_seq: ++store.sequence,
         reinforcement: 0,
         recalled_count: 0,
@@ -423,9 +436,11 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             if (oldSlot && oldSlot !== target.slot && store.slots[oldSlot] === target.id) delete store.slots[oldSlot];
             if (['closed', 'superseded', 'invalid'].includes(target.status)) {
                 target.valid_until = sourceMessageIndex;
+                target.effective_until = sourceMessageIndex;
                 removeSlotIfOwned(store, target);
             } else {
                 target.valid_until = null;
+                target.effective_until = null;
                 activateSlot(store, target, changedIds, sourceMessageIndex);
             }
             changedIds.add(target.id);
@@ -435,6 +450,7 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
         if (op.op === 'close') {
             target.status = 'closed';
             target.valid_until = sourceMessageIndex;
+            target.effective_until = sourceMessageIndex;
             target.close_reason = typeof op.reason === 'string' ? op.reason.trim() : null;
             removeSlotIfOwned(store, target);
             changedIds.add(target.id);
@@ -444,6 +460,7 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
         if (op.op === 'invalidate') {
             target.status = 'invalid';
             target.valid_until = sourceMessageIndex;
+            target.effective_until = sourceMessageIndex;
             target.invalid_reason = typeof op.reason === 'string' ? op.reason.trim() : null;
             removeSlotIfOwned(store, target);
             changedIds.add(target.id);
@@ -461,6 +478,7 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
         if (op.op === 'supersede') {
             target.status = 'superseded';
             target.valid_until = sourceMessageIndex;
+            target.effective_until = sourceMessageIndex;
             removeSlotIfOwned(store, target);
             changedIds.add(target.id);
             if (op.kind && op.text) {
@@ -493,8 +511,9 @@ export function buildRetrievalText(memory) {
     if (!memory) return '';
     const entities = uniqueStrings(memory.entities);
     const topics = uniqueStrings(memory.topics);
+    const scope = typeof memory.scope === 'string' && memory.scope.trim() ? `{${memory.scope.trim()}}` : '';
     const left = [entities.join(', '), topics.join(', ')].filter(Boolean).join(' — ');
-    return `${left ? `[${left}] ` : ''}${String(memory.text ?? '').trim()}`.trim();
+    return `${scope ? `${scope} ` : ''}${left ? `[${left}] ` : ''}${String(memory.text ?? '').trim()}`.trim();
 }
 
 export function shouldIndexMemory(memory) {
@@ -898,10 +917,24 @@ export function fuseHybridCandidates(storeInput, denseLists, lexicalList, option
     (Array.isArray(denseLists) ? denseLists : []).forEach((list, listIndex) => {
         const weight = Number(denseWeights[listIndex] ?? (listIndex === 0 ? 1 : 0.82));
         (Array.isArray(list) ? list : []).forEach((memory, rankIndex) => {
+            if (!memory?.id) return;
             denseIds.add(memory.id);
             const row = add(memory);
             row.score += weight / (rrfK + rankIndex + 1);
             row.channels.push(`dense${listIndex + 1}`);
+        });
+    });
+    // Structured channel: precise candidates selected by effective-time window / scope rather than
+    // semantic similarity. They bypass the Dense Gate because they are not lexical guesses.
+    const structuredLists = Array.isArray(options.structuredLists) ? options.structuredLists : [];
+    const structuredWeight = Number(options.structuredWeight ?? 0.8);
+    structuredLists.forEach((list, listIndex) => {
+        (Array.isArray(list) ? list : []).forEach((entry, rankIndex) => {
+            const memory = entry?.memory || entry;
+            if (!memory?.id) return;
+            const row = add(memory);
+            row.score += structuredWeight / (rrfK + rankIndex + 1);
+            row.channels.push(`structured${listIndex + 1}`);
         });
     });
     (Array.isArray(lexicalList) ? lexicalList : []).forEach((item, rankIndex) => {
@@ -935,6 +968,45 @@ export function fuseHybridCandidates(storeInput, denseLists, lexicalList, option
         }
     }
     return [...byId.values()].sort((a, b) => b.score - a.score);
+}
+
+function importanceBonusOf(memory) {
+    return { low: 0, medium: 0.012, high: 0.026, critical: 0.045 }[memory?.importance] || 0;
+}
+
+/**
+ * Query-time temporal channel. `recorded_at` is when it was said (immutable), `effective_from` /
+ * `effective_until` is the interval the assertion applies to, and `scope` is the situation it
+ * applies in. Returns active memories whose effective window covers `asOfIndex`.
+ */
+export function selectTemporalCandidates(storeInput, { asOfIndex = null, scope = null, limit = 8, protectRecent = 0, chatLength = 0 } = {}) {
+    const store = normalizeStore(storeInput);
+    const asOf = Number.isFinite(Number(asOfIndex)) ? Number(asOfIndex) : Number.MAX_SAFE_INTEGER;
+    const cap = Math.max(1, Math.min(100, Number(limit) || 8));
+    const scopeKey = typeof scope === 'string' && scope.trim() ? scope.trim().toLowerCase() : null;
+    const protect = Math.max(0, Number(protectRecent) || 0);
+    const length = Math.max(0, Number(chatLength) || 0);
+    const rows = [];
+    for (const memory of Object.values(store.memories || {})) {
+        if (!memory || memory.status !== 'active' || !String(memory.text || '').trim()) continue;
+        if (protect > 0 && length > 0 && Number(memory.source_message) >= length - protect) continue;
+        const from = Number.isFinite(Number(memory.effective_from))
+            ? Number(memory.effective_from)
+            : Number(memory.recorded_at ?? memory.source_message ?? 0);
+        const untilRaw = memory.effective_until;
+        const until = untilRaw === null || untilRaw === undefined ? null : Number(untilRaw);
+        if (Number.isFinite(from) && from > asOf) continue;
+        if (until !== null && Number.isFinite(until) && until < asOf) continue;
+        const memoryScope = String(memory.scope || '').trim().toLowerCase();
+        const scopeMatch = Boolean(scopeKey && memoryScope
+            && (memoryScope === scopeKey || memoryScope.startsWith(scopeKey) || scopeKey.startsWith(memoryScope)));
+        if (scopeKey && memoryScope && !scopeMatch) continue;
+        const recency = Number.isFinite(from) ? Math.max(0, 1 - (asOf - from) / 512) : 0;
+        const score = 0.3 + recency * 0.5 + (scopeMatch ? 0.3 : 0) + importanceBonusOf(memory);
+        rows.push({ memory, score, reason: scopeMatch ? 'scope' : 'effective-window' });
+    }
+    rows.sort((a, b) => b.score - a.score || Number(b.memory.source_message ?? -1) - Number(a.memory.source_message ?? -1));
+    return rows.slice(0, cap);
 }
 
 function rarityMap(memories, selector) {
@@ -1023,7 +1095,7 @@ function jaccard(a, b) {
 
 /** MMR-like final selection to reduce repetitive callbacks. */
 export function diversifyCandidates(candidates, options = {}) {
-    const rows = Array.isArray(candidates) ? candidates : [];
+    const rows = (Array.isArray(candidates) ? candidates : []).filter(row => row && row.memory && row.memory.id);
     const finalCount = Math.max(0, Number(options.finalCount ?? 6));
     const lambda = Math.min(1, Math.max(0, Number(options.lambda ?? 0.78)));
     if (!finalCount || !rows.length) return [];

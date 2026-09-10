@@ -186,10 +186,12 @@ export function mapDenseSettingMetadata(snapshotInput, metadataInput) {
     const seen = new Set();
     for (const row of Array.isArray(metadataInput) ? metadataInput : []) {
         const index = Number(row?.index);
-        let hit = Number.isInteger(index) && index >= 0 && index < chunks.length
+        const indexHit = Number.isInteger(index) && index >= 0 && index < chunks.length
             ? { chunk: chunks[index], index }
             : null;
-        if (!hit && Number.isFinite(Number(row?.hash))) hit = byHash.get(Number(row.hash)) || null;
+        // Hash is authoritative: an incrementally maintained collection can carry a stale array
+        // index for unchanged chunks, so only fall back to `index` when no usable hash is given.
+        const hit = Number.isFinite(Number(row?.hash)) ? (byHash.get(Number(row.hash)) || indexHit) : indexHit;
         if (!hit || seen.has(hit.chunk.chunk_id)) continue;
         seen.add(hit.chunk.chunk_id);
         out.push({
@@ -384,7 +386,7 @@ export function formatRelevantSettingContext(retrievalInput, {
     const cap = Math.max(1000, Math.min(30_000, Number(maxChars) || 7000));
     let out = header;
     for (const row of rows) {
-        if (out.length + row.length + 2 > cap) break;
+        if (out.length + row.length + 2 > cap) continue;
         out += `\n\n${row}`;
     }
     return out;

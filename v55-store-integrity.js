@@ -90,7 +90,7 @@ let eventsInstalled = false;
 export function installV55StoreIntegrity(getContext = () => globalThis.SillyTavern?.getContext?.()) {
     const ctx = getContext?.();
     if (!ctx) return false;
-    installMetadataIntegrityForContext(ctx);
+    if (!installMetadataIntegrityForContext(ctx)) return false;
 
     if (!eventsInstalled && ctx.eventSource?.on) {
         const events = ctx.eventTypes || {};

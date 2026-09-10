@@ -4,7 +4,6 @@ import {
     buildQueryText,
     buildQueryVariants,
     buildRetrievalText,
-    collectOpsSources,
     computeVectorHash,
     createEmptyStore,
     diversifyCandidates,
@@ -18,12 +17,11 @@ import {
     lexicalSearchMemories,
     isMemorySettled,
     normalizeStore,
-    parseMemoryOpsFromMessage,
-    replayStoreFromChat,
     replayStoreFromExtractions,
     computeDialoguePairFingerprint,
     collectAutonomousExtractionSources,
     shouldIndexMemory,
+    selectTemporalCandidates,
     sourcesArePrefix,
     stableStringify,
     stripSummaryForQuery,
@@ -70,8 +68,10 @@ import {
 } from './setting-retriever.js';
 import { assembleGenerationContext } from './context-assembler.js';
 import { deriveActorIdentity } from './v55-runtime.js';
+import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
+import { formatMetrics, recordEmbeddingCall, recordModelCall, resetMetrics } from './v55-metrics.js';
+import { formatSelfCheck, runRetrievalSelfCheck } from './v55-selfcheck.js';
 
-const MODULE_ID = 'aetheria-unified-memory-v5_4';
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const LEGACY_SETTINGS_KEYS = ['aetheriaUnifiedMemoryV53', 'aetheriaUnifiedMemoryV52', 'aetheriaUnifiedMemoryV51'];
@@ -80,7 +80,21 @@ const LEGACY_PROMPT_KEY = 'aetheria_unified_memory_v5_4';
 const REFERENCE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_reference';
 const CURRENT_STATE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_current_state';
 const INTERCEPTOR_NAME = 'aetheriaUnifiedMemoryV54Interceptor';
-const EXTENSION_PATH = 'third-party/aetheria-unified-memory-v5_4';
+function resolveExtensionPath() {
+    // Derive the host extension folder from this module's own URL so a renamed install
+    // folder cannot silently break the settings template. Falls back to the historical path.
+    try {
+        const scriptPath = new URL(import.meta.url).pathname;
+        const marker = '/scripts/extensions/';
+        const at = scriptPath.indexOf(marker);
+        if (at >= 0) {
+            const parts = scriptPath.slice(at + marker.length).split('/');
+            if (parts.length >= 2 && parts[0] === 'third-party' && parts[1]) return parts[0] + '/' + parts[1];
+        }
+    } catch { /* non-browser hosts */ }
+    return 'third-party/aetheria-unified-memory-v5_4';
+}
+const EXTENSION_PATH = resolveExtensionPath();
 const IN_CHAT = 1;
 const SYSTEM_ROLE = 0;
 
@@ -103,7 +117,6 @@ const DEFAULT_SETTINGS = Object.freeze({
     baseline_similarity_threshold: 0.84,
     baseline_semantic_lexical_floor: 0.16,
     baseline_chunk_chars: 420,
-    baseline_hint_chars: 12000,
     // v5.5-dev Commit D: plugin-owned setting index. Lexical projection is always local;
     // vector projection is shared by world+active revision scope, never by chat id.
     setting_index_use_vector: true,
@@ -153,6 +166,15 @@ const DEFAULT_SETTINGS = Object.freeze({
     max_active_items: 12,
     protect_recent_messages: 8,
     auto_rebuild_vectors_on_history_change: true,
+    // Iteration 13: cost shape, cold原文 snapshot, temporal channel, metering.
+    extraction_batch_turns: 1,
+    cold_turn_snapshot_enabled: true,
+    cold_turn_max_chars: 200000,
+    memory_evidence_enabled: true,
+    memory_evidence_max_chars: 3000,
+    temporal_channel_enabled: true,
+    temporal_channel_limit: 6,
+    metrics_enabled: true,
     // Optional prompt-window management. Disabled by default until real-chat acceptance.
     manage_context_window: false, // reserved; v5.4 intentionally does not mutate chat history
     keep_recent_messages: 12,
@@ -416,7 +438,9 @@ function getCollectionId(ctx) {
     const rawChatId = ctx.getCurrentChatId?.() ?? ctx.chatId ?? '';
     const chatId = String(rawChatId || '').trim();
     if (!chatId) return null;
-    return `aetheria_v54_${fnv1a32(chatId).toString(36)}`;
+    const id = `aetheria_v54_${fnv1a32(chatId).toString(36)}`;
+    rememberVectorCollection(ctx, id, 'memory');
+    return id;
 }
 
 
@@ -428,7 +452,72 @@ function getChatIdentity(ctx) {
 function getBaselineCollectionId(ctx) {
     const chatId = getChatIdentity(ctx);
     if (!chatId) return null;
-    return `aetheria_v54_baseline_${fnv1a32(chatId).toString(36)}`;
+    const id = `aetheria_v54_baseline_${fnv1a32(chatId).toString(36)}`;
+    rememberVectorCollection(ctx, id, 'baseline');
+    return id;
+}
+
+function vectorCollectionRegistry(ctx) {
+    const settings = getSettings(ctx);
+    if (!settings.vector_collections || typeof settings.vector_collections !== 'object' || Array.isArray(settings.vector_collections)) {
+        settings.vector_collections = {};
+    }
+    return settings.vector_collections;
+}
+
+function rememberVectorCollection(ctx, collectionId, kind) {
+    if (!collectionId) return;
+    const registry = vectorCollectionRegistry(ctx);
+    const chatId = getChatIdentity(ctx) || null;
+    const existing = registry[collectionId];
+    if (existing && existing.chat_id === chatId && existing.kind === kind) return;
+    registry[collectionId] = { chat_id: chatId, kind, at: Date.now() };
+    ctx.saveSettingsDebounced?.();
+}
+
+function disposeVectorCollection(ctx, collectionId) {
+    const registry = vectorCollectionRegistry(ctx);
+    if (!registry[collectionId]) return;
+    delete registry[collectionId];
+    ctx.saveSettingsDebounced?.();
+}
+
+/** Deletes the vector collections of a chat that no longer exists. */
+async function purgeChatVectorCollections(ctx, chatId) {
+    const target = String(chatId || '').trim();
+    if (!target) return [];
+    const registry = vectorCollectionRegistry(ctx);
+    const ids = Object.entries(registry)
+        .filter(([, row]) => row && String(row.chat_id || '') === target)
+        .map(([id]) => id);
+    const purged = [];
+    for (const id of ids) {
+        try {
+            await withVectorLock(() => purgeVectorCollection(ctx, id));
+            purged.push(id);
+        } catch (error) {
+            log('purge chat collection failed', error);
+        }
+        disposeVectorCollection(ctx, id);
+    }
+    return purged;
+}
+
+/** Explicit maintenance action: purge every Aetheria-owned vector collection we know about. */
+async function purgeAllAetheriaCollections(ctx) {
+    const registry = vectorCollectionRegistry(ctx);
+    const ids = Object.keys(registry).filter(id => id.startsWith('aetheria_'));
+    const purged = [];
+    for (const id of ids) {
+        try {
+            await withVectorLock(() => purgeVectorCollection(ctx, id));
+            purged.push(id);
+        } catch (error) {
+            log('purge collection failed', error);
+        }
+        disposeVectorCollection(ctx, id);
+    }
+    return purged;
 }
 
 function computeBaselineVectorHash(record) {
@@ -747,7 +836,16 @@ async function runQuietExtraction(ctx, prompt, useStructured = true) {
     const settings = getSettings(ctx);
     settings.__quiet_extraction_in_progress = true;
     try {
-        return await ctx.generateQuietPrompt(options);
+        const result = await ctx.generateQuietPrompt(options);
+        if (settings.metrics_enabled !== false) {
+            const raw = typeof result === 'string' ? result : (result?.content ?? '');
+            recordModelCall(ctx, {
+                kind: 'extraction',
+                promptChars: String(prompt ?? '').length,
+                completionChars: String(raw ?? '').length,
+            });
+        }
+        return result;
     } finally {
         delete settings.__quiet_extraction_in_progress;
     }
@@ -791,7 +889,7 @@ ${pair.assistantText}`,
     const prompt = buildAutonomousExtractionPrompt({
         userText: pair.userText,
         assistantText: pair.assistantText,
-        recentContext: buildRecentContextForExtraction(rows, assistantIndex, settings.extraction_context_messages),
+        recentContext: buildRecentContextForExtraction(rows, assistantIndex, extractionContextMessages(settings)),
         canonicalState: formatCanonicalStateForExtraction(store),
         relevantSettingContext,
         hostBaselineContext: relevantHostBaseline,
@@ -881,6 +979,20 @@ ${pair.assistantText}`,
         generation_mode: mode,
     };
     store.extractions[pair.key] = record;
+    // Cold原文 snapshot: the live chat is the only other copy, and an edit or delete would
+    // destroy it. Snapshot the pair under the same fingerprint the memory points at.
+    if (settings.cold_turn_snapshot_enabled === false) {
+        pruneColdTurns(store, settings.cold_turn_max_chars);
+    } else {
+        recordColdTurn(store, {
+            source_key: pair.key,
+            fingerprint: pair.hash,
+            assistantIndex,
+            userIndex: pair.userIndex,
+            userText: pair.userText,
+            assistantText: pair.assistantText,
+        }, { maxChars: settings.cold_turn_max_chars });
+    }
 
     let changedIds = [];
     let applyErrors = [];
@@ -909,9 +1021,9 @@ ${pair.assistantText}`,
         });
         store = applied.store;
         store.extractions[pair.key] = record;
-        store.last_active_state = parsed.activeState;
+        if (parsed.activeState) store.last_active_state = parsed.activeState;
         store.last_active_state_source = assistantIndex;
-        store.last_event_summary = parsed.eventSummary;
+        if (parsed.eventSummary) store.last_event_summary = parsed.eventSummary;
         store.source_fingerprints = collectAutonomousExtractionSources(current.chat || [], store.extractions)
             .map(x => ({ index: x.assistantIndex, hash: x.hash }));
         changedIds = applied.changedIds;
@@ -919,9 +1031,9 @@ ${pair.assistantText}`,
     }
     const elapsed = (performance.now?.() ?? Date.now()) - started;
     store.last_extraction_debug = {
-        status: 'ok', message_index: assistantIndex, source_key: pair.key,
+        status: applyErrors.length ? 'partial' : 'ok', message_index: assistantIndex, source_key: pair.key,
         elapsed_ms: Math.round(elapsed * 10) / 10,
-        op_count: validOps.length,
+        op_count: validOps.filter(op => op.op !== 'noop').length,
         baseline_input_count: validatedOps.length,
         baseline_rejected_count: baselineRejections.length,
         baseline_rejections: baselineRejections,
@@ -953,9 +1065,30 @@ ${pair.assistantText}`,
     setStore(current, store);
     if (replacingExistingRecord && settings.vector_recall) await rebuildVectorIndex(current, { silent: true });
     else await syncChangedVectors(current, [...new Set(changedIds)]);
-    if (settings.extraction_notifications) notify('success', `已提交记忆操作 ${validOps.length} 个；Baseline拦截 ${baselineRejections.length} 个。`, '自动记忆');
+    if (settings.extraction_notifications) {
+        const committedOps = validOps.filter(op => op.op !== 'noop').length;
+        if (applyErrors.length || validationErrors.length) notify('warning', `记忆抽取部分失败：提交 ${committedOps} 个，错误 ${applyErrors.length + validationErrors.length} 条。`, '自动记忆');
+        else notify('success', `已提交记忆操作 ${committedOps} 个；Baseline拦截 ${baselineRejections.length} 个。`, '自动记忆');
+    }
     log('autonomous extraction complete', store.last_extraction_debug);
     return { record, changedIds, baselineRejections, errors: [...validationErrors, ...applyErrors] };
+}
+
+function countAssistantTurns(chat, upToIndex) {
+    const rows = Array.isArray(chat) ? chat : [];
+    let count = 0;
+    for (let i = 0; i <= upToIndex && i < rows.length; i++) {
+        if (rows[i] && !rows[i].is_user && !rows[i].is_system) count += 1;
+    }
+    return count;
+}
+
+function extractionContextMessages(settings) {
+    const base = Math.max(0, Math.min(12, Number(settings.extraction_context_messages) || 0));
+    const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
+    // A batch of N samples the extractor every N-th turn; widen the recent-context window so the
+    // skipped span is still visible to the model instead of being silently dropped.
+    return Math.min(12, base + (batch - 1) * 2);
 }
 
 function scheduleLatestAssistantExtraction({ force = false } = {}) {
@@ -965,6 +1098,8 @@ function scheduleLatestAssistantExtraction({ force = false } = {}) {
     if (!settings.auto_extract) return;
     const index = findLatestAssistantIndex(ctx.chat || []);
     if (index < 0) return;
+    const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
+    if (!force && batch > 1 && countAssistantTurns(ctx.chat || [], index) % batch !== 0) return;
     void enqueueExtraction(() => extractMemoryForAssistant(getContext(), index, { force }));
 }
 
@@ -1068,32 +1203,55 @@ async function vectorRequest(ctx, endpoint, payload) {
     }
     if (response.status === 204) return null;
     const contentType = response.headers.get('content-type') || '';
-    return contentType.includes('application/json') ? await response.json() : await response.text();
+    if (!contentType.includes('application/json')) return await response.text();
+    let body = null;
+    try {
+        body = await response.json();
+    } catch (error) {
+        throw new Error(`Vector API ${endpoint} returned unparseable JSON: ${String(error?.message || error)}`);
+    }
+    if (body && typeof body === 'object' && (body.ok === false || body.success === false || body.error)) {
+        throw new Error(`Vector API ${endpoint} reported failure: ${String(body.error || body.message || 'unknown error')}`);
+    }
+    return body;
 }
 
 async function vectorInsert(ctx, provider, collectionId, items) {
-    if (!items.length) return;
-    await vectorRequest(ctx, 'insert', {
+    if (!items.length) return null;
+    const result = await vectorRequest(ctx, 'insert', {
         ...provider.body,
         collectionId,
         items,
         source: provider.source,
     });
+    const inserted = Number(result?.inserted ?? result?.count ?? NaN);
+    if (Number.isFinite(inserted) && inserted < items.length) {
+        throw new Error(`Vector insert stored ${inserted}/${items.length} items.`);
+    }
+    if (getSettings(ctx)?.metrics_enabled !== false) {
+        recordEmbeddingCall(ctx, { count: items.length, chars: items.reduce((n, item) => n + String(item?.text || '').length, 0) });
+    }
+    return result;
 }
 
 async function vectorDelete(ctx, provider, collectionId, hashes) {
     const unique = [...new Set(hashes.map(Number).filter(Number.isFinite))];
     if (!unique.length) return;
-    await vectorRequest(ctx, 'delete', {
+    const result = await vectorRequest(ctx, 'delete', {
         ...provider.body,
         collectionId,
         hashes: unique,
         source: provider.source,
     });
+    const deleted = Number(result?.deleted ?? result?.count ?? NaN);
+    if (Number.isFinite(deleted) && deleted < unique.length) {
+        throw new Error(`Vector delete removed ${deleted}/${unique.length} hashes.`);
+    }
+    return result;
 }
 
 async function vectorQuery(ctx, provider, collectionId, searchText, topK, threshold) {
-    return await vectorRequest(ctx, 'query', {
+    const result = await vectorRequest(ctx, 'query', {
         ...provider.body,
         collectionId,
         searchText,
@@ -1101,6 +1259,16 @@ async function vectorQuery(ctx, provider, collectionId, searchText, topK, thresh
         threshold,
         source: provider.source,
     });
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+        throw new Error('Vector query returned no JSON object.');
+    }
+    if (!Array.isArray(result.metadata)) {
+        throw new Error('Vector query response is missing the metadata array.');
+    }
+    if (getSettings(ctx)?.metrics_enabled !== false) {
+        recordEmbeddingCall(ctx, { count: 1, chars: String(searchText || '').length });
+    }
+    return result;
 }
 
 async function purgeVectorCollection(ctx, collectionId) {
@@ -1537,9 +1705,9 @@ async function retrievePluginSettings(ctx, queryInput, options = {}) {
                 prepared.collection_id,
                 query.text,
                 candidateTopK,
-                Math.max(0, Math.min(1, Number(settings.setting_retrieval_dense_threshold) || 0.18)),
+                Math.max(0, Math.min(1, Number.isFinite(Number(settings.setting_retrieval_dense_threshold)) ? Number(settings.setting_retrieval_dense_threshold) : 0.18)),
             ));
-            dense = mapDenseSettingMetadata(prepared, response?.metadata || []);
+            dense = mapDenseSettingMetadata(prepared, response.metadata);
             denseAvailable = true;
         } catch (error) {
             denseReason = `setting dense query failed: ${String(error?.message || error)}`;
@@ -1794,13 +1962,14 @@ async function syncChangedVectors(ctx, changedIds = []) {
         const deleteHashes = [];
         const insertItems = [];
         let insertIndex = 0;
+        const pendingHashes = new Map();
         for (const id of idsToSync) {
             const memory = store.memories[id];
             if (!memory) continue;
             const oldHash = memory.vector_hash == null ? null : Number(memory.vector_hash);
             if (!shouldIndexMemory(memory) || !isMemorySettled(memory, ctx.chat?.length || 0, settings.vector_settle_messages)) {
                 if (Number.isFinite(oldHash)) deleteHashes.push(oldHash);
-                memory.vector_hash = null;
+                pendingHashes.set(id, null);
                 continue;
             }
             const newHash = computeVectorHash(memory);
@@ -1808,12 +1977,18 @@ async function syncChangedVectors(ctx, changedIds = []) {
             if (!Number.isFinite(oldHash) || oldHash !== newHash) {
                 insertItems.push({ hash: newHash, text: buildRetrievalText(memory), index: insertIndex++ });
             }
-            memory.vector_hash = newHash;
+            pendingHashes.set(id, newHash);
         }
+        // Vectors must land before the local hash pointers move: on transport failure we keep the
+        // previous hashes so the same memories are retried instead of being treated as indexed.
         await withVectorLock(async () => {
-            await vectorDelete(ctx, provider, collectionId, deleteHashes);
             await vectorInsert(ctx, provider, collectionId, insertItems);
+            await vectorDelete(ctx, provider, collectionId, deleteHashes);
         });
+        for (const [id, hash] of pendingHashes) {
+            const memory = store.memories[id];
+            if (memory) memory.vector_hash = hash;
+        }
         store.vector.stale = false;
         store.vector.last_error = null;
         store.vector.last_sync_at = Date.now();
@@ -1897,7 +2072,7 @@ async function recallMemories(ctx, interceptorChat) {
     const store = getStore(ctx);
     const { provider, fingerprintChanged } = getProviderStatus(ctx, store);
     const collectionId = getCollectionId(ctx);
-    const denseAvailable = Boolean(
+    let denseAvailable = Boolean(
         provider.supported
         && !fingerprintChanged
         && !store.vector.stale
@@ -1916,25 +2091,33 @@ async function recallMemories(ctx, interceptorChat) {
         const denseLists = [];
         const denseDebug = [];
         if (denseAvailable) {
-            await withVectorLock(async () => {
-                for (const variant of variants) {
-                    const result = await vectorQuery(
-                        ctx,
-                        provider,
-                        collectionId,
-                        variant.text,
-                        Math.max(1, Number(settings.candidate_top_k) || 18),
-                        Math.min(1, Math.max(0, Number(settings.score_threshold) || 0)),
-                    );
-                    const dense = filterRecalledMemories(store, result?.metadata || [], {
-                        finalCount: Math.max(1, Number(settings.candidate_top_k) || 18),
-                        protectRecent: settings.protect_recent_messages,
-                        chatLength: ctx.chat?.length || 0,
-                    });
-                    denseLists.push(dense);
-                    denseDebug.push({ name: variant.name, count: dense.length, ids: dense.map(m => m.id) });
-                }
-            });
+            try {
+                await withVectorLock(async () => {
+                    for (const variant of variants) {
+                        const result = await vectorQuery(
+                            ctx,
+                            provider,
+                            collectionId,
+                            variant.text,
+                            Math.max(1, Number(settings.candidate_top_k) || 18),
+                            Math.min(1, Math.max(0, Number(settings.score_threshold) || 0)),
+                        );
+                        const dense = filterRecalledMemories(store, result.metadata, {
+                            finalCount: Math.max(1, Number(settings.candidate_top_k) || 18),
+                            protectRecent: settings.protect_recent_messages,
+                            chatLength: ctx.chat?.length || 0,
+                        });
+                        denseLists.push(dense);
+                        denseDebug.push({ name: variant.name, count: dense.length, ids: dense.map(m => m.id) });
+                    }
+                });
+            } catch (error) {
+                // A failed dense query must not fail the whole recall; lexical retrieval and the
+                // Dense Gate semantics both depend on knowing dense is genuinely unavailable.
+                denseAvailable = false;
+                denseDebug.push({ error: String(error?.message || error) });
+                store.vector.last_error = String(error?.message || error);
+            }
         }
 
         const lexicalQuery = variants.find(v => v.name === 'context')?.text || variants[0].text;
@@ -1945,6 +2128,13 @@ async function recallMemories(ctx, interceptorChat) {
                 chatLength: ctx.chat?.length || 0,
             })
             : [];
+        // Third recall channel: effective-time window / scope precision, independent of similarity.
+        const structured = settings.temporal_channel_enabled === false ? [] : selectTemporalCandidates(store, {
+            asOfIndex: ctx.chat?.length || 0,
+            limit: settings.temporal_channel_limit,
+            protectRecent: settings.protect_recent_messages,
+            chatLength: ctx.chat?.length || 0,
+        });
 
         // If no Dense backend is available, lexical becomes an intentional fallback and is not gated.
         // If Dense is available, lexical-only candidates need semantic agreement, except exact entity matches.
@@ -1953,6 +2143,7 @@ async function recallMemories(ctx, interceptorChat) {
             denseWeights: variants.map(v => v.weight),
             lexicalWeight: settings.lexical_weight,
             denseGate: denseAvailable,
+            structuredLists: structured.length ? [structured] : [],
             currentMessage: ctx.chat?.length || 0,
             cooldownTurns: settings.recall_cooldown_turns,
         });
@@ -1980,6 +2171,7 @@ async function recallMemories(ctx, interceptorChat) {
             dense: denseDebug,
             lexical: lexical.slice(0, 20).map(x => ({ id: x.memory.id, score: Math.round(x.score * 1000) / 1000, entityMatches: x.entityMatches })),
             fused: fusedBeforeGraph.slice(0, 24),
+            structured: structured.map(x => ({ id: x.memory.id, score: Math.round(x.score * 1000) / 1000, reason: x.reason })),
             graph_top: fused.slice(0, 20).map(x => ({ id: x.memory.id, score: x.score, graphScore: x.graphScore ?? null })),
             selected: selected.map(x => ({ id: x.memory.id, score: x.score, mmrScore: x.mmrScore ?? null })),
         };
@@ -2478,6 +2670,27 @@ async function setupUi() {
     bindCheckbox('aum-v54-auto-rebuild', 'auto_rebuild_vectors_on_history_change');
     bindCheckbox('aum-v54-manage-window', 'manage_context_window');
     bindCheckbox('aum-v54-debug', 'debug');
+    // Iteration 13 controls: cold snapshot, temporal channel, metering, batching, evidence budget.
+    bindCheckbox('aum-v54-cold-snapshot', 'cold_turn_snapshot_enabled');
+    bindCheckbox('aum-v54-evidence-enabled', 'memory_evidence_enabled');
+    bindCheckbox('aum-v54-temporal-channel', 'temporal_channel_enabled');
+    bindCheckbox('aum-v54-metrics', 'metrics_enabled');
+    bindNumber('aum-v54-extract-batch', 'extraction_batch_turns', { min: 1, max: 10, integer: true });
+    bindNumber('aum-v54-evidence-chars', 'memory_evidence_max_chars', { min: 400, max: 8000, integer: true });
+    const selfCheckOutput = document.getElementById('aum-v54-selfcheck');
+    const writeSelfCheck = text => { if (selfCheckOutput) selfCheckOutput.textContent = String(text ?? ''); };
+    document.getElementById('aum-v54-run-selfcheck')?.addEventListener('click', () => {
+        const report = runRetrievalSelfCheck();
+        getSettings(ctx).selfcheck_last = { passed: report.passed, total: report.total, ok: report.ok, at: Date.now() };
+        ctx.saveSettingsDebounced?.();
+        writeSelfCheck(formatSelfCheck(report));
+    });
+    document.getElementById('aum-v54-show-metrics')?.addEventListener('click', () => writeSelfCheck(formatMetrics(ctx)));
+    document.getElementById('aum-v54-reset-metrics')?.addEventListener('click', () => { resetMetrics(ctx); writeSelfCheck(formatMetrics(ctx)); });
+    document.getElementById('aum-v54-purge-collections')?.addEventListener('click', async () => {
+        const purged = await purgeAllAetheriaCollections(ctx);
+        writeSelfCheck(`已清理 ${purged.length} 个 Aetheria 向量集合。`);
+    });
     bindSelect('aum-v54-source-mode', 'vector_source_mode');
     bindNumber('aum-v54-extract-context', 'extraction_context_messages', { min: 0, max: 12, integer: true });
     bindNumber('aum-v54-freshness-wait', 'memory_freshness_wait_ms', { min: 0, max: 5000, integer: true });
@@ -2485,7 +2698,6 @@ async function setupUi() {
     bindNumber('aum-v54-baseline-semantic', 'baseline_similarity_threshold', { min: 0.5, max: 1 });
     bindNumber('aum-v54-baseline-semantic-floor', 'baseline_semantic_lexical_floor', { min: 0, max: 1 });
     bindNumber('aum-v54-baseline-chunk', 'baseline_chunk_chars', { min: 120, max: 1200, integer: true });
-    bindNumber('aum-v54-baseline-hint', 'baseline_hint_chars', { min: 1000, max: 30000, integer: true });
     bindCheckbox('aum-v54-quiet-third-party', 'quiet_allow_third_party_injection');
     bindCheckbox('aum-v54-setting-index-vector', 'setting_index_use_vector');
     bindCheckbox('aum-v54-setting-index-auto', 'setting_index_auto_rebuild');
@@ -2630,6 +2842,16 @@ function registerEvents() {
             scheduleLatestAssistantExtraction({ force: false });
         });
         scheduleStatusUpdate();
+    });
+
+    // Deleted chats used to leave their per-chat memory/baseline vector collections behind.
+    onIf(eventTypes.CHAT_DELETED, chatId => {
+        void enqueue(async () => {
+            const current = getContext();
+            if (!current) return;
+            const purged = await purgeChatVectorCollections(current, chatId);
+            if (purged.length) log('purged vector collections for deleted chat', purged);
+        });
     });
 }
 

@@ -20,6 +20,7 @@ import {
 import { sanitizeStoreForActor } from './v55-privacy.js';
 import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
+import { formatEvidenceBlock, resolveMemoryLookupRequests } from './v55-evidence.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -61,7 +62,20 @@ function generationSuppressed(settings, args) {
     };
 }
 
+let generationChain = Promise.resolve();
+
 export async function runWithV55Consistency(ctx, innerInterceptor, args) {
+    // Every layer swaps the shared ctx.setExtensionPrompt across an await, so two overlapping
+    // generations would capture each other's prompt writes. Serialize the whole chain.
+    const run = generationChain.then(
+        () => runWithV55ConsistencyInner(ctx, innerInterceptor, args),
+        () => runWithV55ConsistencyInner(ctx, innerInterceptor, args),
+    );
+    generationChain = run.then(() => undefined, () => undefined);
+    return run;
+}
+
+async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
     if (!ctx || typeof innerInterceptor !== 'function') return;
     const settings = ctx.extensionSettings?.[SETTINGS_KEY];
     if (!settings) return innerInterceptor(...args);
@@ -118,12 +132,26 @@ export async function runWithV55Consistency(ctx, innerInterceptor, args) {
 
     const hierarchicalBlock = getHierarchicalSummaryContext(ctx, { actor, store, maxChars: settings.summary_max_context_chars });
     const summaryVisibility = store.hierarchical_summaries?.visibility_debug || {};
+    // On-demand backlink: if the previous assistant turn emitted a 【查阅记忆】 block, resolve it
+    // against the live chat first and the cold snapshot second, and add bounded原文 evidence.
+    const evidenceBlock = settings.memory_evidence_enabled === false ? '' : (() => {
+        const rows = Array.isArray(ctx.chat) ? ctx.chat : [];
+        const lastAssistant = [...rows].reverse().find(row => row && !row.is_user && !row.is_system);
+        if (!lastAssistant) return '';
+        const resolved = resolveMemoryLookupRequests(store, rows, String(lastAssistant.mes || ''), {
+            maxChars: settings.memory_evidence_max_chars,
+        });
+        return formatEvidenceBlock(resolved.entries, { maxChars: settings.memory_evidence_max_chars });
+    })();
     let referenceWithDerived = injectSceneSummaryBlock(visibleCanonical.referenceBlock, hierarchicalBlock);
     referenceWithDerived = injectSceneSummaryBlock(referenceWithDerived, formatSceneSummaryBlock(selectedScenes));
     referenceWithDerived = injectSceneEvidenceBlock(
         referenceWithDerived,
         collectSceneEvidence(sanitized.store, selectedScenes, { maxChars: 1200 }),
     );
+
+    if (evidenceBlock) referenceWithDerived = `${referenceWithDerived}\n\n${evidenceBlock}`;
+    store.last_evidence_resolution = { chars: evidenceBlock.length, at: Date.now() };
 
     const bounded = budgetPromptPair(referenceWithDerived, visibleCanonical.currentStateBlock, {
         contextSize: args?.[1],

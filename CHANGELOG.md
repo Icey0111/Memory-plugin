@@ -1,5 +1,106 @@
 # Changelog
 
+## 5.5-dev Iteration 13 — Reliability fixes, time/scope model and the evidence loop
+
+### Added
+- `v55-evidence.js`: cold turn snapshot in chat metadata under `store.cold_turns` (per-fingerprint, character-capped, oldest-first pruning); `expandMemoryEvidence` resolves a memory back to its original wording from the live chat first and the cold snapshot second.
+- `v55-evidence.js` text protocol `【查阅记忆】` / 对象 / 事项 parsed and resolved on demand, and a bounded `[MEMORY EVIDENCE — ORIGINAL TEXT, RESOLVED ON DEMAND]` block emitted by `formatEvidenceBlock`.
+- `v55-metrics.js`: `model_calls` (extraction/summary/other), `embed_calls` / `embed_items`, prompt/completion/embed character counts and estimated tokens (chars / 4), with `formatMetrics` / `resetMetrics`; persisted in extension settings.
+- `v55-selfcheck.js`: six fixed hard cases (数字 / 否定 / 条件 / 承诺 / 偏好变化 / 跨轮) executed through the production fusion path (lexical + temporal + structured RRF + MMR) with recall/precision/MRR from `retrieval-eval.js`.
+- Memory time/scope model in `memory-core.js`: `recorded_at` (when it was said), `effective_from` / `effective_until` (the interval it applies to) and `scope` (the situation it applies in, bounded to 200 chars); `selectTemporalCandidates` as the query-time temporal channel; `fuseHybridCandidates` accepts a labelled `structuredLists` structured-RRF channel; retrieval text includes `scope`.
+- `memory-extractor.js`: `scope` added to the extraction JSON schema, normalizer and prompt.
+- `index.js`: cold snapshot recorded at extraction; temporal channel added to recall and its picks exposed in recall diagnostics; metering wired to quiet extraction and embedding insert/query; `extraction_batch_turns` every-N-turn sampling with a widened recent-context window; `CHAT_DELETED` purges that chat's memory/baseline collections through a plugin vector-collection registry, plus a manual purge action; diagnostics UI controls.
+- `v55-consistency.js`: resolves the previous assistant turn's `【查阅记忆】` block and appends the evidence block to Reference; records `store.last_evidence_resolution`.
+- `v55-summary-runtime.js`: `summary_auto_rebuild_on_history_change` now defaults to `true`; summary calls are metered; a summary skipped because extraction is in flight is retried after 1.5s.
+
+### Fixed
+- **Privacy filter missed XML-escaped text.** `v55-finalizer.js` matched hidden memories against raw prompt lines only, so secrets containing `& < > ' "` stayed in the prompt while being reported hidden; it now matches the raw line and its XML-escaped form.
+- **Vector sync could lose a vector permanently.** `index.js` wrote `memory.vector_hash` before the transport call, so a failed insert left no matching vector and a later sync reset `stale` to false; ordering is now insert → delete → commit hashes, and a failure keeps the old hashes.
+- **Duplicate, un-sanitized scene injection.** `v55-finalizer.js` re-injected scene summary and scene evidence that consistency already injects from the actor-sanitized store; the finalizer injection was removed.
+- **`/api/vector` responses were trusted on HTTP status alone.** `index.js` now validates JSON parse, `ok`/`success`/`error`, the metadata array and inserted/deleted counts, and a dense query failure no longer aborts lexical recall.
+- **Shared prompt key raced across interceptor wrappers.** Three wrappers swapped the shared `ctx.setExtensionPrompt` across an `await`; `v55-consistency.js` now serializes the chain so overlapping generations cannot cross-contaminate.
+- **Tauri extension-store errors were swallowed.** `v55-tauri-vector-backend.js` read/delete failures (blank collection overwrite, false purge success) now propagate.
+- **Extraction contract.** A non-array `operations` payload is rejected; missing `event_summary` / `active_state` are reported as warnings instead of wiping canonical state; dropped operations are counted (`memory-extractor.js` + `index.js`).
+- **Op accounting.** `op_count` / notification counted the injected noop as a committed op and reported success despite apply errors; fixed in `index.js`.
+- **Stale index use in dense Setting mapping.** `setting-retriever.js` now prefers the authoritative hash over a stale array index (hash-first, index fallback).
+- **History budget probe ignored `<evidence>` cost.** `context-assembler.js` now charges the probe for evidence so high-importance evidence memories are not dropped.
+- **Store-integrity install could report false success.** `v55-store-integrity.js` returned true even when the accessor guard could not be installed.
+- **Direct API connection reported unverified success.** `v55-api-connections.js` no longer persists `enabled=true` before the probe and the panel renders a verified flag instead of always showing success.
+- Unified entry ordering (`order` null/undefined) across the list view and the index view via `compareSettingOrder` (`setting-index.js`, `setting-store.js`).
+- Tauri Embedding API key is no longer persisted in WebView localStorage; it is session-only (`v55-tauri-vector-backend.js`).
+- `EXTENSION_PATH` is derived from `import.meta.url` instead of a hardcoded `v5_4` folder.
+- Dead code removed: whole files `v55-summary.js` and `v55-tauri-api-compat.js`; `appendRowsWithBudget`, `buildBaselineHint`, `getWorld`, `assertSettingStoreValid`, `assertSameImmutableRecord`, `embeddingEndpoint`, `MODULE_ID`, unused imports and the stale `baseline_hint_chars` setting.
+
+### Validated
+- `npm run check` passes.
+- 47 offline test suites pass, including new `test-v55-reliability-fixes.mjs`, `test-v55-evidence.mjs`, `test-v55-temporal.mjs` and `test-retrieval-hard-cases.mjs`.
+- `v55-selfcheck.js` fixed hard cases pass 6/6 with `MRR 0.750` recorded as the regression floor.
+
+### Scope boundary
+- No real SillyTavern or Tauri runtime acceptance yet.
+- The cold snapshot is bounded, not an unbounded archive.
+- `scope` is free text; there is no natural-language time parsing.
+- Token counts are estimates (chars / 4).
+
+## 5.5-dev Iteration 12 — Tauri embedding credential isolation
+
+### Fixed
+- Tauri embeddings use an Aetheria-owned key instead of the host secret bridge, so the plugin no longer depends on host Secret Store plaintext exposure for its own embedding requests.
+- URL and store key normalization for the Tauri embedding provider.
+
+### Scope boundary
+- Native Jina `task` forwarding and host Vector Storage reuse on Tauri remain out of scope; the plugin owns the derived vector path.
+
+## 5.5-dev Iteration 11 — TauriTavern plugin-owned vector backend
+
+### Added
+- `v55-tauri-vector-backend.js`: plugin-owned derived vector backend selected only when the Tauri Host ABI is present (`insert` / `query` / `list` / `delete` / `purge`) with Float32 base64 vectors, cached norms, cosine ranking and extension-store persistence.
+- `v55-tauri-native-http-bridge.js`: native HTTP bridge for direct OpenAI-compatible `/embeddings` requests, with `retrieval.passage` for documents and `retrieval.query` for queries.
+- Probe behaviour that validates provider embedding, role distinction, plugin persistence, cosine retrieval and cleanup together, and reports the real provider error instead of TauriTavern's `vector_endpoint_unavailable` 501.
+
+### Safety / semantics
+- Only rebuildable derived vectors are persisted in the Tauri store; Canonical memories are not moved there.
+- Secret boundary: Aetheria does not use the host Secret Store for its own embeddings and does not weaken TauriTavern key-masking policy.
+- The SillyTavern `/api/vector` path and its selected-secret rotation bridge remain unchanged and are used only when the Tauri ABI is absent.
+
+### Scope boundary
+- Iteration 12 then replaced the host secret bridge with an Aetheria-owned key. The first direct embedding request after a full restart may still require re-entering the key when the host still refuses plaintext secret exposure.
+
+## 5.5-dev Iteration 10 — Integration closure and host compatibility
+
+### Added
+- Hierarchical summary runtime (`v55-summary-runtime.js`) with level1/level2/level3 summaries sharing the normal generation lifecycle and budget.
+- Store-ownership contract test; the full-stack lifecycle test imports `index-v55-bootstrap.js`.
+- CI workflow `.github/workflows/iteration10-ci.yml` running syntax checks and the Node test chain.
+
+### Fixed
+- Canonical replay no longer erases module-owned chat state; omitted module-owned fields such as `setting_binding`, `entity_registry` and `hierarchical_summaries` are preserved while rebuildable derivatives are invalidated (`v55-store-integrity.js`).
+- Private knowledge is filtered before derived scene text exists; mixed transaction summaries are rebuilt from visible operations only and hierarchical visibility propagates recursively through source IDs (`v55-privacy.js`).
+- Memory and Baseline indexes carry per-chat embedding-space identity (policy v3); a built legacy index with no per-index fingerprint is not trusted.
+- Independent embedding credentials fail closed, and vector policy failures never resend the raw request.
+
+### Scope boundary
+- Iteration 10 documents that SillyTavern `release` cannot forward a vector `secret_id`, so its serialized rotate/request/restore bridge is the only available isolation; Iteration 11 replaces this on Tauri.
+- No real-browser/SillyTavern end-to-end acceptance was claimed.
+
+## 5.5-dev Iteration 9 — Embedding Space Profile and provider-neutral evaluation
+
+### Added
+- `embedding-profile.js`: embedding-space identity separate from retrieval policy, with a `space_fingerprint` (provider/model/endpoint/family/role transforms/dimension+normalization hints) and a `retrieval_policy_fingerprint` (calibrated thresholds + Setting multi-view RRF).
+- `v55-vector-policy.js`: Aetheria-owned request policy for Aetheria `/api/vector/*` calls only, applying the document/query transforms and namespacing private physical collections by embedding-space fingerprint.
+- Multi-view Setting dense retrieval: labelled Setting queries retrieve focus, assistant context, entity/location context and active-state/objective views, then combine rankings through weighted RRF; failure falls back to the single-query path.
+- `retrieval-eval.js`: provider-neutral Recall@K, Precision@K, MRR, hit rate, minimum-recall threshold calibration and candidate-vs-baseline deltas.
+- Tests `test-embedding-profile.mjs`, `test-retrieval-eval.mjs` and `test-v55-vector-policy.mjs`, added to the normal test chain.
+
+### Safety / semantics
+- A model-space change requires a derived-vector rebuild; a threshold/RRF change does not.
+- Canonical Memory is never deleted on a model change; pre-profile derived vectors are invalidated once because they lack the new representation-space identity.
+- No request rewrite touches non-Aetheria vector collections, and no API secret enters an embedding fingerprint or Canonical Memory.
+
+### Scope boundary
+- No real-browser SillyTavern acceptance, native Jina `task` forwarding, universal Cross-Encoder rerank transport or automatic Gold-dataset generation.
+- Jina deliberately remains symmetric through the current ST vLLM bridge because provider-native `task` forwarding is not guaranteed.
+
 ## 5.5-dev Iteration 8 — Release-blocking fixes + proposal closure
 
 ### Fixed

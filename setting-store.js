@@ -5,14 +5,12 @@
 // changing imported world data creates a new revision instead of mutating an old one.
 
 import {
-    canonicalSettingJson,
     createEmptySettingStore,
     migrateSettingStore,
     normalizeSettingEntry,
     normalizeSettingRevision,
     normalizeSourceRecord,
     normalizeWorldRecord,
-    validateSettingStore,
 } from './setting-schema.js';
 
 function timestamp(now = Date.now) {
@@ -47,11 +45,7 @@ function assertWorld(store, worldId) {
 }
 
 function assertUnique(map, id, kind) {
-    if (map[id]) throw new Error(`${kind} already exists: ${id}`);
-}
-
-function assertJsonEqual(a, b, message) {
-    if (canonicalSettingJson(a) !== canonicalSettingJson(b)) throw new Error(message);
+    if (Object.prototype.hasOwnProperty.call(map, id)) throw new Error(`${kind} already exists: ${id}`);
 }
 
 export function createSettingStore(options = {}) {
@@ -273,10 +267,6 @@ export function deleteWorld(input, worldId, { cascade = false, now = Date.now } 
     }, now);
 }
 
-export function getWorld(input, worldId) {
-    return baseStore(input).worlds[worldId] || null;
-}
-
 export function listWorlds(input) {
     return Object.values(baseStore(input).worlds).sort((a, b) => a.created_at - b.created_at || a.name.localeCompare(b.name));
 }
@@ -291,20 +281,15 @@ export function listEntriesForRevision(input, revisionId, { includeDisabled = tr
     return Object.values(baseStore(input).entries)
         .filter(row => row.revision_id === revisionId && (includeDisabled || !row.disabled))
         .sort((a, b) => {
-            const ao = a.order === null ? Number.MAX_SAFE_INTEGER : a.order;
-            const bo = b.order === null ? Number.MAX_SAFE_INTEGER : b.order;
-            return ao - bo || a.entry_id.localeCompare(b.entry_id);
+            const ao = a.order == null ? null : Number(a.order);
+            const bo = b.order == null ? null : Number(b.order);
+            const aFinite = Number.isFinite(ao);
+            const bFinite = Number.isFinite(bo);
+            if (aFinite && bFinite && ao !== bo) return ao - bo;
+            if (aFinite !== bFinite) return aFinite ? -1 : 1;
+            const so = String(a.source_entry_id ?? '').localeCompare(String(b.source_entry_id ?? ''), undefined, { numeric: true });
+            if (so) return so;
+            return a.entry_id.localeCompare(b.entry_id);
         });
 }
 
-export function assertSettingStoreValid(input) {
-    const result = validateSettingStore(input);
-    if (!result.ok) throw new Error(`Invalid Setting Store: ${result.errors.join('; ')}`);
-    return result.store;
-}
-
-// Internal invariant helper used by tests: immutable records with the same id must compare identically.
-export function assertSameImmutableRecord(a, b, label = 'record') {
-    assertJsonEqual(a, b, `${label} is immutable and cannot be changed in place.`);
-    return true;
-}
