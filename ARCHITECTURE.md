@@ -452,6 +452,16 @@ never uses the host status command, and `deleteCollection` probes existence with
 timeout text is annotated with a reachability hint, because a timeout there means the device cannot
 reach the provider through the host's HTTP stack, not that the Aetheria transport is broken.
 
+Two consequences of that budget are structural, not incidental. First, Aetheria owns its Embedding
+credential and keeps it in the extension store (`credentials/embedding_api_key`) rather than in
+WebView memory: a desktop session and a mobile session differ mainly in how often the WebView is
+recreated, and an in-memory-only key is a different product on each. Second, because dense calls run
+inside a turn while the host budget is sized for a watching human, the plugin bounds its own native
+wait (60s base, +0.5s per input, capped at 150s) and brakes the transport for 120s after 3
+consecutive *reachability* failures. Reachability is classified from the error text with the HTTP
+status and payload-shape complaints excluded: a provider that answered is reachable, so its
+rejection must never be mistaken for an outage.
+
 ### Time and scope model plus the evidence loop (Iteration 13)
 
 Each memory now carries three separate notions instead of one timestamp:

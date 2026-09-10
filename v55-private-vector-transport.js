@@ -18,6 +18,39 @@ let originalFetch = null;
 let credentialQueue = Promise.resolve();
 let lastCredentialDebug = null;
 
+// A provider this device cannot reach makes every dense call wait out the transport budget, and
+// those calls sit inside the turn pipeline (a recall query before generation, an insert after
+// extraction). Without a brake, one unreachable provider costs that budget on every single turn.
+// Only reachability failures count: a provider that answers with 4xx/5xx is reachable, so its error
+// is the user's configuration to fix rather than a transport outage.
+const TRANSPORT_BREAKER_THRESHOLD = 3;
+const TRANSPORT_BREAKER_COOLDOWN_MS = 120_000;
+// The native bridge prefixes every failure with its own text, so classification has to look past the
+// wrapper: a provider that answered and rejected the request is reachable, and its HTTP status is a
+// configuration problem the user can fix.
+const TRANSPORT_UNREACHABLE_PATTERN = /timed out|timeout|time-out|Failed to fetch|NetworkError|Load failed|ECONN|ENOTFOUND|ETIMEDOUT|ECONNRESET|ENETUNREACH|dns|proxy|不可达|unreachable/i;
+const TRANSPORT_REACHABLE_PATTERN = /HTTP \d{3}|返回格式无效|向量数量不匹配|空向量或非数值向量|配置无效|dimension/i;
+let transportBreaker = { signature: '', failures: 0, openedUntil: 0, reason: '' };
+
+export function resetPrivateVectorTransportBreaker() {
+    transportBreaker = { signature: '', failures: 0, openedUntil: 0, reason: '' };
+}
+function assertTransportNotBroken(signature) {
+    if (transportBreaker.signature !== signature || transportBreaker.openedUntil <= Date.now()) return;
+    const seconds = Math.max(1, Math.ceil((transportBreaker.openedUntil - Date.now()) / 1000));
+    throw new Error(`Aetheria Embedding 传输连续失败 ${transportBreaker.failures} 次，已暂停 ${seconds} 秒以免阻塞对话：${transportBreaker.reason}`);
+}
+function noteTransportOutcome(signature, error) {
+    if (transportBreaker.signature !== signature) transportBreaker = { signature, failures: 0, openedUntil: 0, reason: '' };
+    if (!error) { transportBreaker.failures = 0; transportBreaker.openedUntil = 0; transportBreaker.reason = ''; return; }
+    const message = String(error?.message || error || '');
+    if (TRANSPORT_REACHABLE_PATTERN.test(message)) return;
+    if (!TRANSPORT_UNREACHABLE_PATTERN.test(message)) return;
+    transportBreaker.failures += 1;
+    transportBreaker.reason = message.slice(0, 200);
+    if (transportBreaker.failures >= TRANSPORT_BREAKER_THRESHOLD) transportBreaker.openedUntil = Date.now() + TRANSPORT_BREAKER_COOLDOWN_MS;
+}
+
 function getContext() {
     return globalThis.SillyTavern?.getContext?.();
 }
@@ -200,6 +233,19 @@ async function withSelectedVllmSecret(ctx, config, task) {
 }
 
 async function executeRewritten(rewritten) {
+    const signature = String(rewritten?.config?.signature || '');
+    assertTransportNotBroken(signature);
+    try {
+        const response = await performRewritten(rewritten);
+        noteTransportOutcome(signature, null);
+        return response;
+    } catch (error) {
+        noteTransportOutcome(signature, error);
+        throw error;
+    }
+}
+
+async function performRewritten(rewritten) {
     // Important: use the original browser/WebView fetch for provider traffic. Calling global fetch
     // here would recurse through vector-policy/private-vector wrappers.
     if (isNativeTauriTavern()) {
@@ -290,6 +336,7 @@ export function configurePrivateVectorTransport(ctxInput = getContext()) {
     if (previousSignature && previousSignature !== config.signature) {
         invalidateAetheriaVectorState(ctx, '独立 Embedding endpoint/model/credential 已变化，Aetheria 向量空间需要重建。');
     }
+    if (previousSignature !== config.signature) resetPrivateVectorTransportBreaker();
     settings.vector_direct_transport_signature = config.signature;
     ctx.saveSettingsDebounced?.();
     return {
@@ -321,6 +368,11 @@ export function getPrivateVectorTransportStatus(ctxInput = getContext()) {
             : 'serialized-selected-secret-rotation',
         backend: isNativeTauriTavern() ? tauri.backend : 'sillytavern-vector-api',
         tauri_backend: tauri,
+        transport_breaker: {
+            failures: transportBreaker.signature === config.signature ? transportBreaker.failures : 0,
+            open_until: transportBreaker.signature === config.signature ? transportBreaker.openedUntil : 0,
+            reason: transportBreaker.signature === config.signature ? transportBreaker.reason : '',
+        },
         last_credential_debug: lastCredentialDebug ? structuredClone(lastCredentialDebug) : null,
     };
 }

@@ -78,31 +78,68 @@ export function buildTauriEmbeddingInvoke({ endpoint, apiKey, body }) {
     };
 }
 
-export async function requestEmbeddingJsonViaTauriNative({ endpoint, apiKey, body }) {
+// The host applies its own, deliberately generous budget to every ChatCompletion call
+// (tt-adapter-http/src/pool.rs: 3 min connect, 10 min request). That budget is sized for a human
+// watching a chat stream, not for background vector work that runs inside a turn pipeline, so a
+// provider this device cannot reach would stall the plugin for minutes on every call. Bound our own
+// wait well inside it, growing a little with batch size so a healthy but slow provider is not cut off.
+const NATIVE_REQUEST_BUDGET_MIN_MS = 250;
+const NATIVE_REQUEST_BUDGET_BASE_MS = 60_000;
+const NATIVE_REQUEST_BUDGET_PER_ITEM_MS = 500;
+const NATIVE_REQUEST_BUDGET_MAX_MS = 150_000;
+const NATIVE_TIMEOUT_MARK = 'AETHERIA_NATIVE_REQUEST_BUDGET_EXCEEDED';
+
+export function resolveNativeRequestBudgetMs(body, overrideMs = null) {
+    const requested = Number(overrideMs);
+    if (Number.isFinite(requested) && requested > 0) {
+        return Math.min(NATIVE_REQUEST_BUDGET_MAX_MS, Math.max(NATIVE_REQUEST_BUDGET_MIN_MS, Math.round(requested)));
+    }
+    const items = Array.isArray(body?.input) ? body.input.length : 1;
+    const extra = Math.max(0, items - 1) * NATIVE_REQUEST_BUDGET_PER_ITEM_MS;
+    return Math.min(NATIVE_REQUEST_BUDGET_MAX_MS, NATIVE_REQUEST_BUDGET_BASE_MS + extra);
+}
+
+export async function requestEmbeddingJsonViaTauriNative({ endpoint, apiKey, body, timeoutMs = null }) {
     const host = getHost();
     if (!host) throw new Error('TauriTavern Host ABI 不可用。');
     try { await (host.ready ?? globalThis.window?.__TAURITAVERN_MAIN_READY__ ?? Promise.resolve()); } catch {}
     const safeInvoke = getTauriSafeInvoke();
     if (!safeInvoke) throw new Error('TauriTavern native invoke broker 不可用。');
     const request = buildTauriEmbeddingInvoke({ endpoint, apiKey, body });
+    const budgetMs = resolveNativeRequestBudgetMs(body, timeoutMs);
+    let timer = null;
     try {
-        const result = await safeInvoke(request.command, request.args);
+        // Promise.race attaches handlers to both sides, so abandoning the native call on timeout does
+        // not leave an unhandled rejection behind. The host-side request itself is not cancellable
+        // from here, which is exactly why the call has to be abandoned rather than awaited.
+        const result = await Promise.race([
+            safeInvoke(request.command, request.args),
+            new Promise((_resolve, reject) => {
+                timer = setTimeout(() => {
+                    const error = new Error(`等待宿主原生 HTTP 响应超过 ${Math.round(budgetMs / 1000)} 秒（宿主自身连接预算为 3 分钟）。`);
+                    error.code = NATIVE_TIMEOUT_MARK;
+                    reject(error);
+                }, budgetMs);
+            }),
+        ]);
         if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('native provider 返回的 JSON 不是对象。');
         return result;
     } catch (error) {
         const message = String(error?.message || error || 'unknown native transport error');
-        throw new Error(`TauriTavern Native HTTP Embedding 请求失败：${message}${nativeTransportHint(message)}`);
+        const timedOut = error?.code === NATIVE_TIMEOUT_MARK || /timed out|timeout|time-out/i.test(message);
+        throw new Error(`TauriTavern Native HTTP Embedding 请求失败：${message}${timedOut ? NATIVE_TIMEOUT_HINT : ''}`);
+    } finally {
+        if (timer) clearTimeout(timer);
     }
 }
 
 // Requests leaving through the host native stack inherit the host's own connect/read budget and
 // proxy configuration (or its absence). A timeout here is a reachability problem between this
-// device and the provider, not a plugin misconfiguration, so say so explicitly instead of
-// leaving the raw host text to be misread as a bug in the Aetheria transport.
-function nativeTransportHint(message) {
-    if (!/timed out|timeout|time-out/i.test(message)) return '';
-    return '（宿主原生 HTTP 请求超时：请确认本机/移动网络能直连该供应商，必要时在宿主侧配置代理，或把接口地址换成可直连的镜像地址后重试。）';
-}
+// device and the provider, not a plugin misconfiguration, so say so explicitly instead of leaving
+// the raw host text to be misread as a bug in the Aetheria transport. TauriTavern builds every
+// provider client with .no_proxy(), so the OS/system proxy is never used — only the host's own
+// request-proxy setting is.
+const NATIVE_TIMEOUT_HINT = '（宿主原生 HTTP 请求超时：请确认本机/移动网络能直连该供应商。注意 TauriTavern 不会使用系统代理，只会使用它自己的「请求代理」设置；必要时在宿主里配置代理，或把接口地址换成可直连的镜像地址后重试。）';
 
 // NOTE: there is intentionally no discoverModelsViaTauriNative()/buildTauriModelDiscoveryInvoke()
 // here. Enumerating embedding models is optional decoration, and the only host ABI that could do it

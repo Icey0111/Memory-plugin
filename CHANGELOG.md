@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix 2 — mobile credential durability and a bounded, braked Embedding transport
+
+### Fixed
+- **The Aetheria-owned Embedding key did not survive a WebView reload.** Iteration 12 made the key memory-only to keep it out of WebView `localStorage`, which is the right place to keep it *out* of — but "memory only" was too strong a promise on Android, where the WebView is torn down and recreated constantly, so the user was asked to retype the key on essentially every launch while the desktop build behaved. The key now lives in TauriTavern's own extension store (`aetheria-unified-memory-v55/credentials/embedding_api_key`, the documented per-extension persistence outside the WebView), is re-hydrated once per session by `ensureTauriVectorApiKeyLoaded()`, and is deleted with the key itself. It still never touches WebView `localStorage` and still never touches the host Secret Store.
+- **An unreachable provider stalled the turn pipeline for minutes per call.** TauriTavern builds every provider client with `Client::builder().no_proxy()` and a 3-minute connect / 10-minute request budget (`tt-adapter-http/src/pool.rs`) — sized for a human watching a chat stream, not for background vector work that runs inside a turn. Two changes: `requestEmbeddingJsonViaTauriNative()` now abandons its own call after a bounded wait (60s base, +0.5s per input, capped at 150s, overridable) instead of waiting out the host budget, and `v55-private-vector-transport.js` brakes the transport after 3 consecutive *reachability* failures for 120s. A provider that answered with 4xx/5xx is reachable and never opens the brake — that is configuration to fix, not an outage.
+
+### Changed
+- The Tauri Embedding timeout hint now names the actual constraint: TauriTavern never uses the OS/system proxy, only its own request-proxy setting.
+- The vector panel help text states where the Aetheria-owned key is stored and that it is restored after a restart.
+
+### Validated
+- `npm run check` passes; the full offline suite passes, including new coverage for the bounded wait and budget math (`test-v55-tauri-native-http-bridge.mjs`), durable key persistence/re-hydration/clearing (`test-v55-tauri-vector-backend.mjs`), and the transport brake driven through the real interception path (`test-v55-private-vector-transport.mjs`).
+
 ## 5.5-dev Iteration 13 hotfix — TauriTavern host error toasts and store purge
 
 ### Fixed

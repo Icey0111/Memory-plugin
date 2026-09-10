@@ -170,3 +170,47 @@ reachability hint so users do not read it as a transport bug.
 
 `get_chat_completions_status` remains documented as reachable host ABI, but it must never be used
 for optional or best-effort work: any miss is user-visible.
+
+## Hotfix 2 — mobile credential durability and a bounded, braked transport
+
+Two defects that only a real Android session exposed, both invisible from the desktop build:
+
+### The Aetheria-owned Embedding key did not survive a WebView reload
+
+Iteration 12 made the key memory-only so it could not be read back out of WebView `localStorage`.
+That is the correct thing to keep it out of, but "memory only" was the wrong durability promise:
+an Android WebView is torn down and recreated far more often than a desktop one, so the key was
+gone on essentially every launch and the panel kept asking for it while the PC build never did.
+
+The key now lives in TauriTavern's own extension store — `aetheria-unified-memory-v55` /
+`credentials` / `embedding_api_key`, the documented per-extension persistence that sits *outside*
+the WebView — and is pulled back once per session by `ensureTauriVectorApiKeyLoaded()`, which every
+request path awaits before it checks for a key. Clearing the key deletes the stored copy, using the
+same `tryGetJson` existence probe as collection purges so a missing entry cannot raise a host toast.
+The key still never reaches WebView `localStorage` and still never reaches the host Secret Store.
+
+### An unreachable provider stalled the turn pipeline once per call
+
+TauriTavern builds every provider client with `Client::builder().no_proxy()` and applies a 3-minute
+connect / 10-minute request budget (`tt-adapter-http/src/pool.rs`). That budget is sized for a human
+watching a chat stream; Aetheria's dense calls run *inside* a turn — a recall query before
+generation, an insert after extraction — so on a device that cannot reach the provider each one
+could hold the pipeline for minutes, repeatedly.
+
+- `requestEmbeddingJsonViaTauriNative()` now races its native call against a bounded wait: 60s base,
+  +0.5s per input item, capped at 150s, overridable by the caller. Abandoning the call leaves no
+  unhandled rejection and no live timer; the host-side request itself is not cancellable, which is
+  precisely why it is abandoned rather than awaited.
+- `v55-private-vector-transport.js` brakes the transport after 3 consecutive reachability failures
+  for 120 seconds, so the plugin falls back to lexical recall instead of re-paying the budget every
+  turn. Classification matters here: the native bridge prefixes every failure with its own text, so
+  the brake explicitly ignores errors that carry an HTTP status or a payload-shape complaint — a
+  provider that answered is reachable, and its rejection is configuration to fix, not an outage.
+
+### Why the phone could not reach the provider at all
+
+TauriTavern never consults the OS/system proxy. `pool.rs` calls `.no_proxy()` on every client
+builder and only attaches a proxy when the host's own request-proxy setting is enabled, so a device
+whose network needs a proxy to reach the provider fails at connect no matter what the extension
+does. The timeout hint now says this explicitly instead of leaving the raw host text to be read as
+an Aetheria transport bug.

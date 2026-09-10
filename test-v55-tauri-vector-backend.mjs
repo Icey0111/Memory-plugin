@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import {
     __testResetTauriVectorBackend,
     buildDirectEmbeddingBody,
+    clearTauriVectorApiKey,
     cosineSimilarity,
+    ensureTauriVectorApiKeyLoaded,
     decodeVector,
     encodeVector,
     getTauriVectorApiKey,
@@ -60,6 +62,17 @@ const store = {
 };
 globalThis.__TAURITAVERN__ = { ready: Promise.resolve(), api: { extension: { store } } };
 
+// Credential durability: the Aetheria-owned key belongs in the host extension store rather than the
+// WebView, because an Android WebView is torn down and recreated constantly and an in-memory-only
+// key forced the user to retype it on essentially every launch.
+setTauriVectorApiKey('jina-persistent-key');
+await new Promise(resolve => setTimeout(resolve, 0));
+assert.equal(kv.get('aetheria-unified-memory-v55|credentials|embedding_api_key'), 'jina-persistent-key', 'the key is persisted to the host extension store');
+__testResetTauriVectorBackend();
+assert.equal(getTauriVectorApiKey(), '', 'reset clears the in-memory key');
+assert.equal(await ensureTauriVectorApiKeyLoaded(), true, 'the persisted key is re-hydrated after a WebView reload');
+assert.equal(getTauriVectorApiKey(), 'jina-persistent-key');
+
 const providerCalls = [];
 function vectorFor(text) {
     const value = String(text).toLowerCase();
@@ -113,7 +126,12 @@ assert.ok(storeKeys.every(key => /^[A-Za-z0-9_-]+$/.test(key)));
 const backendSource = fs.readFileSync(new URL('./v55-tauri-vector-backend.js', import.meta.url), 'utf8');
 assert.doesNotMatch(backendSource, /\/api\/secrets\/(write|read|rotate|find)/);
 
+await clearTauriVectorApiKey();
+await new Promise(resolve => setTimeout(resolve, 0));
+assert.equal(kv.has('aetheria-unified-memory-v55|credentials|embedding_api_key'), false, 'clearing the key also clears the persisted copy');
+assert.equal(getTauriVectorApiKey(), '');
+
 delete globalThis.__TAURITAVERN__;
 delete globalThis.localStorage;
 __testResetTauriVectorBackend();
-console.log('PASS v5.5 Tauri vector backend: LittleWhiteBox-style API isolation + /v1 normalization + safe extension-store keys + idempotent store purge');
+console.log('PASS v5.5 Tauri vector backend: LittleWhiteBox-style API isolation + /v1 normalization + safe extension-store keys + idempotent store purge + durable credential');

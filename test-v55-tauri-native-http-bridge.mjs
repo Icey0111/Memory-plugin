@@ -4,6 +4,7 @@ import * as bridge from './v55-tauri-native-http-bridge.js';
 import {
   buildTauriEmbeddingInvoke,
   requestEmbeddingJsonViaTauriNative,
+  resolveNativeRequestBudgetMs,
 } from './v55-tauri-native-http-bridge.js';
 
 const body = {
@@ -78,6 +79,32 @@ await assert.rejects(
     return true;
   },
 );
+// The host budgets 3 min connect / 10 min request per ChatCompletion call, which is sized for a human
+// watching a stream, not for background vector work inside a turn. The plugin bounds its own wait and
+// scales it with batch size, clamped so a slow-but-healthy provider is not cut off.
+assert.equal(resolveNativeRequestBudgetMs({ input: ['a'] }), 60_000);
+assert.equal(resolveNativeRequestBudgetMs({ input: new Array(21).fill('x') }), 70_000);
+assert.equal(resolveNativeRequestBudgetMs({ input: new Array(5000).fill('x') }), 150_000);
+assert.equal(resolveNativeRequestBudgetMs({ input: ['a'] }, 5000), 5000);
+assert.equal(resolveNativeRequestBudgetMs({ input: ['a'] }, 1), 250);
+assert.equal(resolveNativeRequestBudgetMs({ input: ['a'] }, 10 ** 9), 150_000);
+
+// A native call that never answers must be abandoned inside the budget instead of hanging the turn,
+// and it must leave no live timer behind.
+globalThis.__TAURITAVERN__ = {
+  ready: Promise.resolve(),
+  invoke: { safeInvoke: () => new Promise(() => {}) },
+};
+const startedAt = Date.now();
+await assert.rejects(
+  () => requestEmbeddingJsonViaTauriNative({ endpoint: 'https://api.jina.ai/v1/embeddings', apiKey: 'jina-test-key', body, timeoutMs: 1000 }),
+  error => {
+    assert.match(error.message, /等待宿主原生 HTTP 响应超过/);
+    assert.match(error.message, /请求代理/);
+    return true;
+  },
+);
+assert.ok(Date.now() - startedAt < 10_000, 'the bounded wait must not fall through to the host budget');
 delete globalThis.__TAURITAVERN__;
 
-console.log('PASS v5.5 Tauri native HTTP bridge: native invoke + query-suffix path preservation + request-local credential + no host status ABI + timeout guidance');
+console.log('PASS v5.5 Tauri native HTTP bridge: native invoke + query-suffix path preservation + request-local credential + no host status ABI + bounded wait + timeout guidance');

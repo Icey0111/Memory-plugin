@@ -3,6 +3,8 @@ import { hasTauriNativeHttpBridge, requestEmbeddingJsonViaTauriNative } from './
 
 const STORE_NAMESPACE = 'aetheria-unified-memory-v55';
 const STORE_TABLE = 'vectors';
+const CREDENTIAL_TABLE = 'credentials';
+const CREDENTIAL_KEY = 'embedding_api_key';
 const STORE_VERSION = 3;
 const sessionSecrets = new Map();
 const collectionCache = new Map();
@@ -15,17 +17,70 @@ export const isNativeTauriTavern = () => Boolean(getHost());
 
 export function setTauriVectorApiKey(value) {
     const key = clean(value, 20000); if (!key) return false;
-    // Session-only: the provider Bearer key must not be readable from WebView localStorage.
     sessionSecrets.set('aetheria', key);
+    // The key must never reach WebView localStorage, but "memory only" was too strong a promise:
+    // an Android WebView is torn down and recreated far more often than a desktop one, so an
+    // in-memory-only key made the user retype it on essentially every launch. The host's own
+    // extension store is the documented per-extension persistence, lives outside the WebView, and
+    // survives reloads; that is where an Aetheria-owned key belongs.
+    void persistTauriVectorApiKey(key);
     return true;
 }
 export function getTauriVectorApiKey() {
     return sessionSecrets.get('aetheria') || '';
 }
-export function clearTauriVectorApiKey() { sessionSecrets.delete('aetheria'); }
+export function clearTauriVectorApiKey() {
+    sessionSecrets.delete('aetheria');
+    void removePersistedTauriVectorApiKey();
+    return true;
+}
 export function rememberTauriVectorSessionSecret(_id, value) { return setTauriVectorApiKey(value); }
 export function forgetTauriVectorSessionSecret(_id) { clearTauriVectorApiKey(); return true; }
 export function hasTauriVectorSessionSecret(_id) { return Boolean(getTauriVectorApiKey()); }
+
+// getTauriVectorApiKey() stays synchronous because the settings panel renders synchronously; the
+// durable copy is pulled in once per session by this hydrated-on-demand step. Callers that are
+// about to make a request await it so a reloaded WebView does not report "key not configured".
+let credentialHydration = null;
+export async function ensureTauriVectorApiKeyLoaded() {
+    if (sessionSecrets.has('aetheria')) return true;
+    if (!getHost()) return false;
+    if (!credentialHydration) {
+        credentialHydration = (async () => {
+            try {
+                const store = await extensionStore();
+                const probe = await store.tryGetJson({ namespace: STORE_NAMESPACE, table: CREDENTIAL_TABLE, key: CREDENTIAL_KEY });
+                const value = clean(probe?.value ?? probe, 20000);
+                if (value) sessionSecrets.set('aetheria', value);
+                return Boolean(value);
+            } catch (error) {
+                lastDebug = { ...(lastDebug || {}), credential_load_error: String(error?.message || error).slice(0, 300) };
+                return false;
+            }
+        })().finally(() => { credentialHydration = null; });
+    }
+    return await credentialHydration;
+}
+async function persistTauriVectorApiKey(key) {
+    try {
+        const store = await extensionStore();
+        await store.setJson({ namespace: STORE_NAMESPACE, table: CREDENTIAL_TABLE, key: CREDENTIAL_KEY, value: key });
+        return true;
+    } catch (error) {
+        lastDebug = { ...(lastDebug || {}), credential_persist_error: String(error?.message || error).slice(0, 300) };
+        return false;
+    }
+}
+async function removePersistedTauriVectorApiKey() {
+    try {
+        const store = await extensionStore();
+        await deleteStoreEntry(store, CREDENTIAL_TABLE, CREDENTIAL_KEY);
+        return true;
+    } catch (error) {
+        lastDebug = { ...(lastDebug || {}), credential_remove_error: String(error?.message || error).slice(0, 300) };
+        return false;
+    }
+}
 
 async function extensionStore() {
     const host = getHost(); if (!host) throw new Error('TauriTavern Host ABI 不可用。');
@@ -76,17 +131,21 @@ function isStoreNotFoundError(error) {
     const code = error?.details?.code ?? error?.details?.kind ?? error?.code;
     return typeof code === 'string' && code.toLowerCase().includes('notfound');
 }
-async function collectionEntryExists(store, key) {
-    try { return Boolean((await store.tryGetJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key }))?.found); }
+async function storeEntryExists(store, table, key) {
+    try { return Boolean((await store.tryGetJson({ namespace: STORE_NAMESPACE, table, key }))?.found); }
     catch { return false; }
+}
+async function deleteStoreEntry(store, table, key) {
+    if (typeof store.deleteJson !== 'function') return false;
+    if (!(await storeEntryExists(store, table, key))) return false;
+    try { await store.deleteJson({ namespace: STORE_NAMESPACE, table, key }); return true; }
+    catch (error) { if (!isStoreNotFoundError(error)) throw error; return false; }
 }
 async function deleteCollection(id) {
     const key = safeCollectionStoreKey(id); const store = await extensionStore();
     collectionCache.delete(key);
     if (typeof store.deleteJson !== 'function') { await store.setJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key, value: blankCollection(id) }); return; }
-    if (!(await collectionEntryExists(store, key))) return;
-    try { await store.deleteJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key }); }
-    catch (error) { if (!isStoreNotFoundError(error)) throw error; }
+    await deleteStoreEntry(store, STORE_TABLE, key);
 }
 function withCollectionLock(id, task) {
     const key = safeCollectionStoreKey(id), previous = collectionLocks.get(key) || Promise.resolve();
@@ -114,6 +173,7 @@ function parseEmbeddingPayload(payload, expectedCount) {
 }
 
 async function requestEmbeddings(config,texts,role,fetchImpl) {
+    if (isNativeTauriTavern()) await ensureTauriVectorApiKeyLoaded();
     const apiKey=getTauriVectorApiKey(); if(!apiKey) throw new Error('Aetheria Embedding API Key 未配置。请在插件向量 API 区域重新输入并保存；不会读取或修改酒馆自己的 API Key。');
     const baseUrl=resolveOpenAiCompatibleBaseUrl(config.apiUrl), body=buildDirectEmbeddingBody({model:config.model,texts,apiUrl:baseUrl,role}), endpoint=`${baseUrl}/embeddings`;
     if (isNativeTauriTavern() && hasTauriNativeHttpBridge()) {
@@ -140,5 +200,5 @@ async function deleteItems(payload){const hashes=new Set((Array.isArray(payload.
 async function purgeCollection(payload){return withCollectionLock(payload.collectionId,async()=>{await deleteCollection(payload.collectionId);lastDebug={at:Date.now(),action:'purge',collection_id:payload.collectionId};return noContentResponse();});}
 
 export async function handleTauriVectorRequest(endpoint,payloadInput,configInput,fetchImpl=globalThis.fetch?.bind(globalThis)){if(!isNativeTauriTavern())return null;const payload=payloadInput&&typeof payloadInput==='object'?payloadInput:{},config=configInput&&typeof configInput==='object'?configInput:{};if(!clean(payload.collectionId,4000))throw new Error('Tauri vector request 缺少 collectionId。');if(['insert','query'].includes(endpoint)&&(!clean(config.apiUrl,4000)||!clean(config.model,1000)))throw new Error('Tauri direct Embedding transport 配置不完整。');if(['insert','query'].includes(endpoint)&&!hasTauriNativeHttpBridge()&&typeof fetchImpl!=='function')throw new Error('Embedding transport 不可用。');switch(endpoint){case'insert':return insertCollection(payload,config,fetchImpl);case'query':return queryCollection(payload,config,fetchImpl);case'list':return listCollection(payload);case'delete':return deleteItems(payload);case'purge':return purgeCollection(payload);default:throw new Error(`Tauri plugin vector backend 不支持 endpoint: ${endpoint}`);}}
-export function getTauriVectorBackendStatus(){return{active:isNativeTauriTavern(),backend:'tauritavern-plugin-vector-v3',persistence:'window.__TAURITAVERN__.api.extension.store',credential_scope:'session-only',transport:hasTauriNativeHttpBridge()?'tauri-native-http':'web-fetch-fallback',has_api_key:Boolean(getTauriVectorApiKey()),cached_collection_count:collectionCache.size,last_debug:lastDebug?structuredClone(lastDebug):null};}
-export function __testResetTauriVectorBackend(){sessionSecrets.clear();collectionCache.clear();collectionLocks.clear();lastDebug=null;}
+export function getTauriVectorBackendStatus(){return{active:isNativeTauriTavern(),backend:'tauritavern-plugin-vector-v3',persistence:'window.__TAURITAVERN__.api.extension.store',credential_scope:'tauritavern-extension-store',transport:hasTauriNativeHttpBridge()?'tauri-native-http':'web-fetch-fallback',has_api_key:Boolean(getTauriVectorApiKey()),cached_collection_count:collectionCache.size,last_debug:lastDebug?structuredClone(lastDebug):null};}
+export function __testResetTauriVectorBackend(){sessionSecrets.clear();credentialHydration=null;collectionCache.clear();collectionLocks.clear();lastDebug=null;}

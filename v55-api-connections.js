@@ -6,6 +6,7 @@ import {
     invalidateAetheriaVectorState,
 } from './v55-private-vector-transport.js';
 import {
+    ensureTauriVectorApiKeyLoaded,
     getTauriVectorApiKey,
     isNativeTauriTavern,
     resolveOpenAiCompatibleBaseUrl,
@@ -121,7 +122,10 @@ export async function probeDirectVectorTransport(ctxInput = getContext()) {
     const ctx = ctxInput; const settings = ensureSettings(ctx);
     if (!ctx || !settings) throw new Error('SillyTavern Context 不可用。');
     if (!applyDirectVectorTransport(ctx)) throw new Error('请先填写向量 API 地址、API Key 和 Embedding 模型。');
-    if (isNativeTauriTavern() && !getTauriVectorApiKey()) throw new Error('Aetheria 自有 Embedding API Key 未配置，请重新输入并保存。');
+    if (isNativeTauriTavern()) {
+        await ensureTauriVectorApiKeyLoaded();
+        if (!getTauriVectorApiKey()) throw new Error('Aetheria 自有 Embedding API Key 未配置，请重新输入并保存。');
+    }
     const collectionId = `${VECTOR_TEST_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     const item = { hash: 904211, text: 'Aetheria embedding connectivity probe.', index: 0 };
     const apiUrl = normalizeEmbeddingUrl(settings.vector_direct_api_url);
@@ -146,7 +150,7 @@ function status(root, kind, message, ok = null) {
 }
 function createConnectionBlock(kind, title, description) {
     const isSummary = kind === 'summary';
-    const modelHelp = isSummary ? '连接成功后自动拉取模型列表。' : 'TauriTavern 下 API Key 仅保存到 Aetheria 自有配置，不写入或轮换酒馆 Secret Store。接口地址会自动补全 /v1。';
+    const modelHelp = isSummary ? '连接成功后自动拉取模型列表。' : 'TauriTavern 下 API Key 只写入 Aetheria 自有的扩展存储，不写入或轮换酒馆 Secret Store，也不写入 WebView localStorage；重开 App 后会自动恢复。接口地址会自动补全 /v1。';
     const placeholder = isSummary ? 'https://api.example.com/v1' : 'https://api.jina.ai 或 https://api.jina.ai/v1/embeddings';
     const block = document.createElement('section'); block.className = 'aum-v55-direct-api-block'; block.dataset.kind = kind;
     block.innerHTML = `<div class="aum-v55-direct-api-header"><div><strong>${title}</strong><small>${description}</small></div><label class="checkbox_label"><input id="aum-v55-${kind}-direct-enabled" type="checkbox"> 使用独立接口</label></div><div class="aum-v51-grid aum-v55-direct-api-grid"><label>接口模式<select id="aum-v55-${kind}-direct-mode" class="text_pole"><option value="openai_compatible">OpenAI 兼容</option></select></label><label>接口地址<input id="aum-v55-${kind}-direct-url" class="text_pole" type="url" placeholder="${placeholder}"></label><label>API Key<input id="aum-v55-${kind}-direct-key" class="text_pole" type="password" autocomplete="new-password" placeholder="sk-..."></label><label>模型<input id="aum-v55-${kind}-direct-model" class="text_pole" type="text" list="aum-v55-${kind}-direct-model-list" placeholder="${isSummary ? '连接后选择或填写模型' : '例如 jina-embeddings-v3'}"><datalist id="aum-v55-${kind}-direct-model-list"></datalist><small>${modelHelp}</small></label></div><div class="aum-v51-buttons aum-v55-direct-api-actions"><button id="aum-v55-${kind}-direct-connect" class="menu_button">保存密钥并连接</button><button id="aum-v55-${kind}-direct-refresh" class="menu_button">重新发现模型</button>${isSummary ? '<button id="aum-v55-summary-direct-apply" class="menu_button">设为总结接口</button>' : '<button id="aum-v55-vector-direct-test" class="menu_button">测试 Embedding</button>'}</div><div id="aum-v55-${kind}-direct-status" class="aum-v51-status">尚未连接。</div>`;
@@ -196,6 +200,7 @@ async function connectVector(ctx, settings, root, key) {
     let runtimeSecretId = settings.vector_direct_api_secret_id;
     let probeSecretId = settings.vector_direct_api_probe_secret_id;
     let discovered = [];
+    if (isNativeTauriTavern()) await ensureTauriVectorApiKeyLoaded();
     const effectiveKey = String(key || (isNativeTauriTavern() ? getTauriVectorApiKey() : '') || '').trim();
     if (effectiveKey) {
         discovered = await discoverEmbeddingModels(settings.vector_direct_api_url, effectiveKey);
@@ -281,6 +286,7 @@ function mountCard() {
                         const models = await fetchSummaryModels(ctx, settings.summary_direct_api_url, settings.summary_direct_api_secret_id);
                         settings.summary_direct_api_models = models; fillModelList(root.querySelector('#aum-v55-summary-direct-model-list'), models); status(root, kind, `模型列表已刷新，共 ${models.length} 个。`, true);
                     } else {
+                        if (isNativeTauriTavern()) await ensureTauriVectorApiKeyLoaded();
                         const key = isNativeTauriTavern() ? getTauriVectorApiKey() : '';
                         const models = key ? await discoverEmbeddingModels(settings.vector_direct_api_url, key) : [];
                         if (models.length) { settings.vector_direct_api_models = models; fillModelList(root.querySelector('#aum-v55-vector-direct-model-list'), models); status(root, kind, `模型列表已刷新，共 ${models.length} 个。`, true); }
@@ -295,7 +301,11 @@ function mountCard() {
         root.querySelector('#aum-v55-summary-direct-apply')?.addEventListener('click', () => { try { if (!settings.summary_direct_api_model) throw new Error('请先选择或填写总结模型。'); const profile = upsertSummaryProfile(ctx, settings); status(root, 'summary', `已设为总结接口：${profile.model}`, true); } catch (error) { status(root, 'summary', String(error?.message || error), false); } });
         root.querySelector('#aum-v55-vector-direct-test')?.addEventListener('click', async () => { try { status(root, 'vector', '正在测试真实 Embedding 写入 / 查询…'); await probeDirectVectorTransport(ctx); status(root, 'vector', `Embedding 测试成功：${settings.vector_direct_api_model}${isNativeTauriTavern() ? ' ｜ Aetheria 自有凭据' : ''}`, true); notify('success', 'Aetheria 私有向量 API 已通过 Embedding 写入与检索测试。'); } catch (error) { status(root, 'vector', String(error?.message || error), false); } });
     }
-    mounted = true; configurePrivateVectorTransport(ctx); renderDirectApiSettings(); return true;
+    mounted = true; configurePrivateVectorTransport(ctx); renderDirectApiSettings();
+    // A reloaded WebView starts with an empty in-memory key. Re-render once the durable copy from the
+    // extension store lands, so the panel stops claiming the key was never saved.
+    if (isNativeTauriTavern()) void ensureTauriVectorApiKeyLoaded().then(() => renderDirectApiSettings());
+    return true;
 }
 
 export function renderDirectApiSettings() {
