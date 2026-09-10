@@ -3369,6 +3369,10 @@ export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit
         store,
         rendered: String(published?.current_state_block || ''),
         injectedText,
+        // The published bundle lives in the derived record, so it can legitimately be absent — for
+        // example when this runs after the chat was reloaded. Pass that through: an unmeasured metric
+        // must not be published as a zero.
+        injectedAvailable: published !== null,
         mandatory,
         dialogueTextsPerFloor,
         everyFloors,

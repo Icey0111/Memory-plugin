@@ -66,6 +66,22 @@ assert.equal(series[3].memory_tokens, series[0].memory_tokens, 'the numerator is
 assert.ok(series[3].ratio < series[0].ratio, 'so the compression ratio improves with length');
 assert.equal(compressionPoint({ memories: [], dialogueTexts: [], floors: 0 }).ratio, 0, 'an empty denominator is not a division by zero');
 
+// An unreadable injected block must read as "not measured", never as "everything was dropped".
+// The published bundle lives in the derived record and can legitimately be absent after a reload, and
+// a metric that reports 0 there is worse than no metric: it looks like the mandatory baseline failed.
+const unmeasuredRetention = mandatoryRetention('', mandatory, { available: false });
+assert.equal(unmeasuredRetention.measured, false);
+assert.equal(unmeasuredRetention.rate, null, 'an unreadable block is not a 0% retention');
+assert.deepEqual(unmeasuredRetention.missing, [], 'and it must not invent missing ids');
+const unmeasuredInjected = scoreCausalProbes(store, probes, { scope: 'injected', injectedText: '', available: false });
+assert.equal(unmeasuredInjected.measured, false);
+assert.equal(unmeasuredInjected.rate, null);
+assert.equal(unmeasuredInjected.hit, null);
+const unavailable = qualityReport({ store, mandatory, dialogueTextsPerFloor: floors, probeLimit: 20, injectedAvailable: false });
+assert.equal(unavailable.key_retention.measured, false);
+assert.equal(unavailable.causal_gap, null, 'a gap cannot be computed from an unmeasured side');
+assert.equal(unavailable.causal_recall.rate, 1, 'the canonical side is still measurable');
+
 // One call answers all four A8 numbers for a turn.
 const report = qualityReport({
   store, rendered, injectedText: currentOnlyText, mandatory,

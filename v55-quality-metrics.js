@@ -37,10 +37,18 @@ function activeMemories(store) {
     return Object.values(memories).filter(memory => memory && memory.status === 'active' && memory.text);
 }
 
-/** 1. Key retention: how much of the never-drop set survived the rendered block. */
-export function mandatoryRetention(renderedBlock, mandatoryRows) {
-    const block = collapse(renderedBlock);
+/**
+ * 1. Key retention: how much of the never-drop set survived the rendered block.
+ *
+ * `available` says whether the caller actually held the injected block. A metric that cannot see the
+ * block must say so: reporting 0 would read as "every irreversible change was dropped", which is the
+ * opposite of "not measured". Pass `available: false` when the published bundle is missing.
+ */
+export function mandatoryRetention(renderedBlock, mandatoryRows, { available = null } = {}) {
     const rows = Array.isArray(mandatoryRows) ? mandatoryRows.filter(row => row && row.text) : [];
+    const measured = available === null ? Boolean(collapse(renderedBlock)) || rows.length === 0 : Boolean(available);
+    if (!measured) return { total: rows.length, kept: null, rate: null, missing: [], measured: false };
+    const block = collapse(renderedBlock);
     const missing = [];
     for (const row of rows) {
         const needle = collapse(row.text).slice(0, PROBE_MATCH_CHARS);
@@ -48,7 +56,7 @@ export function mandatoryRetention(renderedBlock, mandatoryRows) {
     }
     const total = rows.length;
     const kept = total - missing.length;
-    return { total, kept, rate: total ? kept / total : 1, missing };
+    return { total, kept, rate: total ? kept / total : 1, missing, measured: true };
 }
 
 /** 2. Injection accounting: what each layer costs the prompt. */
@@ -148,9 +156,13 @@ export function buildMemoryCorpus(store, { scope = 'canonical', injectedText = '
     return collapse(memoryTexts.join('\n'));
 }
 
-export function scoreCausalProbes(store, probes, { scope = 'canonical', injectedText = '' } = {}) {
-    const corpus = buildMemoryCorpus(store, { scope, injectedText });
+export function scoreCausalProbes(store, probes, { scope = 'canonical', injectedText = '', available = null } = {}) {
     const list = Array.isArray(probes) ? probes : [];
+    // Same rule as key retention: an empty injected view usually means "the block could not be read
+    // after the fact", not "nothing was injected". Say which, instead of publishing a fake zero.
+    const measured = scope !== 'injected' || (available === null ? Boolean(collapse(injectedText)) : Boolean(available));
+    if (!measured) return { total: list.length, hit: null, rate: null, misses: [], measured: false };
+    const corpus = buildMemoryCorpus(store, { scope, injectedText });
     const misses = [];
     for (const probe of list) {
         const needle = collapse(probe?.expected).slice(0, PROBE_MATCH_CHARS);
@@ -158,22 +170,22 @@ export function scoreCausalProbes(store, probes, { scope = 'canonical', injected
     }
     const total = list.length;
     const hit = total - misses.length;
-    return { total, hit, rate: total ? hit / total : 1, misses };
+    return { total, hit, rate: total ? hit / total : 1, misses, measured: true };
 }
 
 /** One call that answers all four A8 numbers for the current turn. */
-export function qualityReport({ store, rendered = '', injectedText = '', mandatory = [], dialogueTextsPerFloor = [], everyFloors = 10, probeLimit = 60 } = {}) {
+export function qualityReport({ store, rendered = '', injectedText = '', injectedAvailable = null, mandatory = [], dialogueTextsPerFloor = [], everyFloors = 10, probeLimit = 60 } = {}) {
     const probes = buildCausalProbes(store, { limit: probeLimit });
     const canonical = scoreCausalProbes(store, probes, { scope: 'canonical' });
-    const injected = scoreCausalProbes(store, probes, { scope: 'injected', injectedText });
+    const injected = scoreCausalProbes(store, probes, { scope: 'injected', injectedText, available: injectedAvailable });
     const memories = activeMemories(store);
     const series = compressionSeries({ memories, dialogueTextsPerFloor, everyFloors });
     return {
         version: QUALITY_METRICS_VERSION,
-        key_retention: mandatoryRetention(rendered, mandatory),
+        key_retention: mandatoryRetention(rendered, mandatory, { available: injectedAvailable }),
         causal_recall: canonical,
         causal_injected: injected,
-        causal_gap: canonical.hit - injected.hit,
+        causal_gap: canonical.hit === null || injected.hit === null ? null : canonical.hit - injected.hit,
         compression: series,
         compression_latest: series.length ? series[series.length - 1] : null,
     };
