@@ -9,7 +9,6 @@ import { installV55DirectApiSettings } from './v55-api-connections.js';
 import { installV55PrivateVectorTransport, configurePrivateVectorTransport } from './v55-private-vector-transport.js';
 import { installV55VectorPolicy, configureV55VectorPolicy } from './v55-vector-policy.js';
 import { installV55EmbeddingProfileUi } from './v55-embedding-profile-ui.js';
-import { installV55TauriApiCompat } from './v55-tauri-api-compat.js';
 
 function installUi() {
     installV55StoreIntegrity();
@@ -17,7 +16,6 @@ function installUi() {
     localizeV55Ui();
     installV55HierarchicalSummary();
     installV55DirectApiSettings();
-    installV55TauriApiCompat();
     configurePrivateVectorTransport();
     configureV55VectorPolicy();
     installV55EmbeddingProfileUi();
