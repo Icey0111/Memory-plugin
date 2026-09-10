@@ -11,6 +11,35 @@ reliability defects the earlier passes exposed, adds a time/scope model to Canon
 the gap between a compressed recall result and the original chat wording. The Canonical/derived split and
 the setting-plane / story-plane separation are unchanged.
 
+## Live verification in TauriTavern (final pass)
+
+The whole pipeline was then driven end to end in a real TauriTavern session — WebView2 CDP attached to
+the running app, the host's own retained request/response recorder, and the real Jina embeddings service
+— over a scripted 12-turn scenario (facts, beliefs, ownership, promises, a contradiction that had to
+supersede, a location move, a world fact). Results:
+
+- 12/12 turns extracted, 19 Canonical memories, 14 extraction transactions, every memory carrying
+  `recorded_at` / `valid_from` / `effective_from`; supersede bound 7 old slots to their replacements.
+- Hierarchical summary tree reached 18 × L1 → 6 × L2 → 2 × L3 with no `last_error`, and every summary
+  finished with `finish_reason: "stop"` after `summary_max_tokens` was raised from 600 to 2048.
+- Dense retrieval used real 1024-dimension Jina vectors: recall reported 9 lexical + 2 dense candidates
+  and selected 6; the in-runtime retrieval self-check passed 6/6 (MRR 0.750).
+- The transport brake was confirmed live: three consecutive connection failures at ~2.0 s each, then
+  `Aetheria Embedding 传输连续失败 3 次，已暂停 120 秒` at 0–1 ms, and a different signature recovered
+  immediately with real hits.
+- The embedding credential was written once into the host extension store, survived an app restart, and
+  a dense query answered in a brand-new WebView session without any key entry.
+
+Four further defects were found and fixed by that pass — they are listed as hotfix 6 and hotfix 7 in
+`CHANGELOG.md`. The most serious one is worth repeating here: **no Aetheria block had ever reached the
+model.** The three v5.5 layers coordinated by swapping `ctx.setExtensionPrompt` on the context object
+they were handed, but real SillyTavern returns a fresh object from every `getContext()` call, so the
+swap mutated a throwaway and `v55-consistency` re-emitted the composed block with `position`/`depth`
+from an empty capture. `Number(undefined)` is `NaN`, which matches no `extension_prompt_types` value,
+so SillyTavern dropped the prompt silently while the plugin reported success. Retained request logs
+proved it (no `PLUGIN REFERENCE DATA` in the recorded generation); after the fix the same request
+carries both blocks, the summary, the scene blocks and the recalled memory ids.
+
 ## Reliability fixes
 
 All fixes below are covered by unit tests:
