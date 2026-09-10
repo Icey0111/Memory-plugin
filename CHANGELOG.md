@@ -48,6 +48,12 @@ whole thing is reversible from the settings panel.
   level-1/2/3 summary and permanently marked the batch as summarized, so floors were folded with an error
   message standing in for them. Error-shaped completions are now rejected, the batch stays pending and the
   failure lands in `last_error`.
+- **The cold原文 snapshot had stopped reaching disk.** Every chat file inspected carried extractions but no
+  `cold_turns` at all, so the evidence backstop introduced in this iteration existed in memory only.
+  `rebuildCanonicalFromChat` writes a store replayed by `replayStoreFromExtractions`, which starts from
+  `createEmptyStore()` and therefore has no `cold_turns` — and it was one of the writes that replaced
+  the store outright. It was collateral of the same ownership defect, and the merged write repairs it:
+  a live extraction now records its floor and the snapshot survives a full page reload.
 
 
 ### Fixed
