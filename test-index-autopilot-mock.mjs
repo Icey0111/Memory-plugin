@@ -4,6 +4,8 @@ const prompts=[];
 const requests=[];
 let rawCalls=0;
 let extractionMode=1;
+let starveOnce=false;
+const budgets=[];
 function extractionReply(){ if (extractionMode===2) return JSON.stringify({
   event_summary:'重新审阅后只保留平成结束实验回家的事件。',
   active_state:'平成目前在家。',
@@ -52,10 +54,12 @@ const context={
   // request reached the provider as the character card alone.
   generateRaw:async (options)=>{
     rawCalls++;
+    budgets.push(options.responseLength);
     assert.match(options.prompt,/后台记忆抽取器/);
     assert.match(options.systemPrompt,/记忆抽取器/,'extraction must send its own system prompt');
     assert.ok(options.jsonSchema,'structured extraction should pass JSON schema');
-    assert.equal(options.responseLength,1024,'extraction must set its own budget instead of inheriting the chat preset max_tokens');
+    assert.ok([2048,4096].includes(options.responseLength),'extraction must set its own budget instead of inheriting the chat preset max_tokens');
+    if (starveOnce) { starveOnce=false; return '{"event_summary": "被截断'; }
     return extractionReply();
   },
   generateQuietPrompt:async ()=>{ throw new Error('extraction must prefer generateRaw over generateQuietPrompt'); },
@@ -108,5 +112,17 @@ context.chat.push({name:'平成',mes:'旧版正文。<memory_ops version="5">{"o
 const legacy=await mod.__testExtractMemoryForAssistant(context,3,{force:false});
 assert.equal(legacy.skipped,'legacy-inline-ops');
 assert.equal(rawCalls,2);
+
+// A reasoning model can exhaust the budget before the JSON closes; that is a starved generation, so the
+// extractor retries once with a doubled budget before it gives up on the turn.
+context.chat.push({name:'用户',mes:'再说一次。',is_user:true,is_system:false});
+context.chat.push({name:'平成',mes:'我再说明一次今天的安排。',is_user:false,is_system:false});
+const budgetsBefore=budgets.length;
+starveOnce=true;
+const starved=await mod.__testExtractMemoryForAssistant(context,5,{force:false});
+assert.equal(starved.skipped,undefined,'a starved JSON completion must be retried instead of abandoning the turn');
+assert.equal(starved.record.generation_mode,'budget-retry');
+assert.deepEqual(budgets.slice(budgetsBefore),[2048,4096],'the retry doubles the extraction budget');
+assert.match(mod.__testGetStore(context).last_event_summary,/平成/);
 
 console.log('PASS v5.4 autonomous after-AI extraction + immediate vector sync + dedupe/migration guard');

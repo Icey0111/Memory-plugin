@@ -106,11 +106,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     extraction_structured_output: true,
     extraction_retry_plain_json: true,
     // Quiet extraction is generated through the host's chat-completion stack, so without an explicit
-    // budget it inherits the preset's chat max_tokens. A reasoning model then spends that whole
-    // budget on hidden reasoning and the visible JSON arrives truncated ("finish_reason: length"),
-    // which the parser correctly rejects. 1024 covers the JSON plus ordinary reasoning; raise it for
-    // heavier reasoners.
-    extraction_response_tokens: 1024,
+    // budget it inherits the preset's chat max_tokens. A reasoning model then spends that whole budget
+    // on hidden reasoning and the visible JSON arrives truncated ("finish_reason: length"), which the
+    // parser correctly rejects. A live session showed 1024 still being exhausted by ~2500 characters of
+    // reasoning, so the default is 2048 and a starved JSON completion triggers one doubled retry.
+    extraction_response_tokens: 2048,
     memory_freshness_wait_ms: 800,
     extraction_notifications: false,
     parse_ops: true,
@@ -839,13 +839,23 @@ function pruneStaleExtractionRecords(storeInput, chat) {
 // stays as the fallback for hosts without generateRaw.
 const EXTRACTION_SYSTEM_PROMPT = '你是记忆抽取器。只输出严格 JSON，不要解释、标题或代码围栏。';
 
-async function runQuietExtraction(ctx, prompt, useStructured = true) {
+// A reasoning model spends part of the budget on hidden reasoning before it emits any visible text, so
+// a completion that starts like JSON and stops mid-string is a starved generation rather than a
+// formatting mistake. That is worth one retry with a doubled budget instead of another prompt variant.
+function looksLikeStarvedJson(raw) {
+    const text = String(raw ?? '').trim();
+    if (!text.startsWith('{')) return false;
+    try { JSON.parse(text); return false; } catch { return true; }
+}
+
+async function runQuietExtraction(ctx, prompt, useStructured = true, budgetOverride = null) {
     if (typeof ctx.generateRaw !== 'function' && typeof ctx.generateQuietPrompt !== 'function') {
         throw new Error('当前 SillyTavern Context 未提供 generateRaw / generateQuietPrompt，无法执行自动记忆抽取。');
     }
     const settings = getSettings(ctx);
     // Never inherit the chat preset's max_tokens: see extraction_response_tokens in DEFAULT_SETTINGS.
-    const budget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 1024));
+    const configured = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
+    const budget = Math.max(128, Math.min(8192, Number(budgetOverride) || configured));
     const schema = useStructured ? EXTRACTION_JSON_SCHEMA : null;
     // Mark the plugin's own call so the interceptor/wrappers can keep it cleared even when third-party
     // quiet injection is opted in.
@@ -920,6 +930,12 @@ ${pair.assistantText}`,
     try {
         raw = await runQuietExtraction(ctx, prompt, Boolean(settings.extraction_structured_output));
         parsed = parseExtractionResult(raw);
+        const configuredBudget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
+        if (!parsed.ok && configuredBudget < 8192 && looksLikeStarvedJson(raw)) {
+            mode = 'budget-retry';
+            raw = await runQuietExtraction(ctx, prompt, Boolean(settings.extraction_structured_output), Math.min(8192, configuredBudget * 2));
+            parsed = parseExtractionResult(raw);
+        }
         if ((!parsed.ok || (raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json) {
             mode = 'plain-json-retry';
             raw = await runQuietExtraction(ctx, `${prompt}\n\n严格只输出JSON，不要代码围栏。`, false);
@@ -943,7 +959,9 @@ ${pair.assistantText}`,
             response_tokens_budget: runQuietExtraction.lastBudget ?? null,
             // A completion that carries no JSON delimiter at all is almost always a starved or
             // reasoning-dominated generation rather than a formatting mistake, so say which.
-            truncated_hint: !rawText.includes('{') ? '响应中没有 JSON（疑似被 max_tokens 截断或全部消耗在推理内容上）；可提高 extraction_response_tokens。' : null,
+            truncated_hint: !rawText.includes('{')
+                ? '响应中没有 JSON（疑似被 max_tokens 截断或全部消耗在推理内容上）；可提高 extraction_response_tokens。'
+                : (looksLikeStarvedJson(rawText) ? 'JSON 未闭合（疑似被 max_tokens 截断，推理内容吃掉了预算）；可提高 extraction_response_tokens。' : null),
         };
         setStore(ctx, store);
         throw error;

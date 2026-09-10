@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix 5 — a starved extraction retries with more budget
+
+### Fixed
+- **A reasoning model can exhaust the extraction budget before the JSON closes.** With the prompt finally
+  reaching the model, the live session showed `finish_reason: "length"` after 62 characters of JSON
+  because ~2500 characters of hidden reasoning had consumed the rest of a 1024-token budget. The default
+  `extraction_response_tokens` is now 2048, a completion that starts like JSON but does not parse
+  triggers **one retry with a doubled budget** (`mode: "budget-retry"`, capped at 8192), and the
+  parse-error record distinguishes "no JSON at all" from "JSON left unclosed".
+- The same session showed the hierarchical summary clipped at `summary_max_tokens: 600`
+  (`finish_reason: "length"`, reasoning ~1700 characters). Raise that setting for reasoning models; no
+  code change is needed because it is already user-configurable.
+
 ## 5.5-dev Iteration 13 hotfix 4 — extraction now reaches the model
 
 ### Fixed
