@@ -4,12 +4,18 @@ import {
     configurePrivateVectorTransport,
     getPrivateVectorTransportStatus,
     invalidateAetheriaVectorState,
-    normalizeOpenAiEmbeddingBaseUrl,
 } from './v55-private-vector-transport.js';
+import {
+    getTauriVectorApiKey,
+    isNativeTauriTavern,
+    resolveOpenAiCompatibleBaseUrl,
+    setTauriVectorApiKey,
+} from './v55-tauri-vector-backend.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const SUMMARY_PROFILE_NAME = 'Aetheria · Summary API';
 const VECTOR_TEST_PREFIX = 'aetheria_v55_vector_probe_';
+const TAURI_VECTOR_SECRET_ID = 'aetheria_local_embedding';
 const DEFAULTS = Object.freeze({
     summary_direct_api_enabled: false,
     summary_direct_api_mode: 'openai_compatible',
@@ -39,6 +45,7 @@ function ensureSettings(ctx) {
     return settings;
 }
 function normalizeUrl(value) { return String(value || '').trim().replace(/\/+$/, ''); }
+function normalizeEmbeddingUrl(value) { return resolveOpenAiCompatibleBaseUrl(value); }
 function uuid() { return globalThis.crypto?.randomUUID?.() || `aum-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
 function notify(type, message) { const toast = globalThis.toastr; if (toast && typeof toast[type] === 'function') toast[type](message, 'Aetheria API'); }
 async function getSecretsModule() { if (!secretsModulePromise) secretsModulePromise = import('/scripts/secrets.js').catch(() => null); return secretsModulePromise; }
@@ -57,8 +64,6 @@ function extractModels(payload) {
     return [...new Set(ids)].sort((a, b) => a.localeCompare(b));
 }
 
-// Chat-completion model discovery is valid only for the summary connection. Never use this path
-// for an embedding-only endpoint: doing so caused Jina /v1/embeddings to be reported as a bad chat endpoint.
 async function fetchSummaryModels(ctx, url, customSecretId) {
     const base = normalizeUrl(url);
     if (!base || !customSecretId) throw new Error('请先填写接口地址并保存 API Key。');
@@ -75,23 +80,15 @@ async function fetchSummaryModels(ctx, url, customSecretId) {
     return models;
 }
 
-// Best-effort embedding model discovery. Many embedding providers (including some OpenAI-compatible
-// services) expose /v1/embeddings but no /v1/models. Discovery failure is therefore non-fatal.
 async function discoverEmbeddingModelsDirect(rawUrl, apiKey) {
-    const base = normalizeOpenAiEmbeddingBaseUrl(rawUrl);
+    const base = normalizeEmbeddingUrl(rawUrl);
     const key = String(apiKey || '').trim();
     if (!base || !key) return [];
     try {
-        const response = await fetch(`${base}/models`, {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
-        });
+        const response = await fetch(`${base}/models`, { method: 'GET', headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } });
         if (!response.ok) return [];
         return extractModels(await response.json());
-    } catch {
-        // Browser CORS or a provider without /models: manual model entry remains available.
-        return [];
-    }
+    } catch { return []; }
 }
 
 function ensureConnectionManager(ctx) {
@@ -124,9 +121,10 @@ export async function probeDirectVectorTransport(ctxInput = getContext()) {
     const ctx = ctxInput; const settings = ensureSettings(ctx);
     if (!ctx || !settings) throw new Error('SillyTavern Context 不可用。');
     if (!applyDirectVectorTransport(ctx)) throw new Error('请先填写向量 API 地址、API Key 和 Embedding 模型。');
+    if (isNativeTauriTavern() && !getTauriVectorApiKey()) throw new Error('Aetheria 自有 Embedding API Key 未配置，请重新输入并保存。');
     const collectionId = `${VECTOR_TEST_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     const item = { hash: 904211, text: 'Aetheria embedding connectivity probe.', index: 0 };
-    const apiUrl = normalizeOpenAiEmbeddingBaseUrl(settings.vector_direct_api_url);
+    const apiUrl = normalizeEmbeddingUrl(settings.vector_direct_api_url);
     try {
         await vectorRequest(ctx, 'insert', { source: 'vllm', apiUrl, model: settings.vector_direct_api_model, collectionId, items: [item] });
         const result = await vectorRequest(ctx, 'query', { source: 'vllm', apiUrl, model: settings.vector_direct_api_model, collectionId, searchText: item.text, topK: 1, threshold: 0 });
@@ -146,14 +144,22 @@ function status(root, kind, message, ok = null) {
 }
 function createConnectionBlock(kind, title, description) {
     const isSummary = kind === 'summary';
-    const modelHelp = isSummary ? '连接成功后自动拉取模型列表。' : '会尝试自动发现模型；若供应商不提供 /models（Jina 等情况可能如此），可直接手动填写 Embedding 模型名。';
-    const placeholder = isSummary ? 'https://api.example.com/v1' : 'https://api.jina.ai/v1 或 https://api.jina.ai/v1/embeddings';
+    const modelHelp = isSummary ? '连接成功后自动拉取模型列表。' : 'TauriTavern 下 API Key 仅保存到 Aetheria 自有配置，不写入或轮换酒馆 Secret Store。接口地址会自动补全 /v1。';
+    const placeholder = isSummary ? 'https://api.example.com/v1' : 'https://api.jina.ai 或 https://api.jina.ai/v1/embeddings';
     const block = document.createElement('section'); block.className = 'aum-v55-direct-api-block'; block.dataset.kind = kind;
     block.innerHTML = `<div class="aum-v55-direct-api-header"><div><strong>${title}</strong><small>${description}</small></div><label class="checkbox_label"><input id="aum-v55-${kind}-direct-enabled" type="checkbox"> 使用独立接口</label></div><div class="aum-v51-grid aum-v55-direct-api-grid"><label>接口模式<select id="aum-v55-${kind}-direct-mode" class="text_pole"><option value="openai_compatible">OpenAI 兼容</option></select></label><label>接口地址<input id="aum-v55-${kind}-direct-url" class="text_pole" type="url" placeholder="${placeholder}"></label><label>API Key<input id="aum-v55-${kind}-direct-key" class="text_pole" type="password" autocomplete="new-password" placeholder="sk-..."></label><label>模型<input id="aum-v55-${kind}-direct-model" class="text_pole" type="text" list="aum-v55-${kind}-direct-model-list" placeholder="${isSummary ? '连接后选择或填写模型' : '例如 jina-embeddings-v3'}"><datalist id="aum-v55-${kind}-direct-model-list"></datalist><small>${modelHelp}</small></label></div><div class="aum-v51-buttons aum-v55-direct-api-actions"><button id="aum-v55-${kind}-direct-connect" class="menu_button">保存密钥并连接</button><button id="aum-v55-${kind}-direct-refresh" class="menu_button">重新发现模型</button>${isSummary ? '<button id="aum-v55-summary-direct-apply" class="menu_button">设为总结接口</button>' : '<button id="aum-v55-vector-direct-test" class="menu_button">测试 Embedding</button>'}</div><div id="aum-v55-${kind}-direct-status" class="aum-v51-status">尚未连接。</div>`;
     return block;
 }
+
 async function saveConnectionSecret(kind, key) {
-    if (kind === 'summary') { const id = await saveSecret('CUSTOM', key, 'Aetheria Summary API'); return { runtimeSecretId: id, probeSecretId: id }; }
+    if (kind === 'summary') {
+        const id = await saveSecret('CUSTOM', key, 'Aetheria Summary API');
+        return { runtimeSecretId: id, probeSecretId: id };
+    }
+    if (isNativeTauriTavern()) {
+        if (!setTauriVectorApiKey(key)) throw new Error('Embedding API Key 为空。');
+        return { runtimeSecretId: TAURI_VECTOR_SECRET_ID, probeSecretId: TAURI_VECTOR_SECRET_ID };
+    }
     const runtimeSecretId = await saveSecret('VLLM', key, 'Aetheria Vector API');
     const probeSecretId = await saveSecret('CUSTOM', key, 'Aetheria Vector Model Discovery');
     return { runtimeSecretId, probeSecretId };
@@ -178,26 +184,31 @@ async function connectVector(ctx, settings, root, key) {
     let runtimeSecretId = settings.vector_direct_api_secret_id;
     let probeSecretId = settings.vector_direct_api_probe_secret_id;
     let discovered = [];
-    if (key) {
-        // Try provider-native /models before clearing the plaintext input. Failure is intentionally silent.
-        discovered = await discoverEmbeddingModelsDirect(settings.vector_direct_api_url, key);
-        const saved = await saveConnectionSecret('vector', key);
-        runtimeSecretId = saved.runtimeSecretId; probeSecretId = saved.probeSecretId;
+    const effectiveKey = String(key || (isNativeTauriTavern() ? getTauriVectorApiKey() : '') || '').trim();
+    if (effectiveKey) {
+        discovered = await discoverEmbeddingModelsDirect(settings.vector_direct_api_url, effectiveKey);
+        if (key) {
+            const saved = await saveConnectionSecret('vector', key);
+            runtimeSecretId = saved.runtimeSecretId; probeSecretId = saved.probeSecretId;
+        } else if (isNativeTauriTavern()) {
+            runtimeSecretId = TAURI_VECTOR_SECRET_ID; probeSecretId = TAURI_VECTOR_SECRET_ID;
+        }
     }
+    if (isNativeTauriTavern() && !getTauriVectorApiKey()) throw new Error('请填写 Aetheria 自有 Embedding API Key。');
     if (!runtimeSecretId) throw new Error('请填写 API Key。');
     settings.vector_direct_api_secret_id = runtimeSecretId;
     settings.vector_direct_api_probe_secret_id = probeSecretId || '';
     settings.vector_direct_api_enabled = true;
-    settings.vector_direct_api_url = normalizeOpenAiEmbeddingBaseUrl(settings.vector_direct_api_url);
+    settings.vector_direct_api_url = normalizeEmbeddingUrl(settings.vector_direct_api_url);
     if (discovered.length) settings.vector_direct_api_models = discovered;
     fillModelList(root.querySelector('#aum-v55-vector-direct-model-list'), settings.vector_direct_api_models);
     configurePrivateVectorTransport(ctx);
     if (settings.vector_direct_api_model) {
         status(root, 'vector', '连接已保存，正在进行真实 Embedding 测试…');
         await probeDirectVectorTransport(ctx);
-        status(root, 'vector', `Embedding 连接成功：${settings.vector_direct_api_model}`, true);
+        status(root, 'vector', `Embedding 连接成功：${settings.vector_direct_api_model}${isNativeTauriTavern() ? ' ｜ Aetheria 自有凭据' : ''}`, true);
     } else {
-        status(root, 'vector', discovered.length ? `连接已保存，发现 ${discovered.length} 个模型；请选择或填写 Embedding 模型后测试。` : '连接已保存。该供应商未提供可用的模型枚举，请手动填写 Embedding 模型名后点击“测试 Embedding”。', true);
+        status(root, 'vector', discovered.length ? `连接已保存，发现 ${discovered.length} 个模型；请选择或填写 Embedding 模型后测试。` : '连接已保存。供应商未返回模型列表，请手动填写 Embedding 模型名后点击“测试 Embedding”。', true);
     }
 }
 
@@ -209,7 +220,7 @@ function mountCard() {
     let root = document.getElementById('aum-v55-direct-api-settings');
     if (!root) {
         root = document.createElement('section'); root.id = 'aum-v55-direct-api-settings'; root.className = 'aum-v54-section aum-v55-direct-api-settings';
-        const heading = document.createElement('div'); heading.className = 'aum-v55-direct-api-title'; heading.innerHTML = '<h4>独立 API 连接</h4><p class="aum-v51-muted">总结 API 与 Embedding API 分开探测。向量接口不会再拿 Chat Completions 状态接口验证，因此 Jina 这类纯 Embedding 服务不会被误报为聊天端点错误。</p>';
+        const heading = document.createElement('div'); heading.className = 'aum-v55-direct-api-title'; heading.innerHTML = '<h4>独立 API 连接</h4><p class="aum-v51-muted">Embedding 在 TauriTavern 下完全隔离于宿主 API Key；不会写入、读取或轮换酒馆 Secret Store。OpenAI-compatible 地址自动规范到 /v1。</p>';
         root.append(heading, createConnectionBlock('summary', '总结 API', '用于一级 / 二级 / 三级后台总结。'), createConnectionBlock('vector', '向量 API', '仅用于 Aetheria Memory、Baseline、Setting 三条 Dense / Embedding 检索链路。'));
         page.prepend(root);
 
@@ -221,7 +232,7 @@ function mountCard() {
                 ctx.saveSettingsDebounced?.(); renderDirectApiSettings();
             });
             root.querySelector(`#aum-v55-${kind}-direct-url`)?.addEventListener('change', event => {
-                settings[`${kind}_direct_api_url`] = kind === 'vector' ? normalizeOpenAiEmbeddingBaseUrl(event.target.value) : normalizeUrl(event.target.value);
+                settings[`${kind}_direct_api_url`] = kind === 'vector' ? normalizeEmbeddingUrl(event.target.value) : normalizeUrl(event.target.value);
                 if (kind === 'vector' && settings.vector_direct_api_enabled) { configurePrivateVectorTransport(ctx); invalidateAetheriaVectorState(ctx); }
                 ctx.saveSettingsDebounced?.(); renderDirectApiSettings();
             });
@@ -235,7 +246,7 @@ function mountCard() {
                 const keyEl = root.querySelector(`#aum-v55-${kind}-direct-key`);
                 try {
                     const urlEl = root.querySelector(`#aum-v55-${kind}-direct-url`);
-                    settings[`${kind}_direct_api_url`] = kind === 'vector' ? normalizeOpenAiEmbeddingBaseUrl(urlEl.value) : normalizeUrl(urlEl.value);
+                    settings[`${kind}_direct_api_url`] = kind === 'vector' ? normalizeEmbeddingUrl(urlEl.value) : normalizeUrl(urlEl.value);
                     if (!settings[`${kind}_direct_api_url`]) throw new Error('请填写接口地址。');
                     const key = String(keyEl.value || '').trim();
                     if (kind === 'summary') await connectSummary(ctx, settings, root, key); else await connectVector(ctx, settings, root, key);
@@ -248,14 +259,17 @@ function mountCard() {
                         const models = await fetchSummaryModels(ctx, settings.summary_direct_api_url, settings.summary_direct_api_secret_id);
                         settings.summary_direct_api_models = models; fillModelList(root.querySelector('#aum-v55-summary-direct-model-list'), models); status(root, kind, `模型列表已刷新，共 ${models.length} 个。`, true);
                     } else {
-                        status(root, kind, 'Embedding 模型枚举需要供应商支持 /models。若当前列表为空，请直接手动填写模型名；连接有效性以“测试 Embedding”为准。');
+                        const key = isNativeTauriTavern() ? getTauriVectorApiKey() : '';
+                        const models = key ? await discoverEmbeddingModelsDirect(settings.vector_direct_api_url, key) : [];
+                        if (models.length) { settings.vector_direct_api_models = models; fillModelList(root.querySelector('#aum-v55-vector-direct-model-list'), models); status(root, kind, `模型列表已刷新，共 ${models.length} 个。`, true); }
+                        else status(root, kind, '供应商未提供可用 /models；请直接手动填写 Embedding 模型名。');
                     }
                     ctx.saveSettingsDebounced?.();
                 } catch (error) { status(root, kind, String(error?.message || error), false); }
             });
         }
         root.querySelector('#aum-v55-summary-direct-apply')?.addEventListener('click', () => { try { if (!settings.summary_direct_api_model) throw new Error('请先选择或填写总结模型。'); const profile = upsertSummaryProfile(ctx, settings); status(root, 'summary', `已设为总结接口：${profile.model}`, true); } catch (error) { status(root, 'summary', String(error?.message || error), false); } });
-        root.querySelector('#aum-v55-vector-direct-test')?.addEventListener('click', async () => { try { status(root, 'vector', '正在测试真实 Embedding 写入 / 查询…'); await probeDirectVectorTransport(ctx); status(root, 'vector', `Embedding 测试成功：${settings.vector_direct_api_model}`, true); notify('success', 'Aetheria 私有向量 API 已通过 Embedding 写入与检索测试。'); } catch (error) { status(root, 'vector', String(error?.message || error), false); } });
+        root.querySelector('#aum-v55-vector-direct-test')?.addEventListener('click', async () => { try { status(root, 'vector', '正在测试真实 Embedding 写入 / 查询…'); await probeDirectVectorTransport(ctx); status(root, 'vector', `Embedding 测试成功：${settings.vector_direct_api_model}${isNativeTauriTavern() ? ' ｜ Aetheria 自有凭据' : ''}`, true); notify('success', 'Aetheria 私有向量 API 已通过 Embedding 写入与检索测试。'); } catch (error) { status(root, 'vector', String(error?.message || error), false); } });
     }
     mounted = true; configurePrivateVectorTransport(ctx); renderDirectApiSettings(); return true;
 }
@@ -271,11 +285,13 @@ export function renderDirectApiSettings() {
         root.querySelector(`#aum-v55-${kind}-direct-url`).value = settings[`${kind}_direct_api_url`] || '';
         root.querySelector(`#aum-v55-${kind}-direct-model`).value = settings[`${kind}_direct_api_model`] || '';
         fillModelList(root.querySelector(`#aum-v55-${kind}-direct-model-list`), settings[`${kind}_direct_api_models`] || []);
-        const keyEl = root.querySelector(`#aum-v55-${kind}-direct-key`); keyEl.placeholder = settings[`${kind}_direct_api_secret_id`] ? '密钥已安全保存；留空表示不更换' : 'sk-...';
+        const keyEl = root.querySelector(`#aum-v55-${kind}-direct-key`);
+        const hasKey = kind === 'vector' && isNativeTauriTavern() ? Boolean(getTauriVectorApiKey()) : Boolean(settings[`${kind}_direct_api_secret_id`]);
+        keyEl.placeholder = hasKey ? (kind === 'vector' && isNativeTauriTavern() ? 'Aetheria 自有密钥已保存；留空表示不更换' : '密钥已安全保存；留空表示不更换') : 'sk-...';
         root.querySelector(`[data-kind="${kind}"]`)?.classList.toggle('aum-v55-direct-api-disabled', !settings[`${kind}_direct_api_enabled`]);
-        if (settings[`${kind}_direct_api_secret_id`] && settings[`${kind}_direct_api_url`]) {
+        if (hasKey && settings[`${kind}_direct_api_url`]) {
             const suffix = settings[`${kind}_direct_api_model`] ? ` / ${settings[`${kind}_direct_api_model`]}` : '';
-            const active = kind === 'vector' && privateStatus.active ? '；Aetheria 私有 transport 已启用' : '';
+            const active = kind === 'vector' && privateStatus.active ? (isNativeTauriTavern() ? '；Aetheria 自有 Tauri 向量后端' : '；Aetheria 私有 transport 已启用') : '';
             status(root, kind, `已保存连接：${settings[`${kind}_direct_api_url`]}${suffix}${active}`, true);
         }
     }
