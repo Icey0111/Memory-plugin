@@ -16,7 +16,10 @@ const getHost = () => globalThis.__TAURITAVERN__ || globalThis.window?.__TAURITA
 export const isNativeTauriTavern = () => Boolean(getHost());
 
 export function setTauriVectorApiKey(value) {
-    const key = clean(value, 20000); if (!key) return false;
+    // Only a real string is a key. Coercing here is how the literal "[object Object]" once became a
+    // stored credential: anything object-shaped must be rejected, not stringified.
+    const key = typeof value === 'string' ? clean(value, 20000) : '';
+    if (!key) return false;
     sessionSecrets.set('aetheria', key);
     // The key must never reach WebView localStorage, but "memory only" was too strong a promise:
     // an Android WebView is torn down and recreated far more often than a desktop one, so an
@@ -49,8 +52,11 @@ export async function ensureTauriVectorApiKeyLoaded() {
         credentialHydration = (async () => {
             try {
                 const store = await extensionStore();
-                const probe = await store.tryGetJson({ namespace: STORE_NAMESPACE, table: CREDENTIAL_TABLE, key: CREDENTIAL_KEY });
-                const value = clean(probe?.value ?? probe, 20000);
+                const stored = await readStoreEntry(store, CREDENTIAL_TABLE, CREDENTIAL_KEY);
+                // A missing entry must stay missing. Reading the probe wrapper as a value turned a
+                // plain { found: false } into the string "[object Object]", which then went out as
+                // the provider Bearer token and came back as a 401 on every Embedding call.
+                const value = typeof stored === 'string' ? clean(stored, 20000) : '';
                 if (value) sessionSecrets.set('aetheria', value);
                 return Boolean(value);
             } catch (error) {
@@ -80,6 +86,16 @@ async function removePersistedTauriVectorApiKey() {
         lastDebug = { ...(lastDebug || {}), credential_remove_error: String(error?.message || error).slice(0, 300) };
         return false;
     }
+}
+
+// The host store reports absence as { found: false } rather than "not found" null, so every reader
+// has to unwrap the probe explicitly instead of relying on nullish coalescing.
+async function readStoreEntry(store, table, key) {
+    // Only the absent-entry shape is normalised here. A genuine store failure must keep propagating:
+    // silently reading it as "no data" would turn a broken store into an empty collection.
+    const probe = await store.tryGetJson({ namespace: STORE_NAMESPACE, table, key });
+    if (probe && typeof probe === 'object' && 'found' in probe) return probe.found ? probe.value : null;
+    return probe ?? null;
 }
 
 async function extensionStore() {
@@ -113,8 +129,8 @@ function normalizeCollection(rawInput, id) {
 async function loadCollection(id) {
     const key = safeCollectionStoreKey(id); if (collectionCache.has(key)) return collectionCache.get(key);
     const store = await extensionStore(); let raw = null;
-    raw = await store.tryGetJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key });
-    const collection = normalizeCollection(raw?.value ?? raw, id); collectionCache.set(key, collection); return collection;
+    raw = await readStoreEntry(store, STORE_TABLE, key);
+    const collection = normalizeCollection(raw, id); collectionCache.set(key, collection); return collection;
 }
 async function saveCollection(collection) {
     const key = safeCollectionStoreKey(collection.collection_id); collection.updated_at = Date.now();

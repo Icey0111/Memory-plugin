@@ -1,5 +1,33 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix 3 — defects found by running a real conversation in TauriTavern
+
+Driven end to end through a live TauriTavern session (WebView2 CDP): the plugin loaded, registered both
+prompt channels, generated, summarised, ran extraction and metered its calls. Defects showed up that no
+offline suite could see.
+
+### Fixed
+- **The credential hydration poisoned the key.** `ensureTauriVectorApiKeyLoaded()` read the host store
+  with `probe?.value ?? probe` and then stringified the result. A missing entry comes back as
+  `{ found: false }`, so hydration produced the literal string `"[object Object]"`, stored it as the
+  live key, and every Embedding call went out with it — Jina answered `AUTH_INVALID_API_KEY` (401) and
+  the whole vector path silently produced nothing while the panel reported a saved credential. Reading is
+  now an explicit `readStoreEntry()` that unwraps `{ found, value }`, absence stays absent,
+  `setTauriVectorApiKey()` accepts strings only, and `readStoreEntry()` deliberately still lets genuine
+  store failures propagate so a broken store cannot look like an empty collection.
+- **Quiet extraction inherited the chat preset's `max_tokens`.** `runQuietExtraction()` passed only
+  `quietPrompt` and `jsonSchema`, so the host used the preset budget — 300 tokens in this session — and a
+  reasoning model spent all of it on hidden reasoning. The visible completion arrived truncated
+  (`finish_reason: "length"`) and the parser correctly rejected it, so no memory was ever written.
+  Extraction now sets its own budget (`extraction_response_tokens`, default 1024, clamped 128-8192), and a
+  parse failure records `raw_length` plus a truncation hint when the completion contains no JSON at all.
+
+### Validated live
+- The transport brake classified a provider 401 as *reachable* and did not open (`failures: 0`), which is
+  exactly the behaviour the classification was written for.
+- `get_chat_completions_status` never appears in the running module; `bridgeExports` on the live page
+  lists only the embedding transport.
+
 ## 5.5-dev Iteration 13 hotfix 2 — mobile credential durability and a bounded, braked Embedding transport
 
 ### Fixed

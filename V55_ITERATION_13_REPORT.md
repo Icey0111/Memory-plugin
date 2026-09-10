@@ -214,3 +214,27 @@ builder and only attaches a proxy when the host's own request-proxy setting is e
 whose network needs a proxy to reach the provider fails at connect no matter what the extension
 does. The timeout hint now says this explicitly instead of leaving the raw host text to be read as
 an Aetheria transport bug.
+
+## Hotfix 3 — what a real conversation in TauriTavern exposed
+
+The plugin was driven through a live TauriTavern desktop session over the WebView2 DevTools protocol:
+character selected, conversation generated, summary generated, extraction attempted, every call metered.
+Two defects appeared that the offline suites cannot reach, plus one confirmation:
+
+1. **Hydration poisoned the Embedding key with `"[object Object]"`.** The host store answers a missing
+   entry with `{ found: false }`, and `probe?.value ?? probe` turned that wrapper into a truthy object
+   which was then stringified into the key. Every Embedding request carried it, Jina replied
+   `AUTH_INVALID_API_KEY`, and the vector path produced nothing while the panel reported a saved
+   credential. Fixed with an explicit `readStoreEntry()` plus a strings-only guard in
+   `setTauriVectorApiKey()`.
+2. **Quiet extraction inherited the chat preset's `max_tokens`.** With a 300-token preset and a reasoning
+   model, the whole budget went to hidden reasoning, the visible completion was truncated to a few words,
+   and the JSON parse failed — so no memory was created at all. Extraction now passes its own
+   `responseLength` (`extraction_response_tokens`) and the parse-error record says whether the completion
+   contained any JSON.
+3. **A provider 401 correctly did not open the transport brake**, confirming that the reachability
+   classification from hotfix 2 behaves against a real host.
+
+The main connection in that session was also configured with a 300-token budget for a reasoning model, so
+its visible replies were truncated to a few words. That is a host-side configuration issue rather than a
+plugin defect, but it is what starved extraction before fix 2.

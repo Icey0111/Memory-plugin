@@ -105,6 +105,12 @@ const DEFAULT_SETTINGS = Object.freeze({
     extraction_context_messages: 4,
     extraction_structured_output: true,
     extraction_retry_plain_json: true,
+    // Quiet extraction is generated through the host's chat-completion stack, so without an explicit
+    // budget it inherits the preset's chat max_tokens. A reasoning model then spends that whole
+    // budget on hidden reasoning and the visible JSON arrives truncated ("finish_reason: length"),
+    // which the parser correctly rejects. 1024 covers the JSON plus ordinary reasoning; raise it for
+    // heavier reasoners.
+    extraction_response_tokens: 1024,
     memory_freshness_wait_ms: 800,
     extraction_notifications: false,
     parse_ops: true,
@@ -829,12 +835,16 @@ async function runQuietExtraction(ctx, prompt, useStructured = true) {
     if (typeof ctx.generateQuietPrompt !== 'function') {
         throw new Error('当前 SillyTavern Context 未提供 generateQuietPrompt，无法执行自动记忆抽取。');
     }
+    const settings = getSettings(ctx);
     const options = { quietPrompt: prompt };
+    // Never inherit the chat preset's max_tokens: see extraction_response_tokens in DEFAULT_SETTINGS.
+    const budget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 1024));
+    options.responseLength = budget;
     if (useStructured) options.jsonSchema = EXTRACTION_JSON_SCHEMA;
     // Mark the plugin's own quiet call so the interceptor/wrappers can keep it cleared even when
     // third-party quiet injection is opted in.
-    const settings = getSettings(ctx);
     settings.__quiet_extraction_in_progress = true;
+    runQuietExtraction.lastBudget = budget;
     try {
         const result = await ctx.generateQuietPrompt(options);
         if (settings.metrics_enabled !== false) {
@@ -916,10 +926,16 @@ ${pair.assistantText}`,
         throw error;
     }
     if (!parsed?.ok) {
+        const rawText = String(raw || '');
         const error = new Error(`记忆抽取JSON解析失败：${parsed?.error || 'unknown error'}`);
         store.last_extraction_debug = {
             status: 'parse-error', message_index: assistantIndex, source_key: pair.key,
-            raw_preview: String(raw || '').slice(0, 1200), error: error.message, at: Date.now(),
+            raw_preview: rawText.slice(0, 1200), error: error.message, at: Date.now(),
+            raw_length: rawText.length,
+            response_tokens_budget: runQuietExtraction.lastBudget ?? null,
+            // A completion that carries no JSON delimiter at all is almost always a starved or
+            // reasoning-dominated generation rather than a formatting mistake, so say which.
+            truncated_hint: !rawText.includes('{') ? '响应中没有 JSON（疑似被 max_tokens 截断或全部消耗在推理内容上）；可提高 extraction_response_tokens。' : null,
         };
         setStore(ctx, store);
         throw error;

@@ -73,6 +73,18 @@ assert.equal(getTauriVectorApiKey(), '', 'reset clears the in-memory key');
 assert.equal(await ensureTauriVectorApiKeyLoaded(), true, 'the persisted key is re-hydrated after a WebView reload');
 assert.equal(getTauriVectorApiKey(), 'jina-persistent-key');
 
+// The exact defect the live TauriTavern run exposed: the host store reports absence as
+// { found: false }, and treating that wrapper as a value produced the literal string
+// "[object Object]", which then went out as the provider Bearer token and came back 401 on every
+// Embedding call. A missing entry must stay missing, and an object must never become a key.
+__testResetTauriVectorBackend();
+kv.delete('aetheria-unified-memory-v55|credentials|embedding_api_key');
+assert.equal(await ensureTauriVectorApiKeyLoaded(), false, 'a missing credential entry must not hydrate anything');
+assert.equal(getTauriVectorApiKey(), '');
+assert.equal(setTauriVectorApiKey({ found: false }), false, 'an object must never be accepted as a key');
+assert.equal(setTauriVectorApiKey(['x']), false);
+assert.equal(getTauriVectorApiKey(), '');
+
 const providerCalls = [];
 function vectorFor(text) {
     const value = String(text).toLowerCase();

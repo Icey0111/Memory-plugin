@@ -37,6 +37,7 @@ const context={
     quietCalls++;
     assert.match(options.quietPrompt,/后台记忆抽取器/);
     assert.ok(options.jsonSchema,'structured extraction should pass JSON schema');
+    assert.equal(options.responseLength,1024,'extraction must set its own budget instead of inheriting the chat preset max_tokens');
     if (extractionMode===2) return JSON.stringify({
       event_summary:'重新审阅后只保留平成结束实验回家的事件。',
       active_state:'平成目前在家。',
