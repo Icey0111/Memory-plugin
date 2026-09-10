@@ -32,7 +32,7 @@ const vectorPolicy = read('./v55-vector-policy.js');
 for (const p of [/POLICY_VERSION = 3/,/ensureCurrentVectorSpaceIdentity/,/space_fingerprint/,/single-rewritten-query/,/return await intercept\(input, init\)/]) assert.match(vectorPolicy,p);
 assert.doesNotMatch(vectorPolicy,/catch\s*\([^)]*\)[\s\S]{0,220}return originalFetch\(input, init\)/);
 const integrity=read('./v55-store-integrity.js');
-for(const p of[/setting_binding/,/mergeAuxiliaryChatState/,/scene_summaries/,/independently-owned/]) assert.match(integrity,p);
+for(const p of[/mergeAuxiliaryChatState/,/CANONICAL_OWNED_KEYS/,/DERIVED_DROP_KEYS/,/scene_summaries/,/independently-owned/]) assert.match(integrity,p);
 const privacy=read('./v55-privacy.js');
 for(const p of[/known_by/,/sanitizeStoreForActor/,/filterSummaryTreeForActor/,/event_summary/]) assert.match(privacy,p);
 const settings=read('./settings.html');
