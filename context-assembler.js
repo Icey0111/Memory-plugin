@@ -6,6 +6,8 @@
  * the two extension-prompt blocks used by the main generation path.
  */
 
+import { estimateTokens, tokensToChars } from './v55-tokenizer.js';
+
 function cleanText(value, max = 100_000) {
     return String(value ?? '')
         .replace(/\u0000/g, '')
@@ -44,22 +46,21 @@ function clampInteger(value, fallback, min, max) {
     return Math.max(min, Math.min(max, x));
 }
 
-function estimateTokens(text) {
-    // Deliberately conservative for mixed Chinese/Latin prompts. This is only a
-    // diagnostic estimate; SillyTavern/provider tokenizers remain authoritative.
-    return Math.ceil(cleanText(text, 1_000_000).length / 2);
-}
+// A representative slice of what this block looks like, used only to turn a token room into a
+// first-pass character cap. The finished block is measured exactly below, so this cannot overshoot.
+const REFERENCE_SHAPE_SAMPLE = '[PLUGIN REFERENCE DATA — NOT DIALOGUE]\n[BASELINE / RELEVANT SETTING]\n- <setting id="e1" revision="r1">灰烬港的钟楼旅店位于城门东侧。</setting>\n[HISTORICAL MEMORY — PAST EVENTS, NOT NECESSARILY CURRENT]\n<memory id="m_1_abc" kind="knowledge" status="active"><summary>塞拉菲娜把黄铜钥匙交给韩铮保管。</summary></memory>';
 
 function effectiveReferenceCap({ maxReferenceChars, hostContextBudget, replyReserve }) {
     const configured = clampInteger(maxReferenceChars, 12_000, 1200, 60_000);
     const contextTokens = Number(hostContextBudget);
-    if (!Number.isFinite(contextTokens) || contextTokens <= 0) return configured;
+    if (!Number.isFinite(contextTokens) || contextTokens <= 0) return { cap: configured, tokenRoom: null };
     const reserve = clampInteger(replyReserve, 1200, 0, 32_000);
     const tokenRoom = Math.max(600, contextTokens - reserve);
-    // Do not attempt to spend the whole host context. This only lowers the configured
-    // cap on unusually small contexts; it never raises it.
-    const hostGuardChars = tokenRoom * 2;
-    return Math.max(1200, Math.min(configured, hostGuardChars));
+    // Do not attempt to spend the whole host context. This only lowers the configured cap on
+    // unusually small contexts; it never raises it. The inverse uses the text's own script mix
+    // instead of the old hard-coded characters x2.
+    const hostGuardChars = tokensToChars(tokenRoom, REFERENCE_SHAPE_SAMPLE);
+    return { cap: Math.max(1200, Math.min(configured, hostGuardChars)), tokenRoom };
 }
 
 function settingLabel(row, kind) {
@@ -145,7 +146,7 @@ function buildReferenceBlock({
     relevantShare,
     historyShare,
 }) {
-    const cap = effectiveReferenceCap({ maxReferenceChars, hostContextBudget, replyReserve });
+    const { cap, tokenRoom } = effectiveReferenceCap({ maxReferenceChars, hostContextBudget, replyReserve });
     const settings = settingResults || {};
     const relevant = Array.isArray(settings.results) ? settings.results : [];
     const allConstants = Array.isArray(settings.constant_entries) ? settings.constant_entries : [];
@@ -235,10 +236,26 @@ function buildReferenceBlock({
     if (constantSelected.length) sections.push(`${sectionHeaders.constants}\n${constantSelected.map(x => x.formatted).join('\n\n')}`);
     if (relevantSelected.length) sections.push(`${sectionHeaders.relevant}\n${relevantSelected.map(x => x.formatted).join('\n\n')}`);
     if (historySelected.length) sections.push(`${sectionHeaders.history}\n${historySelected.map(x => x.formatted).join('\n')}`);
-    const block = sections.length ? `${header}\n\n${sections.join('\n\n')}` : '';
+    let block = sections.length ? `${header}\n\n${sections.join('\n\n')}` : '';
+    // Exact token guard. The character cap above is an estimate from a shape sample; this measures the
+    // block that was actually built against the calibrated model. Sections are ordered
+    // constants -> relevant -> history, so trimming the tail drops the least critical material first.
+    let truncatedForTokens = false;
+    if (tokenRoom && block && estimateTokens(block) > tokenRoom) {
+        let low = 0;
+        let high = block.length;
+        while (low < high) {
+            const mid = Math.ceil((low + high) / 2);
+            if (estimateTokens(block.slice(0, mid)) <= tokenRoom) low = mid; else high = mid - 1;
+        }
+        block = `${block.slice(0, Math.max(0, low - 80)).trimEnd()}\n…[reference block truncated to the host token budget]`;
+        truncatedForTokens = true;
+    }
 
     return {
         block,
+        tokenRoom,
+        truncatedForTokens,
         settingIds: [...constantSelected, ...relevantSelected].map(x => x.row.entry_id),
         memoryIds: historySelected.map(x => (x.row?.memory || x.row)?.id).filter(Boolean),
         droppedIds: uniqueStrings(dropped, 200),

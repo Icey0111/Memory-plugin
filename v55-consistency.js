@@ -19,6 +19,7 @@ import {
 } from './v55-finalizer.js';
 import { sanitizeStoreForActor } from './v55-privacy.js';
 import { isDialogueRow } from './memory-core.js';
+import { persistChatStore } from './v55-derived-store.js';
 import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
 import { formatEvidenceBlock, resolveMemoryLookupRequests } from './v55-evidence.js';
@@ -212,7 +213,9 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
         ...bounded.diagnostics,
         at: Date.now(),
     };
-    ctx.saveMetadataDebounced?.();
+    // v55_consistency and v55_finalizer_diagnostics are derived; the projection keeps them out of the
+    // chat file and ships them to the derived store.
+    persistChatStore(ctx);
 }
 
 export function installV55Consistency(getContext, interceptorName) {

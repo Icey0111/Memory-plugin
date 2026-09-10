@@ -70,7 +70,10 @@ assert.equal(metrics.model_calls.summary, 1);
 assert.equal(metrics.model_calls_total, 2);
 assert.equal(metrics.embed_calls, 1);
 assert.equal(metrics.embed_items, 3);
-assert.equal(metrics.est_prompt_tokens, 150);
+// promptChars 400 + 200 with no text: the fallback is the measured whole-request average of
+// ~2.2 characters per token, so ceil(600 / 2.2) = 273. The old chars / 4 said 150 and under-reported
+// a Chinese prompt by roughly half.
+assert.equal(metrics.est_prompt_tokens, 273);
 assert.match(formatMetrics(ctx), /抽取 1/);
 resetMetrics(ctx);
 assert.equal(getMetrics(ctx).model_calls_total, 0);

@@ -15,6 +15,7 @@ import {
     stampRuntimeIdentity,
 } from './v55-runtime.js';
 import { isDialogueRow } from './memory-core.js';
+import { persistChatStore } from './v55-derived-store.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -676,7 +677,7 @@ export async function runWithV55Finalizer(ctx, innerInterceptor, args) {
         || (generationType === 'quiet' && !thirdPartyQuietInjection);
     if (realSetPrompt && captured.size && suppressed) {
         for (const row of captured.values()) realSetPrompt(row.key, row.value, ...row.rest);
-        ctx.saveMetadataDebounced?.();
+        persistChatStore(ctx);
         return;
     }
     if (realSetPrompt && captured.size) {
@@ -707,7 +708,7 @@ export async function runWithV55Finalizer(ctx, innerInterceptor, args) {
             at: Date.now(),
         };
     }
-    ctx.saveMetadataDebounced?.();
+    persistChatStore(ctx);
 }
 
 export function installV55Finalizer(getContext, interceptorName) {

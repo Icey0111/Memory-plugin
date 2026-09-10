@@ -5,13 +5,32 @@ import { installV55StoreIntegrity } from './v55-store-integrity.js';
 import { init as coreInit } from './index-v55.js';
 import { installV55UiPolish, localizeV55Ui } from './v55-ui-polish.js';
 import { installV55HierarchicalSummary } from './v55-summary-runtime.js';
-import { installV55FloorFoldUi } from './v55-floor-fold.js';
+import { installV55FloorFoldUi, syncFloorFoldDom } from './v55-floor-fold.js';
+import { installV55DerivedStore, onDerivedHydrated } from './v55-derived-store.js';
 import { installV55DirectApiSettings } from './v55-api-connections.js';
 import { installV55PrivateVectorTransport, configurePrivateVectorTransport } from './v55-private-vector-transport.js';
 import { installV55VectorPolicy, configureV55VectorPolicy } from './v55-vector-policy.js';
 import { installV55EmbeddingProfileUi } from './v55-embedding-profile-ui.js';
 
+let derivedListenerInstalled = false;
+
+function installDerivedStore() {
+    installV55DerivedStore();
+    if (derivedListenerInstalled) return;
+    derivedListenerInstalled = true;
+    // Derived keys arrive asynchronously. Everything that reads them (the summary tree prompt, the
+    // fold styling, the status line) has to be refreshed once they land, or the first generation after
+    // a chat load would run against an empty derived state.
+    onDerivedHydrated((ctx) => {
+        const live = ctx || (globalThis.SillyTavern?.getContext?.());
+        installV55HierarchicalSummary();
+        installV55FloorFoldUi();
+        syncFloorFoldDom(live);
+    });
+}
+
 function installUi() {
+    installDerivedStore();
     installV55StoreIntegrity();
     installV55UiPolish();
     localizeV55Ui();
@@ -24,6 +43,7 @@ function installUi() {
 }
 
 export function init() {
+    installDerivedStore();
     installV55StoreIntegrity();
     installV55PrivateVectorTransport();
     installV55VectorPolicy();
@@ -33,6 +53,7 @@ export function init() {
     return result;
 }
 
+installDerivedStore();
 installV55StoreIntegrity();
 installV55PrivateVectorTransport();
 installV55VectorPolicy();

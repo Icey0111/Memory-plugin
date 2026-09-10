@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { installMetadataIntegrityForContext, mergeAuxiliaryChatState, writeMergedChatStore } from './v55-store-integrity.js';
+import { externallyOwnedKeyCount, installMetadataIntegrityForContext, mergeAuxiliaryChatState, setExternallyOwnedKeys, writeMergedChatStore } from './v55-store-integrity.js';
 
 const previous = {
   version: '5.4', memories: { old: { id: 'old' } }, slots: {}, extractions: { old: {} }, baseline: { vector: {} }, vector: {},
@@ -54,4 +54,23 @@ assert.equal(Object.keys(loaded.aetheriaUnifiedMemoryV54.floor_folds.hidden).len
 assert.equal(loaded.aetheriaUnifiedMemoryV54.scene_summaries, undefined, 'derived keys are still rebuilt, not preserved');
 assert.equal(writeMergedChatStore(null, 'aetheriaUnifiedMemoryV54', {}), false);
 assert.equal(writeMergedChatStore('not-an-object', 'aetheriaUnifiedMemoryV54', {}), false);
+// The property guard merges every assignment against the previous value, so it would undo the derived
+// projection: the derived store writes an already-stripped store and the guard puts the keys back. Once
+// another store owns them the guard has to leave them alone.
+const guarded = { aetheriaUnifiedMemoryV54: structuredClone(previous) };
+assert.equal(installMetadataIntegrityForContext({ chatMetadata: guarded }), true);
+guarded.aetheriaUnifiedMemoryV54 = structuredClone(replay);
+assert.ok(guarded.aetheriaUnifiedMemoryV54.cold_turns, 'by default the guard still preserves owned state');
+assert.equal(setExternallyOwnedKeys(['cold_turns', 'floor_folds', 'hierarchical_summaries']), 3);
+assert.equal(externallyOwnedKeyCount(), 3);
+guarded.aetheriaUnifiedMemoryV54 = structuredClone(replay);
+assert.equal(guarded.aetheriaUnifiedMemoryV54.cold_turns, undefined, 'an externally owned key must not be resurrected');
+assert.equal(guarded.aetheriaUnifiedMemoryV54.floor_folds, undefined);
+assert.equal(guarded.aetheriaUnifiedMemoryV54.hierarchical_summaries, undefined);
+assert.ok(guarded.aetheriaUnifiedMemoryV54.entity_registry.e1, 'keys nobody else owns are still preserved');
+assert.deepEqual(Object.keys(guarded.aetheriaUnifiedMemoryV54.memories), ['fresh']);
+setExternallyOwnedKeys(null);
+assert.equal(externallyOwnedKeyCount(), 0);
+guarded.aetheriaUnifiedMemoryV54 = structuredClone(previous);
+assert.ok(guarded.aetheriaUnifiedMemoryV54.cold_turns, 'clearing the set restores the previous behaviour');
 console.log('PASS v5.5 store integrity: canonical replay preserves independently-owned chat state');

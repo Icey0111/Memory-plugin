@@ -42,13 +42,18 @@ function isObject(value) {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-export function mergeAuxiliaryChatState(previousInput, nextInput) {
+export function mergeAuxiliaryChatState(previousInput, nextInput, dropKeysInput = null) {
     const previous = isObject(previousInput) ? previousInput : {};
     const next = isObject(nextInput) ? nextInput : {};
+    const dropKeys = dropKeysInput instanceof Set ? dropKeysInput : (Array.isArray(dropKeysInput) ? new Set(dropKeysInput) : null);
     const out = { ...next };
+    if (dropKeys) for (const key of dropKeys) delete out[key];
 
     for (const [key, value] of Object.entries(previous)) {
         if (CANONICAL_OWNED_KEYS.has(key) || DERIVED_DROP_KEYS.has(key)) continue;
+        // A key the caller is deliberately moving out of the chat file (the derived store) is not
+        // "missing from the incoming store", it is removed on purpose.
+        if (dropKeys && dropKeys.has(key)) continue;
         // Explicit null / empty / replacement values in the incoming store are authoritative; a key
         // that is merely absent, or present holding undefined, is not. normalizeStore spreads its
         // input, so an omitted auxiliary field can still arrive as an own property set to undefined,
@@ -69,10 +74,28 @@ export function mergeAuxiliaryChatState(previousInput, nextInput) {
  * replace the store wholesale and take the summary tree and the floor-fold audit with it. Merging at
  * the write site makes the guarantee independent of whether the guard happens to be installed yet.
  */
-export function writeMergedChatStore(chatMetadata, key, store) {
+export function writeMergedChatStore(chatMetadata, key, store, { dropKeys = null } = {}) {
     if (!isObject(chatMetadata)) return false;
-    chatMetadata[key] = mergeAuxiliaryChatState(chatMetadata[key], store);
+    chatMetadata[key] = mergeAuxiliaryChatState(chatMetadata[key], store, dropKeys);
     return true;
+}
+
+/**
+ * Keys another store owns, so the property guard must not restore them into chat_metadata.
+ *
+ * Without this the guard undoes the projection: the derived store writes an already-stripped store,
+ * the setter merges it against the previous value with no drop set, and every derived key comes back.
+ * Set when a chat's external record is known to exist, cleared when the chat changes.
+ */
+let externallyOwnedKeys = null;
+
+export function setExternallyOwnedKeys(keys) {
+    externallyOwnedKeys = Array.isArray(keys) ? new Set(keys) : null;
+    return externallyOwnedKeys ? externallyOwnedKeys.size : 0;
+}
+
+export function externallyOwnedKeyCount() {
+    return externallyOwnedKeys ? externallyOwnedKeys.size : 0;
 }
 
 export function installMetadataIntegrityForContext(ctx) {
@@ -91,7 +114,7 @@ export function installMetadataIntegrityForContext(ctx) {
             return current;
         },
         set(next) {
-            current = mergeAuxiliaryChatState(current, next);
+            current = mergeAuxiliaryChatState(current, next, externallyOwnedKeys);
         },
     });
     Object.defineProperty(metadata, MARKER, {

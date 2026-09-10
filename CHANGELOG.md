@@ -1,5 +1,130 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix 9 — derived state leaves the chat file, and the retrieval stack stops guessing
+
+Six shortcomings identified by comparing this project against LittleWhiteBox, plus one defect the new
+tests found in the fix itself.
+
+### Derived chat state now lives outside the chat file
+
+The plugin claimed "core memory is portable, indices are rebuildable" but kept every one of them in
+`chat_metadata`. Measured on a real 85-floor chat, the store was 77 KB of a 95 KB file — 74% of the chat
+was plugin state, rewritten on every save, and loadable into a store object the plugin did not own.
+
+`v55-derived-store.js` moves the derived keys out: `cold_turns`, `scene_summaries`,
+`scene_summary_source`, `scene_summary_fingerprint`, `floor_folds`, `summary_history`,
+`provenance_registry`, `last_extraction_debug`, `last_recall_debug`, `last_errors`, `v55_consistency`,
+`v55_finalizer_diagnostics`, `current_state_authority`, `last_active_state_diagnostic` and
+`v55_inner_bundle`. The backend is the TauriTavern host extension store when the host offers one and
+IndexedDB otherwise; the chat file keeps a ~120-byte pointer so a reader can tell an external record
+exists.
+
+Deliberately NOT moved: `memories`, `slots`, `extractions`, `hierarchical_summaries`, `setting_binding`,
+`source_fingerprints` (authoritative and portable), plus `vector`, `baseline` and `entity_registry` — the
+first two are a few hundred bytes and a stripped copy would read as *stale* and trigger a full rebuild
+before hydration landed, and losing the third would fragment entity identity for every later mention.
+
+Two safety rules make it non-destructive:
+- **Never write derived keys before hydration finished.** An unhydrated store looks exactly like an
+  empty one; `queueDerivedWrite()` refuses and counts the refusal instead of overwriting a good record.
+- **Strip from `chat_metadata` only after the external write succeeded.** With no durable backend the
+  projection is a no-op and the chat file stays the owner, exactly as before. (The first version of this
+  feature got that wrong and the new test caught it: without a backend it stripped the keys with nowhere
+  to put them.)
+
+`unfoldAllFloors()` also gained a fallback: because the audit is derived, it now rebuilds it from the
+per-row fold markers when it is missing, so a lost audit cannot leave a chat permanently folded.
+
+### Token accounting is now calibrated, not guessed
+
+Two different estimates lived in one codebase — `chars / 4` in the metrics and `chars / 2` in the context
+assembler — and the first under-reported a Chinese prompt by 46%. `v55-tokenizer.js` fits the provider's
+own `prompt_tokens` over **126 retained requests**:
+
+```text
+tokens = 0.9408 * cjkChars + 0.2441 * otherChars   (-21 for the whole request)
+R2 = 0.9989, MAPE = 1.1%
+```
+
+The constant is applied only when estimating a whole request; fragments use the slopes alone. The
+assembler's host-context guard now converts tokens to characters from the text's own script mix, and a
+new **exact token trim** measures the block that was actually built against the calibrated model instead
+of trusting an a-priori `x2`.
+
+### Real word segmentation
+
+The lexical channel used fixed CJK 2-/3-grams, so a four-character word was four overlapping terms and
+never a unit. `Intl.Segmenter` ships with the host's own ICU data, so real segmentation costs no
+dependency and no download: `灰烬港爆发的灰咳经星辰仪查明…` now yields `灰烬 / 爆发 / 星辰 / 查明 / 古井 /
+污染`. N-grams remain as the recall floor because the ICU dictionary does not know proper nouns
+(`塞拉菲娜` segments per character), and entity matching covers those. Word coverage and phrase adjacency
+are the two features the reranker is built on.
+
+### Recall prefetch and warmup
+
+Recall started inside the generate interceptor, so prompt assembly waited for the full dense round-trip
+while the host sat idle after rendering a message. `startRecallPrefetch()` now runs it on
+`MESSAGE_RECEIVED` / `CHARACTER_MESSAGE_RENDERED`.
+
+The prefetch deliberately **does not commit**: `recalled_count`, `last_recalled_message` and the recall
+cooldown are all mutated by a recall, so committing early would bump counters for a generation that never
+happens and would eat the next turn's cooldown. It parks the ranking; the interceptor commits it only
+when a generation actually consumes it. A stale prefetch is discarded and the live path runs.
+`recallPrefetchStatus()` exposes `armed`, `parked`, `last_lead_ms` and `last_error` so a permanently
+broken prefetch cannot masquerade as a cache miss. `warmupRecallRuntime()` hydrates the credential and
+probes the provider once per chat.
+
+### A local candidate reranker
+
+Fusion scored channels; nothing read the query against the candidate. `v55-rerank.js` adds coverage,
+phrase adjacency, slot match, entity bypass, recency, importance and channel breadth.
+
+Two decisions make it able to actually reorder a fused list, and the first attempt got both wrong:
+- every feature is min-max normalised **across the candidate set** and centred on 0.5, so a feature that
+  is identical for every candidate contributes nothing instead of diluting the ones that discriminate;
+- the fusion score enters as a within-set min-max too, because an RRF sum has no absolute scale.
+
+With raw values, a constant recency term outweighed a 2x coverage difference and a channel-heavy but
+irrelevant memory kept the top spot. The self-check is unchanged at 6/6 (MRR 0.750) because that floor was
+already saturated; `test-v55-rerank.mjs` covers the reordering directly instead.
+
+### Summary tree undo
+
+A rebuild or a bad model pass was one-way. The last three distinct tree states are kept in the derived
+store (`snapshotSummaryTree` / `undoLastSummaryTree`, plus a settings button). Undo unfolds first, then
+restores, then re-folds — so it preserves the invariant that a floor is never hidden without a summary
+standing in for it, rather than restoring a tree and leaving rows folded under the tree that was dropped.
+
+### Verified live, and one open item
+
+Verified in a live TauriTavern session on a 26-floor chat with the real provider: the host extension
+store is selected as the derived backend, hydration and migration both run, the ownership guard no longer
+resurrects externally owned keys, and **the chat file now contains zero derived keys** — its store is down
+to the 16 authoritative entries plus a 108-byte pointer, while `floor_folds` (37 entries),
+`summary_history`, `provenance_registry` and the diagnostics live in the external record. The fold audit
+also self-heals from the per-row markers when it is missing, which is what made the first live probe
+recover 37 hidden floors. The retrieval self-check still reports 6/6 (MRR 0.750) with the reranker in the
+chain, and the metrics panel reports the fitted token model.
+
+**Open item.** `cold_turns` does not appear in the external record in that session even though
+`cold_turn_snapshot_enabled` is true and extraction succeeds (`last_extraction_debug` reaches the record).
+The snapshot is recorded on the extraction store and that store is what `setStore` persists, so the loss
+is somewhere between `recordColdTurn` and `extractDerived`; it is not yet diagnosed. Until it is, treat
+the cold snapshot and the on-demand evidence expansion as degraded on a chat whose derived record was
+created after this change.
+
+### Smaller changes
+
+- `run-tests.mjs` replaces the ~300-line `node a && node b && …` chain: 56 files, per-file timing, a
+  failure tail, `--filter` and `--list`. Children are spawned with **file-backed stdio** rather than
+  pipes, because capturing output through a pipe needs a named pipe and confined environments refuse it.
+- A failed recall prefetch, a failed derived hydration and a rejected derived write are all reported
+  instead of being swallowed.
+- New settings: `rerank_enabled`, `rerank_weight`, `rerank_half_life_turns`.
+- New tests: `test-v55-tokenizer.mjs`, `test-v55-derived-store.mjs`, `test-v55-rerank.mjs`,
+  `test-v55-recall-prefetch.mjs`, plus the summary-undo and coverage-invariant cases in
+  `test-v55-floor-fold.mjs`.
+
 ## 5.5-dev Iteration 13 hotfix 8 — summarize every ten floors, then fold them out of the prompt
 
 The memory system now summarizes on a fixed cadence — one Level-1 summary per **ten completed floors** —

@@ -14,8 +14,10 @@ import {
     selectTemporalCandidates,
 } from './memory-core.js';
 import { evaluateRankedCases, scoreRankedCase } from './retrieval-eval.js';
+import { rerankCandidates } from './v55-rerank.js';
 
-export const SELF_CHECK_VERSION = '5.5-sc1';
+// Bumped when the chain under test changes: the version is what makes an MRR floor meaningful.
+export const SELF_CHECK_VERSION = '5.5-sc2-rerank';
 
 const TURNS = [
     { index: 2, ops: [{ op: 'add', kind: 'knowledge', slot: '平成.knowledge.pass', text: '通行证的编号是 A-7391。', entities: ['平成'], indexable: true }] },
@@ -67,7 +69,15 @@ export function runSelfCheckCase(store, testCase, { finalCount = 6 } = {}) {
         currentMessage: testCase.asOfIndex,
         cooldownTurns: 0,
     });
-    const selected = diversifyCandidates(fused, { finalCount, lambda: 0.78 });
+    // The runtime runs the fusion path and then the local reranker; the self-check has to measure the
+    // same chain or its MRR floor stops describing production.
+    const reranked = rerankCandidates(fused, testCase.query, {
+        weight: 0.55,
+        currentMessage: testCase.asOfIndex,
+        halfLifeTurns: 120,
+        maxPool: Math.max(30, finalCount * 5),
+    }).rows;
+    const selected = diversifyCandidates(reranked, { finalCount, lambda: 0.78 });
     const ranked = selected.map(row => row.memory.id);
     const score = scoreRankedCase({ expected: expectedId ? [expectedId] : [], ranked, k: finalCount });
     return {

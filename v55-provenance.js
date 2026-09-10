@@ -3,6 +3,8 @@
 // recomputes the current branch id. Shared ancestors can be observed on later
 // branches without being rewritten as if they were created there.
 
+import { persistChatStore } from './v55-derived-store.js';
+
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 
 function clean(value) {
@@ -70,7 +72,8 @@ export function installV55Provenance(getContext) {
         const store = ctx?.chatMetadata?.[METADATA_KEY];
         if (!store) return;
         stabilizeProvenanceStore(store, store.runtime_identity?.branch_id);
-        ctx.saveMetadataDebounced?.();
+        // provenance_registry is a derived index; the projection is what keeps it out of the chat file.
+        persistChatStore(ctx, store);
     };
     const schedule = () => setTimeout(stabilize, 20);
     const events = first.eventTypes || {};

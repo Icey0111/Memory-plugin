@@ -18,6 +18,7 @@
 // the plugin unhide the wrong message.
 
 import { FOLD_EXTRA_KEY, fnv1a32, isDialogueRow, isFoldedRow } from './memory-core.js';
+import { persistChatStore } from './v55-derived-store.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -41,11 +42,16 @@ function storeOf(ctx) {
 }
 
 /** Fold audit record. `hidden` maps a message index to what was hidden there and why. */
-function foldsOf(store) {
+/**
+ * The fold audit. `create` must be false for read-only callers: the audit is a derived key owned by the
+ * external derived store, and a diagnostics read that lazily created it would put an empty floor_folds
+ * back into the chat file on the next save.
+ */
+function foldsOf(store, create = true) {
     if (!store) return null;
-    const f = store[FOLD_STORE_KEY] && typeof store[FOLD_STORE_KEY] === 'object' && !Array.isArray(store[FOLD_STORE_KEY])
-        ? store[FOLD_STORE_KEY]
-        : (store[FOLD_STORE_KEY] = {});
+    const existing = store[FOLD_STORE_KEY];
+    if (!create && (!existing || typeof existing !== 'object' || Array.isArray(existing))) return null;
+    const f = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : (store[FOLD_STORE_KEY] = {});
     if (!f.hidden || typeof f.hidden !== 'object' || Array.isArray(f.hidden)) f.hidden = {};
     if (!Array.isArray(f.runs)) f.runs = [];
     if (f.last_run_at === undefined) f.last_run_at = null;
@@ -154,6 +160,7 @@ export function foldSummarizedFloors(ctxInput = getContext(), opts = {}) {
 
     let foldedRows = 0;
     let foldedFloors = 0;
+    let auditRepaired = 0;
     let skippedTail = 0;
     const now = Date.now();
     const level1ByIndex = opts.level1ByIndex || null;
@@ -167,7 +174,22 @@ export function foldSummarizedFloors(ctxInput = getContext(), opts = {}) {
         for (const index of indexes) {
             const row = rows[index];
             if (!row || !isDialogueRow(row)) continue;
-            if (isFoldedRow(row)) continue;
+            if (isFoldedRow(row)) {
+                // Already folded but with no audit entry (the audit is derived and may have been lost).
+                // Rebuild the entry from the row's own marker so the audit self-heals.
+                if (folds.hidden[String(index)]) continue;
+                const marker = row.extra?.[FOLD_EXTRA_KEY] || {};
+                folds.hidden[String(index)] = {
+                    summary_id: marker.summary_id ?? summaryId,
+                    turn_assistant_index: marker.turn_assistant_index ?? assistantIndex,
+                    folded_at: Number(marker.folded_at) || now,
+                    fingerprint: Number(marker.fingerprint),
+                    is_user: row.is_user === true,
+                    recovered_from_row: true,
+                };
+                auditRepaired += 1;
+                continue;
+            }
             if (folds.hidden[String(index)]) continue;
             row.is_system = true;
             row.extra = (row.extra && typeof row.extra === 'object') ? row.extra : {};
@@ -191,12 +213,16 @@ export function foldSummarizedFloors(ctxInput = getContext(), opts = {}) {
         if (touchedThisFloor) foldedFloors += 1;
     }
 
-    if (foldedRows) {
+    // Persist when new floors were folded OR when the audit was repaired from row markers: the repair
+    // is the only record of what may be unfolded, and skipping it left the audit permanently empty.
+    if (foldedRows || auditRepaired) {
         folds.last_run_at = now;
         folds.last_error = null;
         folds.runs.push({ at: now, floors: foldedFloors, messages: foldedRows, keep_recent: keepRecent });
         if (folds.runs.length > 50) folds.runs = folds.runs.slice(-50);
-        ctx.saveMetadataDebounced?.();
+        // Route through the projection, not ctx.saveMetadataDebounced(): floor_folds is derived and
+        // would otherwise be written straight into the chat file.
+        persistChatStore(ctx);
         // Chat rows are host application data: persist through the host's own save path.
         try { ctx.saveChat?.(); } catch (error) { folds.last_error = String(error?.message || error); }
     }
@@ -204,6 +230,7 @@ export function foldSummarizedFloors(ctxInput = getContext(), opts = {}) {
     return {
         folded: foldedRows,
         floors: foldedFloors,
+        audit_repaired: auditRepaired,
         hidden: Object.keys(folds.hidden).length,
         skipped_tail: skippedTail,
         keep_recent: keepRecent,
@@ -222,6 +249,25 @@ export function unfoldAllFloors(ctxInput = getContext(), { save = true } = {}) {
     const rows = Array.isArray(ctx.chat) ? ctx.chat : [];
     let restored = 0;
     let stale = 0;
+
+    // The audit is derived state and can be absent (it lives in the external derived store now, and a
+    // fresh install has none). Every folded row carries its own marker, so scan for them rather than
+    // leaving a chat permanently folded because the audit was lost.
+    if (!Object.keys(folds.hidden).length) {
+        for (let index = 0; index < rows.length; index++) {
+            const row = rows[index];
+            if (!isFoldedRow(row)) continue;
+            const marker = row.extra?.[FOLD_EXTRA_KEY] || {};
+            folds.hidden[String(index)] = {
+                summary_id: marker.summary_id ?? null,
+                turn_assistant_index: marker.turn_assistant_index ?? null,
+                folded_at: Number(marker.folded_at) || Date.now(),
+                fingerprint: Number(marker.fingerprint),
+                is_user: row.is_user === true,
+                recovered_from_row: true,
+            };
+        }
+    }
 
     for (const [key, meta] of Object.entries(folds.hidden)) {
         const index = Number(key);
@@ -246,7 +292,7 @@ export function unfoldAllFloors(ctxInput = getContext(), { save = true } = {}) {
         if (folds.runs.length > 50) folds.runs = folds.runs.slice(-50);
     }
     if (save && restored) {
-        ctx.saveMetadataDebounced?.();
+        persistChatStore(ctx, store);
         try { ctx.saveChat?.(); } catch { /* host save is best effort */ }
     }
     return { restored, stale };
@@ -257,17 +303,19 @@ export function floorFoldStatus(ctxInput = getContext()) {
     const ctx = ctxInput;
     const store = storeOf(ctx);
     const settings = settingsOf(ctx);
-    const folds = foldsOf(store);
+    const folds = foldsOf(store, false);
+    const hidden = folds?.hidden && typeof folds.hidden === 'object' ? folds.hidden : {};
+    const runs = Array.isArray(folds?.runs) ? folds.runs : [];
     const rows = Array.isArray(ctx?.chat) ? ctx.chat : [];
     return {
         enabled: settings?.summary_fold_hidden_floors === true,
         keep_recent: Math.max(0, Math.floor(Number(settings?.summary_fold_keep_recent_floors)) || 0),
-        hidden_messages: Object.keys(folds.hidden).length,
+        hidden_messages: Object.keys(hidden).length,
         chat_messages: rows.length,
         prompt_messages: rows.filter(row => !row?.is_system).length,
-        last_run_at: folds.last_run_at,
-        last_error: folds.last_error,
-        runs: folds.runs.length,
+        last_run_at: folds?.last_run_at ?? null,
+        last_error: folds?.last_error ?? null,
+        runs: runs.length,
     };
 }
 

@@ -71,6 +71,8 @@ import { assembleGenerationContext } from './context-assembler.js';
 import { deriveActorIdentity } from './v55-runtime.js';
 import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
 import { writeMergedChatStore } from './v55-store-integrity.js';
+import { awaitDerivedReady, ensureDerivedHydrated, installV55DerivedStore, persistChatStore, resetDerivedHydration } from './v55-derived-store.js';
+import { rerankCandidates } from './v55-rerank.js';
 import { formatMetrics, recordEmbeddingCall, recordModelCall, resetMetrics } from './v55-metrics.js';
 import { formatSelfCheck, runRetrievalSelfCheck } from './v55-selfcheck.js';
 
@@ -165,6 +167,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     rrf_k: 60,
     graph_diffusion: true,
     graph_damping: 0.18,
+    // Local candidate reranking: fusion ranks channels, this ranks the query against the candidate.
+    rerank_enabled: true,
+    rerank_weight: 0.55,
+    rerank_half_life_turns: 120,
     mmr_lambda: 0.78,
     recall_cooldown_turns: 4,
     vector_settle_messages: 0,
@@ -379,13 +385,23 @@ function setSettingIndexState(ctx, state, { save = true } = {}) {
     return settings.setting_index_state;
 }
 
+/**
+ * The single place the plugin writes chat state. The derived part goes to the external derived store
+ * and the projected remainder goes to the chat file; before hydration the projection is a no-op so a
+ * chat can never lose derived data to an unreachable backend.
+ */
+function persistStore(ctx, store, save = true) {
+    // One implementation, owned by the derived store, so a module that mutates the store in place and
+    // saves cannot bypass the projection.
+    return persistChatStore(ctx, store, { save }) || store;
+}
+
 function getStore(ctx) {
     const legacySource = LEGACY_METADATA_KEYS.map(key => ctx.chatMetadata?.[key]).find(value => value && typeof value === 'object');
     const source = ctx.chatMetadata?.[METADATA_KEY] ?? legacySource;
     const normalized = normalizeStore(source);
     if (!ctx.chatMetadata) return normalized;
-    writeMergedChatStore(ctx.chatMetadata, METADATA_KEY, normalized);
-    return normalized;
+    return persistStore(ctx, normalized, false);
 }
 
 function setStore(ctx, store, save = true) {
@@ -393,8 +409,7 @@ function setStore(ctx, store, save = true) {
     // Merge rather than assign: a Canonical replay must never erase the v5.5 tree and fold audit, and
     // the ownership guard cannot be relied on here because SillyTavern replaces chat_metadata wholesale
     // when it loads a chat.
-    writeMergedChatStore(ctx.chatMetadata, METADATA_KEY, normalizeStore(store));
-    if (save) ctx.saveMetadataDebounced?.();
+    persistStore(ctx, store, save);
     scheduleStatusUpdate();
 }
 
@@ -883,6 +898,10 @@ async function runQuietExtraction(ctx, prompt, useStructured = true, budgetOverr
                 kind: 'extraction',
                 promptChars: String(prompt ?? '').length,
                 completionChars: String(raw ?? '').length,
+                // Pass the text as well: the token estimate is script-aware, so a Chinese prompt is
+                // no longer charged at the Latin characters / 4 rate.
+                promptText: String(prompt ?? ''),
+                completionText: String(raw ?? ''),
             });
         }
         return result;
@@ -2140,7 +2159,103 @@ function getProviderStatus(ctx, store) {
     return { provider, fingerprintChanged };
 }
 
-async function recallMemories(ctx, interceptorChat) {
+/**
+ * Recall prefetch.
+ *
+ * Recall used to start inside the generate interceptor, so prompt assembly waited for the full dense
+ * round-trip. The host fires its message events well before the next user turn, which is free time.
+ *
+ * The prefetch deliberately does NOT commit: recalled_count, last_recalled_message and the recall
+ * cooldown are all mutated by a recall, and committing at prefetch time would bump counters for a
+ * generation that may never happen and would eat the next turn's cooldown. It computes the ranking and
+ * parks it; the interceptor commits it only when a generation actually consumes it. A stale prefetch
+ * is simply discarded and the live path runs.
+ */
+let recallPrefetch = null;
+let pendingRecallCommit = null;
+
+export function recallSignature(ctx, chat) {
+    const rows = Array.isArray(chat) ? chat : [];
+    const last = rows[rows.length - 1] || {};
+    return [getChatIdentity(ctx) || '', rows.length, String(last.mes ?? '').length, String(last.swipe_id ?? last.swipeId ?? '')].join('|');
+}
+
+export function startRecallPrefetch(ctx = getContext()) {
+    const settings = getSettings(ctx);
+    if (!settings.vector_recall) return false;
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    if (!chat.length) return false;
+    const signature = recallSignature(ctx, chat);
+    if (recallPrefetch && recallPrefetch.signature === signature) return true;
+    const startedAt = Date.now();
+    const promise = recallMemories(ctx, chat, { commit: false, startedAt })
+        .then(rows => ({ rows, ms: Date.now() - startedAt }))
+        .catch(error => {
+            // A failed prefetch is not fatal: the interceptor falls back to a live recall. It must
+            // still be visible, or a permanently broken prefetch path would look like a cache miss.
+            lastRecallPrefetchError = String(error?.message || error).slice(0, 200);
+            log('recall prefetch failed', error);
+            return { rows: [], ms: Date.now() - startedAt };
+        });
+    recallPrefetch = { signature, promise, startedAt, chatId: getChatIdentity(ctx) };
+    lastRecallPrefetchError = null;
+    return true;
+}
+
+export function recallPrefetchStatus() {
+    return {
+        armed: Boolean(recallPrefetch),
+        signature: recallPrefetch?.signature || null,
+        // How many candidates are parked and not yet committed. The store is untouched until the
+        // interceptor commits them.
+        parked: pendingRecallCommit ? pendingRecallCommit.ids.length : 0,
+        last_lead_ms: lastRecallPrefetchLeadMs,
+        last_error: lastRecallPrefetchError,
+    };
+}
+
+let lastRecallPrefetchLeadMs = null;
+let lastRecallPrefetchError = null;
+
+/** Consume a parked prefetch for this exact chat state, committing it as the real recall. */
+export function commitPrefetchedRecall(ctx, signature) {
+    if (!pendingRecallCommit || pendingRecallCommit.signature !== signature) return null;
+    const parked = pendingRecallCommit;
+    pendingRecallCommit = null;
+    const store = getStore(ctx);
+    const rows = parked.ids.map(id => ({ memory: store.memories?.[id] })).filter(row => row.memory);
+    if (!rows.length) return null;
+    for (const row of rows) {
+        row.memory.recalled_count = Number(row.memory.recalled_count || 0) + 1;
+        row.memory.last_recalled_message = parked.currentMessage;
+    }
+    lastRecallPrefetchLeadMs = Date.now() - parked.startedAt;
+    store.last_recall_debug = {
+        ...(parked.debug || {}),
+        prefetched: true,
+        prefetch_lead_ms: lastRecallPrefetchLeadMs,
+    };
+    if (rows.length || getSettings(ctx).debug) setStore(ctx, store);
+    return rows;
+}
+
+/** Cheap preparation that has nothing to do with a specific query. */
+export async function warmupRecallRuntime(ctx = getContext()) {
+    const started = Date.now();
+    const out = { credential: false, provider: null, ms: 0 };
+    try {
+        const mod = await import('./v55-tauri-vector-backend.js');
+        if (typeof mod.ensureTauriVectorApiKeyLoaded === 'function') out.credential = await mod.ensureTauriVectorApiKeyLoaded();
+    } catch { /* not a Tauri host */ }
+    try {
+        const provider = getVectorProvider(ctx);
+        out.provider = { supported: Boolean(provider.supported), source: provider.source || null };
+    } catch { /* provider probing must never break warmup */ }
+    out.ms = Date.now() - started;
+    return out;
+}
+
+async function recallMemories(ctx, interceptorChat, { commit = true, startedAt = 0 } = {}) {
     const settings = getSettings(ctx);
     if (!settings.vector_recall) return [];
     const variants = buildQueryVariants(interceptorChat, settings.query_messages);
@@ -2227,18 +2342,26 @@ async function recallMemories(ctx, interceptorChat) {
         if (settings.graph_diffusion) {
             fused = graphDiffuseCandidates(store, fused, { damping: settings.graph_damping, iterations: 5 });
         }
+        // Fusion scores channels; it never reads the query against the candidate. This stage does, and
+        // it runs before diversity selection so a query-matching candidate is not dropped first.
+        let rerankDebug = null;
+        if (settings.rerank_enabled !== false && fused.length > 1) {
+            const outcome = rerankCandidates(fused, lexicalQuery, {
+                weight: Number(settings.rerank_weight) || 0.55,
+                currentMessage: ctx.chat?.length || 0,
+                halfLifeTurns: Number(settings.rerank_half_life_turns) || 120,
+                maxPool: Math.max(30, (Number(settings.final_recall_count) || 6) * 5),
+            });
+            fused = outcome.rows;
+            rerankDebug = outcome.debug;
+        }
         const selected = diversifyCandidates(fused, {
             finalCount: settings.final_recall_count,
             lambda: settings.mmr_lambda,
         });
         const currentMessage = ctx.chat?.length || 0;
-        for (const row of selected) {
-            const memory = row.memory;
-            memory.recalled_count = Number(memory.recalled_count || 0) + 1;
-            memory.last_recalled_message = currentMessage;
-        }
         const elapsed = (performance.now?.() ?? Date.now()) - started;
-        store.last_recall_debug = {
+        const recallDebug = {
             at_message: currentMessage,
             elapsed_ms: Math.round(elapsed * 10) / 10,
             dense_available: denseAvailable,
@@ -2249,8 +2372,27 @@ async function recallMemories(ctx, interceptorChat) {
             fused: fusedBeforeGraph.slice(0, 24),
             structured: structured.map(x => ({ id: x.memory.id, score: Math.round(x.score * 1000) / 1000, reason: x.reason })),
             graph_top: fused.slice(0, 20).map(x => ({ id: x.memory.id, score: x.score, graphScore: x.graphScore ?? null })),
+            rerank: rerankDebug,
             selected: selected.map(x => ({ id: x.memory.id, score: x.score, mmrScore: x.mmrScore ?? null })),
         };
+        if (!commit) {
+            // Park the ranking without touching counters, cooldowns or the store.
+            pendingRecallCommit = {
+                chatId: getChatIdentity(ctx),
+                signature: recallSignature(ctx, ctx.chat),
+                ids: selected.map(x => x.memory.id),
+                currentMessage,
+                debug: recallDebug,
+                startedAt: startedAt || Date.now(),
+            };
+            return selected;
+        }
+        for (const row of selected) {
+            const memory = row.memory;
+            memory.recalled_count = Number(memory.recalled_count || 0) + 1;
+            memory.last_recalled_message = currentMessage;
+        }
+        store.last_recall_debug = recallDebug;
         if (selected.length || settings.debug || !denseAvailable) setStore(ctx, store);
         return selected;
     } catch (error) {
@@ -2277,7 +2419,10 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
         : [];
     const activeState = settings.inject_current_state ? store.last_active_state : '';
     const settingResults = await retrieveGenerationSettings(ctx, interceptorChat, store);
-    const recalledMemories = await recallMemories(ctx, interceptorChat);
+    // Prefer the ranking the host's message events already computed. It is committed here, so the
+    // recall counters and the cooldown only ever move for a generation that really happened.
+    const signature = recallSignature(ctx, interceptorChat);
+    const recalledMemories = commitPrefetchedRecall(ctx, signature) ?? await recallMemories(ctx, interceptorChat);
     const bundle = assembleGenerationContext({
         scope: settingResults?.snapshot?.scope || null,
         latestMessages: interceptorChat,
@@ -2389,6 +2534,10 @@ async function generationInterceptor(chat, _contextSize, _abort, type) {
             return;
         }
     }
+    // Derived chat state (cold snapshots, scene locators, diagnostics) now lives outside the chat
+    // file, and prompt assembly is the one place that must see it. Bounded so a slow backend can
+    // never stall a generation.
+    await awaitDerivedReady(ctx, settings.derived_hydration_budget_ms ?? 1500);
     const bundle = await buildInjectedContextBundle(chat, _contextSize);
     // The interceptor never splices or appends fake chat messages. Both blocks are host
     // extension prompts with distinct keys and depths.
@@ -2899,6 +3048,7 @@ async function setupUi() {
         });
     });
     scheduleStatusUpdate();
+    void warmupRecallRuntime(ctx);
 }
 
 function registerEvents() {
@@ -2909,9 +3059,16 @@ function registerEvents() {
     // Streaming and non-streaming paths can emit different finalization events. The pair fingerprint
     // makes duplicate scheduling harmless.
     const onIf = (event, handler) => { if (event) eventSource.on(event, handler); };
-    const afterAssistant = () => scheduleLatestAssistantExtraction({ force: false });
+    const afterAssistant = () => {
+        scheduleLatestAssistantExtraction({ force: false });
+        // Free time: the next turn's prompt is at least one user message away, so the dense
+        // round-trip can start now and the interceptor then only has to commit the ranking.
+        try { startRecallPrefetch(getContext()); } catch (error) { log('recall prefetch failed', error); }
+    };
     onIf(eventTypes.MESSAGE_RECEIVED, afterAssistant);
     onIf(eventTypes.CHARACTER_MESSAGE_RENDERED, afterAssistant);
+    // Warm the credential and provider path once per chat so the first real recall does not pay for it.
+    onIf(eventTypes.CHAT_CHANGED, () => { void warmupRecallRuntime(getContext()); });
 
     const afterHistoryMutation = () => {
         void enqueue(async () => {

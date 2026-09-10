@@ -181,4 +181,69 @@ assert.match(budgeted, /二级阶段摘要甲/, 'the stage level survives a tigh
 assert.match(budgeted, /第40条/, 'the newest level-1 summary is kept');
 assert.doesNotMatch(budgeted, /第1条填/, 'the oldest level-1 summaries are dropped first');
 
+// --- 10. a summary-tree change is undoable, and undo never leaves a floor hidden without a stand-in -
+// Earlier sections fire dirty()/edit events, which snapshot too; start from a known-empty ring.
+// Reads and writes here must go through chatMetadata: persistChatStore() replaces that top-level object
+// on every write, so the object captured earlier in this file is stale for top-level keys.
+const live = () => ctx.chatMetadata.aetheriaUnifiedMemoryV54;
+live().summary_history = [];
+const foldStore = live;
+settings.summary_fold_hidden_floors = true;
+const turnIds = runtime.collectCompletedDialogueTurns(chat).map(t => t.id);
+foldStore().hierarchical_summaries = {
+    version: 3, processed_turn_ids: turnIds.slice(0, 20), consumed_l1_ids: [], consumed_l2_ids: [],
+    level1: [
+        { id: 'u_l1_a', level: 1, source_ids: turnIds.slice(0, 10), text: '前十个楼层', created_at: 1 },
+        { id: 'u_l1_b', level: 1, source_ids: turnIds.slice(10, 20), text: '第十一到二十层', created_at: 2 },
+    ],
+    level2: [], level3: [], dirty: false, last_run_at: 2, last_error: null, visibility_debug: null,
+};
+assert.equal(runtime.snapshotSummaryTree(ctx, 'state-a'), true, 'a non-empty tree must be snapshotted');
+assert.equal(runtime.snapshotSummaryTree(ctx, 'state-a'), false, 'the same tree state must not fill the ring twice');
+assert.equal(runtime.summaryTreeHistoryStatus(ctx).depth, 1);
+
+fold.foldSummarizedFloors(ctx);
+const foldedBefore = Object.keys(foldStore().floor_folds.hidden).length;
+assert.ok(foldedBefore > 0);
+
+// A later, larger tree is a distinct state, so it snapshot too.
+foldStore().hierarchical_summaries.level1.push({ id: 'u_l1_c', level: 1, source_ids: turnIds.slice(20, 25), text: '第二十一层之后', created_at: 3 });
+assert.equal(runtime.snapshotSummaryTree(ctx, 'state-b'), true);
+assert.equal(runtime.summaryTreeHistoryStatus(ctx).depth, 2);
+
+// Drop the tree the way the rebuild button does.
+fold.unfoldAllFloors(ctx);
+foldStore().hierarchical_summaries = { version: 3, processed_turn_ids: [], consumed_l1_ids: [], consumed_l2_ids: [], level1: [], level2: [], level3: [], dirty: false, last_run_at: null, last_error: null, visibility_debug: null };
+
+const restore = runtime.undoLastSummaryTree(ctx);
+assert.equal(restore.restored, true);
+assert.equal(restore.level1, 3, 'the newest snapshot must come back first');
+assert.equal(runtime.summaryTreeHistoryStatus(ctx).depth, 1, 'the consumed snapshot leaves the ring');
+assert.equal(foldStore().hierarchical_summaries.level1[0].id, 'u_l1_a');
+assert.equal(foldStore().hierarchical_summaries.processed_turn_ids.length, 20);
+// The invariant that matters is not a count but coverage: after undo, every hidden floor must be one
+// the restored tree actually summarizes. Anything else is raw text hidden with nothing standing in.
+const coveredIndexes = new Set();
+for (const l1 of foldStore().hierarchical_summaries.level1) {
+    for (const id of l1.source_ids) {
+        const match = /^turn_(\d+)_/.exec(String(id));
+        if (match) coveredIndexes.add(Number(match[1]));
+    }
+}
+const hiddenFloors = [...new Set(Object.values(foldStore().floor_folds.hidden).map(meta => meta.turn_assistant_index))];
+assert.ok(hiddenFloors.length > 0);
+for (const index of hiddenFloors) {
+    assert.ok(coveredIndexes.has(index), 'hidden floor ' + index + ' is not covered by any restored summary');
+}
+assert.ok(Object.keys(foldStore().floor_folds.hidden).length >= foldedBefore, 'undo re-folds from the restored tree');
+const older = runtime.undoLastSummaryTree(ctx);
+assert.equal(older.restored, true);
+assert.equal(older.level1, 2, 'a second undo reaches the older snapshot');
+assert.equal(runtime.summaryTreeHistoryStatus(ctx).depth, 0);
+// The fold audit was rebuilt from the restored tree, so the invariant still holds.
+assert.equal(Object.keys(store.floor_folds.hidden).length, foldedBefore, 'undo must re-fold exactly what the restored tree covers');
+assert.equal(store.hierarchical_summaries.dirty, false);
+assert.equal(store.hierarchical_summaries.last_error, null);
+assert.deepEqual(runtime.undoLastSummaryTree(ctx), { skipped: 'no-history' }, 'an empty ring is reported, not thrown');
+
 console.log('PASS v5.5 floor folding: summarized floors leave the prompt, stay remembered, and restore cleanly');
