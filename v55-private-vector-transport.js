@@ -1,9 +1,12 @@
 // Aetheria Unified Memory v5.5 — private vector transport isolation.
-// Aetheria-owned /api/vector/* requests may use an independent OpenAI-compatible embedding
-// connection without mutating SillyTavern's Vector Storage configuration. Current SillyTavern
-// release does not forward per-request secret_id through its vLLM vector adapter, so this module
-// uses a serialized selected-secret rotation bridge and restores the user's previous active key.
-// If that bridge cannot prove the requested credential is selected, the request fails closed.
+// SillyTavern uses its /api/vector backend. Native TauriTavern currently exposes that route as
+// an explicit 501 compatibility boundary, so Aetheria switches to its plugin-owned vector backend
+// there instead of pretending the host vector service exists.
+import {
+    getTauriVectorBackendStatus,
+    handleTauriVectorRequest,
+    isNativeTauriTavern,
+} from './v55-tauri-vector-backend.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -114,11 +117,21 @@ function rewriteVectorRequest(input, init) {
     if (!payload || !isAetheriaCollection(payload.collectionId)) return null;
     const built = buildPrivateVectorPayload(payload, endpoint, getContext());
     if (!built) return null;
-    return { endpoint, config: built.config, input, init: { ...init, body: JSON.stringify(built.payload) } };
+    return {
+        endpoint,
+        config: built.config,
+        payload: built.payload,
+        input,
+        init: { ...init, body: JSON.stringify(built.payload) },
+    };
 }
 
 async function serverJson(ctx, path, body) {
-    const response = await originalFetch(path, { method: 'POST', headers: getRequestHeaders(ctx), body: JSON.stringify(body) });
+    const response = await originalFetch(path, {
+        method: 'POST',
+        headers: getRequestHeaders(ctx),
+        body: JSON.stringify(body),
+    });
     if (!response.ok) {
         const text = await response.text().catch(() => '');
         throw new Error(`${path} failed: HTTP ${response.status}${text ? ` ${text.slice(0, 200)}` : ''}`);
@@ -129,8 +142,13 @@ async function serverJson(ctx, path, body) {
 
 async function readVllmSecretState(ctx) {
     const state = await serverJson(ctx, '/api/secrets/read', {});
-    const rows = Array.isArray(state?.[VLLM_SECRET_KEY]) ? state[VLLM_SECRET_KEY] : [];
-    return rows.map(row => ({ id: String(row?.id || ''), active: row?.active === true, label: String(row?.label || '') })).filter(row => row.id);
+    const raw = state?.states && typeof state.states === 'object' ? state.states : state;
+    const rows = Array.isArray(raw?.[VLLM_SECRET_KEY]) ? raw[VLLM_SECRET_KEY] : [];
+    return rows.map(row => ({
+        id: String(row?.id || ''),
+        active: row?.active === true,
+        label: String(row?.label || ''),
+    })).filter(row => row.id);
 }
 
 async function rotateVllmSecret(ctx, id) {
@@ -151,8 +169,18 @@ async function withSelectedVllmSecret(ctx, config, task) {
         const previousActive = before.find(row => row.active)?.id || null;
         let rotated = false;
         try {
-            if (!selected.active) { await rotateVllmSecret(ctx, config.secretId); rotated = true; }
-            lastCredentialDebug = { at: Date.now(), selected_secret_id: config.secretId, previous_active_secret_id: previousActive, rotated, restored: !rotated, mode: 'serialized-selected-secret-rotation' };
+            if (!selected.active) {
+                await rotateVllmSecret(ctx, config.secretId);
+                rotated = true;
+            }
+            lastCredentialDebug = {
+                at: Date.now(),
+                selected_secret_id: config.secretId,
+                previous_active_secret_id: previousActive,
+                rotated,
+                restored: !rotated,
+                mode: 'serialized-selected-secret-rotation',
+            };
             return await task();
         } finally {
             if (rotated && previousActive && previousActive !== config.secretId) {
@@ -160,7 +188,10 @@ async function withSelectedVllmSecret(ctx, config, task) {
                     await rotateVllmSecret(ctx, previousActive);
                     if (lastCredentialDebug) lastCredentialDebug.restored = true;
                 } catch (restoreError) {
-                    if (lastCredentialDebug) { lastCredentialDebug.restored = false; lastCredentialDebug.restore_error = String(restoreError?.message || restoreError); }
+                    if (lastCredentialDebug) {
+                        lastCredentialDebug.restored = false;
+                        lastCredentialDebug.restore_error = String(restoreError?.message || restoreError);
+                    }
                     throw new Error(`Aetheria 向量请求结束后无法恢复原 VLLM 密钥：${String(restoreError?.message || restoreError)}`);
                 }
             }
@@ -169,9 +200,32 @@ async function withSelectedVllmSecret(ctx, config, task) {
 }
 
 async function executeRewritten(rewritten) {
+    // Important: use the original browser/WebView fetch for provider traffic. Calling global fetch
+    // here would recurse through vector-policy/private-vector wrappers.
+    if (isNativeTauriTavern()) {
+        const response = await handleTauriVectorRequest(
+            rewritten.endpoint,
+            rewritten.payload,
+            rewritten.config,
+            originalFetch,
+        );
+        if (response) {
+            lastCredentialDebug = {
+                at: Date.now(),
+                selected_secret_id: rewritten.config.secretId,
+                mode: 'tauritavern-plugin-vector-backend',
+                restored: true,
+            };
+            return response;
+        }
+        throw new Error('检测到 TauriTavern，但插件自有向量后端未能接管请求；拒绝继续请求宿主 /api/vector 501 路由。');
+    }
+
     const ctx = getContext();
     const send = () => originalFetch(rewritten.input, rewritten.init);
-    if (rewritten.endpoint === 'insert' || rewritten.endpoint === 'query') return withSelectedVllmSecret(ctx, rewritten.config, send);
+    if (rewritten.endpoint === 'insert' || rewritten.endpoint === 'query') {
+        return withSelectedVllmSecret(ctx, rewritten.config, send);
+    }
     return send();
 }
 
@@ -181,8 +235,14 @@ export function invalidateAetheriaVectorState(ctxInput = getContext(), reason = 
     if (!ctx || !settings) return false;
     const store = ctx.chatMetadata?.[METADATA_KEY];
     if (store && typeof store === 'object') {
-        if (store.vector && typeof store.vector === 'object') { store.vector.stale = true; store.vector.last_error = reason; }
-        if (store.baseline?.vector && typeof store.baseline.vector === 'object') { store.baseline.vector.stale = true; store.baseline.vector.last_error = reason; }
+        if (store.vector && typeof store.vector === 'object') {
+            store.vector.stale = true;
+            store.vector.last_error = reason;
+        }
+        if (store.baseline?.vector && typeof store.baseline.vector === 'object') {
+            store.baseline.vector.stale = true;
+            store.baseline.vector.last_error = reason;
+        }
         ctx.saveMetadataDebounced?.();
     }
     const state = settings.setting_index_state;
@@ -194,7 +254,9 @@ export function invalidateAetheriaVectorState(ctxInput = getContext(), reason = 
             if (scope.profiles && typeof scope.profiles === 'object') {
                 for (const profile of Object.values(scope.profiles)) {
                     if (!profile || typeof profile !== 'object') continue;
-                    profile.stale = true; profile.ready = false; profile.last_error = reason;
+                    profile.stale = true;
+                    profile.ready = false;
+                    profile.last_error = reason;
                 }
             }
         }
@@ -215,24 +277,59 @@ export function configurePrivateVectorTransport(ctxInput = getContext()) {
             delete settings.vector_direct_transport_signature;
             ctx.saveSettingsDebounced?.();
         }
-        return { active: false, reason: settings.vector_direct_api_enabled ? 'incomplete-config' : 'not-configured' };
+        return {
+            active: false,
+            reason: settings.vector_direct_api_enabled ? 'incomplete-config' : 'not-configured',
+        };
     }
-    if (settings.vector_direct_previous_source_mode === undefined) settings.vector_direct_previous_source_mode = settings.vector_source_mode || 'inherit';
+    if (settings.vector_direct_previous_source_mode === undefined) {
+        settings.vector_direct_previous_source_mode = settings.vector_source_mode || 'inherit';
+    }
     settings.vector_source_mode = 'transformers';
     const previousSignature = String(settings.vector_direct_transport_signature || '');
-    if (previousSignature && previousSignature !== config.signature) invalidateAetheriaVectorState(ctx, '独立 Embedding endpoint/model/credential 已变化，Aetheria 向量空间需要重建。');
+    if (previousSignature && previousSignature !== config.signature) {
+        invalidateAetheriaVectorState(ctx, '独立 Embedding endpoint/model/credential 已变化，Aetheria 向量空间需要重建。');
+    }
     settings.vector_direct_transport_signature = config.signature;
     ctx.saveSettingsDebounced?.();
-    return { active: true, ...config };
+    return {
+        active: true,
+        ...config,
+        runtime_backend: isNativeTauriTavern() ? 'tauritavern-plugin-vector-v1' : 'sillytavern-vector-api',
+    };
 }
 
 export function getPrivateVectorTransportStatus(ctxInput = getContext()) {
     const config = transportConfig(ctxInput);
-    return config ? { active: true, isolated: true, source: config.source, apiUrl: config.apiUrl, model: config.model, signature: config.signature, credential_mode: 'serialized-selected-secret-rotation', last_credential_debug: lastCredentialDebug ? structuredClone(lastCredentialDebug) : null } : { active: false, isolated: true, reason: directModeRequested(ctxInput) ? 'incomplete-config' : 'not-configured' };
+    if (!config) {
+        return {
+            active: false,
+            isolated: true,
+            reason: directModeRequested(ctxInput) ? 'incomplete-config' : 'not-configured',
+        };
+    }
+    const tauri = getTauriVectorBackendStatus();
+    return {
+        active: true,
+        isolated: true,
+        source: config.source,
+        apiUrl: config.apiUrl,
+        model: config.model,
+        signature: config.signature,
+        credential_mode: isNativeTauriTavern()
+            ? 'tauritavern-session-secret-direct-provider'
+            : 'serialized-selected-secret-rotation',
+        backend: isNativeTauriTavern() ? tauri.backend : 'sillytavern-vector-api',
+        tauri_backend: tauri,
+        last_credential_debug: lastCredentialDebug ? structuredClone(lastCredentialDebug) : null,
+    };
 }
 
 export function installV55PrivateVectorTransport() {
-    if (installed) { configurePrivateVectorTransport(getContext()); return true; }
+    if (installed) {
+        configurePrivateVectorTransport(getContext());
+        return true;
+    }
     if (typeof globalThis.fetch !== 'function') return false;
     originalFetch = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async function aetheriaPrivateVectorFetch(input, init = undefined) {
@@ -243,10 +340,15 @@ export function installV55PrivateVectorTransport() {
             const rewritten = rewriteVectorRequest(input, init);
             if (rewritten) return await executeRewritten(rewritten);
         } catch (error) {
-            if (isAetheria && directModeRequested(getContext())) { console.error('[Aetheria v5.5 Private Vector] isolated request failed closed', error); throw error; }
+            if (isAetheria && directModeRequested(getContext())) {
+                console.error('[Aetheria v5.5 Private Vector] isolated request failed closed', error);
+                throw error;
+            }
             console.error('[Aetheria v5.5 Private Vector] request rewrite failed', error);
         }
-        if (isAetheria && directModeRequested(getContext())) throw new Error('Aetheria 独立 Embedding 请求无法建立安全 transport；拒绝使用宿主默认向量凭据。');
+        if (isAetheria && directModeRequested(getContext())) {
+            throw new Error('Aetheria 独立 Embedding 请求无法建立安全 transport；拒绝使用宿主默认向量凭据。');
+        }
         return originalFetch(input, init);
     };
     globalThis.fetch.__aumV55PrivateVector = true;
@@ -254,6 +356,8 @@ export function installV55PrivateVectorTransport() {
     configurePrivateVectorTransport(getContext());
     const ctx = getContext();
     const event = ctx?.eventTypes?.CHAT_CHANGED;
-    if (event && ctx?.eventSource?.on) ctx.eventSource.on(event, () => setTimeout(() => configurePrivateVectorTransport(getContext()), 50));
+    if (event && ctx?.eventSource?.on) {
+        ctx.eventSource.on(event, () => setTimeout(() => configurePrivateVectorTransport(getContext()), 50));
+    }
     return true;
 }
