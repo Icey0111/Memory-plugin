@@ -831,22 +831,30 @@ function pruneStaleExtractionRecords(storeInput, chat) {
     return store;
 }
 
+// A quiet generation is not a safe carrier for the extraction prompt in TauriTavern: the request
+// that reached the provider carried the character card as the user message and none of the extraction
+// instructions, so the model answered with roleplay prose or raw reasoning and the JSON parse always
+// failed. generateRaw delivered the exact prompt and returned clean JSON against the same host, which
+// is also why the summary path works (it goes through a different host service). generateQuietPrompt
+// stays as the fallback for hosts without generateRaw.
+const EXTRACTION_SYSTEM_PROMPT = '你是记忆抽取器。只输出严格 JSON，不要解释、标题或代码围栏。';
+
 async function runQuietExtraction(ctx, prompt, useStructured = true) {
-    if (typeof ctx.generateQuietPrompt !== 'function') {
-        throw new Error('当前 SillyTavern Context 未提供 generateQuietPrompt，无法执行自动记忆抽取。');
+    if (typeof ctx.generateRaw !== 'function' && typeof ctx.generateQuietPrompt !== 'function') {
+        throw new Error('当前 SillyTavern Context 未提供 generateRaw / generateQuietPrompt，无法执行自动记忆抽取。');
     }
     const settings = getSettings(ctx);
-    const options = { quietPrompt: prompt };
     // Never inherit the chat preset's max_tokens: see extraction_response_tokens in DEFAULT_SETTINGS.
     const budget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 1024));
-    options.responseLength = budget;
-    if (useStructured) options.jsonSchema = EXTRACTION_JSON_SCHEMA;
-    // Mark the plugin's own quiet call so the interceptor/wrappers can keep it cleared even when
-    // third-party quiet injection is opted in.
+    const schema = useStructured ? EXTRACTION_JSON_SCHEMA : null;
+    // Mark the plugin's own call so the interceptor/wrappers can keep it cleared even when third-party
+    // quiet injection is opted in.
     settings.__quiet_extraction_in_progress = true;
     runQuietExtraction.lastBudget = budget;
     try {
-        const result = await ctx.generateQuietPrompt(options);
+        const result = typeof ctx.generateRaw === 'function'
+            ? await ctx.generateRaw({ prompt, systemPrompt: EXTRACTION_SYSTEM_PROMPT, responseLength: budget, jsonSchema: schema })
+            : await ctx.generateQuietPrompt({ quietPrompt: prompt, responseLength: budget, ...(schema ? { jsonSchema: schema } : {}) });
         if (settings.metrics_enabled !== false) {
             const raw = typeof result === 'string' ? result : (result?.content ?? '');
             recordModelCall(ctx, {

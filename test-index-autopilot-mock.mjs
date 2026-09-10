@@ -2,8 +2,23 @@ import assert from 'node:assert/strict';
 
 const prompts=[];
 const requests=[];
-let quietCalls=0;
+let rawCalls=0;
 let extractionMode=1;
+function extractionReply(){ if (extractionMode===2) return JSON.stringify({
+  event_summary:'重新审阅后只保留平成结束实验回家的事件。',
+  active_state:'平成目前在家。',
+  operations:[
+    {op:'add',kind:'event',text:'平成结束当天实验后回到家。',entities:['平成'],topics:['实验结束','回家'],status:'closed',importance:'medium',epistemic:'fact',known_by:['平成'],indexable:true}
+  ]
+});
+return JSON.stringify({
+  event_summary:'平成结束实验后回到家，因为饥饿开始查看东街晚饭选择。',
+  active_state:'平成目前在家，感到饥饿，正在考虑晚饭。',
+  operations:[
+    {op:'add',kind:'state',slot:'平成.state.hunger',text:'平成当前感到饥饿。',entities:['平成'],topics:['饥饿'],status:'active',importance:'low',epistemic:'observed',known_by:['平成'],indexable:false},
+    {op:'add',kind:'event',text:'平成结束当天实验后回到家，并因饥饿开始查看东街的晚饭选择。',entities:['平成','东街'],topics:['实验结束','晚饭选择'],status:'closed',importance:'medium',epistemic:'fact',known_by:['平成'],indexable:true}
+  ]
+}); }
 const context={
   extensionSettings:{
     aetheriaUnifiedMemoryV53:{
@@ -33,27 +48,17 @@ const context={
   setExtensionPrompt:(...args)=>prompts.push(args),
   saveMetadataDebounced:()=>{}, saveSettingsDebounced:()=>{},
   chatCompletionSettings:{}, textCompletionSettings:{server_urls:{}},
-  generateQuietPrompt:async (options)=>{
-    quietCalls++;
-    assert.match(options.quietPrompt,/后台记忆抽取器/);
+  // generateRaw is preferred: a quiet generation dropped the extraction prompt in TauriTavern and the
+  // request reached the provider as the character card alone.
+  generateRaw:async (options)=>{
+    rawCalls++;
+    assert.match(options.prompt,/后台记忆抽取器/);
+    assert.match(options.systemPrompt,/记忆抽取器/,'extraction must send its own system prompt');
     assert.ok(options.jsonSchema,'structured extraction should pass JSON schema');
     assert.equal(options.responseLength,1024,'extraction must set its own budget instead of inheriting the chat preset max_tokens');
-    if (extractionMode===2) return JSON.stringify({
-      event_summary:'重新审阅后只保留平成结束实验回家的事件。',
-      active_state:'平成目前在家。',
-      operations:[
-        {op:'add',kind:'event',text:'平成结束当天实验后回到家。',entities:['平成'],topics:['实验结束','回家'],status:'closed',importance:'medium',epistemic:'fact',known_by:['平成'],indexable:true}
-      ]
-    });
-    return JSON.stringify({
-      event_summary:'平成结束实验后回到家，因为饥饿开始查看东街晚饭选择。',
-      active_state:'平成目前在家，感到饥饿，正在考虑晚饭。',
-      operations:[
-        {op:'add',kind:'state',slot:'平成.state.hunger',text:'平成当前感到饥饿。',entities:['平成'],topics:['饥饿'],status:'active',importance:'low',epistemic:'observed',known_by:['平成'],indexable:false},
-        {op:'add',kind:'event',text:'平成结束当天实验后回到家，并因饥饿开始查看东街的晚饭选择。',entities:['平成','东街'],topics:['实验结束','晚饭选择'],status:'closed',importance:'medium',epistemic:'fact',known_by:['平成'],indexable:true}
-      ]
-    });
+    return extractionReply();
   },
+  generateQuietPrompt:async ()=>{ throw new Error('extraction must prefer generateRaw over generateQuietPrompt'); },
 };
 
 globalThis.document={getElementById:()=>null};
@@ -70,7 +75,7 @@ globalThis.fetch=async (url,options)=>{
 const mod=await import('./index.js?autopilot-mock');
 const first=await mod.__testExtractMemoryForAssistant(context,1,{force:false});
 assert.equal(first.skipped,undefined);
-assert.equal(quietCalls,1);
+assert.equal(rawCalls,1);
 const store=mod.__testGetStore(context);
 assert.equal(Object.keys(store.extractions).length,1);
 assert.match(store.last_event_summary,/结束实验/);
@@ -85,13 +90,13 @@ assert.match(insert.body.items[0].text,/平成/);
 // Same finalized assistant reply must not run a second LLM extraction.
 const second=await mod.__testExtractMemoryForAssistant(context,1,{force:false});
 assert.equal(second.skipped,'already-extracted');
-assert.equal(quietCalls,1);
+assert.equal(rawCalls,1);
 
 // Forced manual re-extraction replaces the transaction instead of leaving memories from the old extraction.
 extractionMode=2;
 const replaced=await mod.__testExtractMemoryForAssistant(context,1,{force:true});
 assert.equal(replaced.record.generation_mode,'structured');
-assert.equal(quietCalls,2);
+assert.equal(rawCalls,2);
 const replacedStore=mod.__testGetStore(context);
 assert.equal(replacedStore.slots['平成.state.hunger'],undefined,'old extracted hunger state must not survive forced replacement');
 assert.match(replacedStore.last_event_summary,/重新审阅/);
@@ -102,6 +107,6 @@ context.chat.push({name:'用户',mes:'继续。',is_user:true,is_system:false});
 context.chat.push({name:'平成',mes:'旧版正文。<memory_ops version="5">{"op":"noop","reason":"legacy"}</memory_ops>',is_user:false,is_system:false});
 const legacy=await mod.__testExtractMemoryForAssistant(context,3,{force:false});
 assert.equal(legacy.skipped,'legacy-inline-ops');
-assert.equal(quietCalls,2);
+assert.equal(rawCalls,2);
 
 console.log('PASS v5.4 autonomous after-AI extraction + immediate vector sync + dedupe/migration guard');

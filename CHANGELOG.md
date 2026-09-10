@@ -1,5 +1,16 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix 4 — extraction now reaches the model
+
+### Fixed
+- **The extraction prompt never reached the provider.** Retained TauriTavern request logs showed the
+  extraction call arriving as `[system] Write Seraphina's next reply… / [user] <character card>` — the
+  supplied `quietPrompt` was absent, so the model answered with roleplay prose or raw reasoning and the
+  JSON parse failed every time. `runQuietExtraction()` now prefers `ctx.generateRaw()`, which delivered
+  the exact prompt and clean JSON against the same host in a direct comparison; `generateQuietPrompt()`
+  remains as the fallback for hosts without `generateRaw`. The summary path already worked for the same
+  reason — it goes through Connection Manager rather than a quiet generation.
+
 ## 5.5-dev Iteration 13 hotfix 3 — defects found by running a real conversation in TauriTavern
 
 Driven end to end through a live TauriTavern session (WebView2 CDP): the plugin loaded, registered both
