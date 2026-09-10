@@ -13,6 +13,7 @@ import {
     findLatestActiveState,
     fnv1a32,
     getActiveMemories,
+    getMandatoryMemories,
     getIndexableMemories,
     lexicalSearchMemories,
     isMemorySettled,
@@ -45,6 +46,7 @@ import {
 } from './baseline-index.js';
 
 import { collectSemanticBaselineSources } from './baseline-host.js';
+import { spinePromptBlock, spineStats } from './v55-spine.js';
 import { migrateSettingStore } from './setting-schema.js';
 import { listRevisionsForWorld, listWorlds } from './setting-store.js';
 import { commitImport, findDuplicateSources, previewImport } from './setting-importer.js';
@@ -155,6 +157,14 @@ const DEFAULT_SETTINGS = Object.freeze({
     // Opting in only affects third-party quiet requests; the plugin's own extraction stays clear.
     quiet_allow_third_party_injection: false,
     inject_current_state: true,
+    // Iteration 14 S4: irreversible changes are injected whatever recall decides. Ordering inside the
+    // current-state block is the guarantee; this only bounds how many such rows are eligible.
+    mandatory_baseline_enabled: true,
+    mandatory_baseline_limit: 24,
+    // Iteration 14 S1/S2: the change chain. Slots whose value was replaced, and what replaced it.
+    spine_injection_enabled: true,
+    spine_injection_max_chars: 600,
+    spine_injection_max_rows: 8,
     vector_recall: true,
     vector_source_mode: 'inherit', // inherit | transformers
     query_messages: 3,
@@ -875,6 +885,10 @@ function looksLikeStarvedJson(raw) {
     try { JSON.parse(text); return false; } catch { return true; }
 }
 
+// Sticky: set once the provider has refused response_format, so later extractions go straight to the
+// plain-text path instead of paying for a request that is already known to be rejected every turn.
+let structuredOutputRefused = false;
+
 async function runQuietExtraction(ctx, prompt, useStructured = true, budgetOverride = null) {
     if (typeof ctx.generateRaw !== 'function' && typeof ctx.generateQuietPrompt !== 'function') {
         throw new Error('当前 SillyTavern Context 未提供 generateRaw / generateQuietPrompt，无法执行自动记忆抽取。');
@@ -970,26 +984,47 @@ ${pair.assistantText}`,
         parsed: Boolean(ok),
         starved: looksLikeStarvedJson(value),
     });
+    // A provider that refuses response_format rejects the WHOLE request ("This response_format type
+    // is unavailable now" on the proxy this ran against live), so each attempt is contained here and
+    // a turn falls through to the plain-text path instead of losing its extraction outright.
+    const configuredBudget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
+    const wantsStructured = Boolean(settings.extraction_structured_output) && !structuredOutputRefused;
+    const attemptExtraction = async (phase, useStructured, budget, text) => {
+        try {
+            const value = await runQuietExtraction(ctx, text, useStructured, budget);
+            const result = parseExtractionResult(value);
+            noteAttempt(phase, value, result.ok);
+            return { value, result };
+        } catch (error) {
+            const message = String(error?.message || error);
+            // A provider that cannot accept response_format refuses it on every single turn. Remember
+            // that, so the next extraction does not pay for two requests that are known to be rejected.
+            if (useStructured && /response_format|json_schema|json_object|unavailable now/i.test(message)) {
+                structuredOutputRefused = true;
+            }
+            noteAttempt(phase, message, false);
+            return { value: '', result: { ok: false, error: message } };
+        }
+    };
     try {
-        raw = await runQuietExtraction(ctx, prompt, Boolean(settings.extraction_structured_output));
-        parsed = parseExtractionResult(raw);
-        noteAttempt('structured', raw, parsed.ok);
-        const configuredBudget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
+        let step = await attemptExtraction('structured', wantsStructured, null, prompt);
+        raw = step.value;
+        parsed = step.result;
         // Retry on any parse failure with budget headroom, not only on "looks truncated" output: a
         // reasoning model can also spend the whole budget before it emits its first brace, and that
         // shape is indistinguishable from a formatting mistake. The doubled budget is the fix for
         // both, so the gate is deliberately just "did not parse".
         if (!parsed.ok && configuredBudget < 8192) {
             mode = 'budget-retry';
-            raw = await runQuietExtraction(ctx, prompt, Boolean(settings.extraction_structured_output), Math.min(8192, configuredBudget * 2));
-            parsed = parseExtractionResult(raw);
-            noteAttempt('budget-retry', raw, parsed.ok);
+            step = await attemptExtraction('budget-retry', wantsStructured && !structuredOutputRefused, Math.min(8192, configuredBudget * 2), prompt);
+            raw = step.value;
+            parsed = step.result;
         }
-        if ((!parsed.ok || (typeof raw === 'string' && raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json) {
+        if ((!parsed.ok || (typeof raw === 'string' && raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json !== false) {
             mode = 'plain-json-retry';
-            raw = await runQuietExtraction(ctx, `${prompt}\n\n严格只输出JSON，不要代码围栏。`, false);
-            parsed = parseExtractionResult(raw);
-            noteAttempt('plain-json-retry', raw, parsed.ok);
+            step = await attemptExtraction('plain-json-retry', false, null, prompt + '\n\n严格只输出JSON，不要代码围栏。');
+            raw = step.value;
+            parsed = step.result;
         }
     } catch (error) {
         store.last_extraction_debug = {
@@ -2414,9 +2449,16 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
     await operationQueue;
     const store = getStore(ctx);
     const queryText = buildQueryText(interceptorChat, settings.query_messages);
-    const activeMemories = settings.inject_current_state
+    const baseActive = settings.inject_current_state
         ? getActiveMemories(store, queryText, settings.max_active_items)
         : [];
+    // S4: the mandatory baseline is unioned in before assembly and marked, so the budget trim inside
+    // the assembler can never remove an irreversible change.
+    const mandatory = settings.inject_current_state && settings.mandatory_baseline_enabled !== false
+        ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
+        : [];
+    const mandatoryIds = new Set(mandatory.map(memory => memory.id));
+    const activeMemories = [...mandatory, ...baseActive.filter(memory => !mandatoryIds.has(memory.id))];
     const activeState = settings.inject_current_state ? store.last_active_state : '';
     const settingResults = await retrieveGenerationSettings(ctx, interceptorChat, store);
     // Prefer the ranking the host's message events already computed. It is committed here, so the
@@ -2428,6 +2470,7 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
         latestMessages: interceptorChat,
         currentState: activeState,
         activeMemories,
+        mandatoryIds,
         settingResults,
         historyResults: recalledMemories,
         hostContextBudget: contextSize,
@@ -2437,8 +2480,24 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
         includeEvidence: settings.include_evidence,
         constantLimit: settings.setting_retrieval_constant_limit,
     });
+    // S1/S2: the change chain rides with the current-state block. It is appended after assembly so a
+    // tail trim removes it before it can remove the mandatory rows that were rendered first.
+    if (settings.spine_injection_enabled !== false && bundle.currentStateBlock !== undefined) {
+        const spineBlock = spinePromptBlock(store, {
+            maxChars: settings.spine_injection_max_chars ?? 600,
+            maxRows: settings.spine_injection_max_rows ?? 8,
+        });
+        if (spineBlock) {
+            bundle.currentStateBlock = bundle.currentStateBlock
+                ? bundle.currentStateBlock + '\n\n' + spineBlock
+                : spineBlock;
+            bundle.diagnostics.spineChars = spineBlock.length;
+        }
+    }
     lastGenerationContextDiagnostics = {
         ...bundle.diagnostics,
+        spine: spineStats(store),
+        mandatory_ids: [...mandatoryIds],
         at: Date.now(),
         reference_prompt_key: REFERENCE_PROMPT_KEY,
         current_state_prompt_key: CURRENT_STATE_PROMPT_KEY,

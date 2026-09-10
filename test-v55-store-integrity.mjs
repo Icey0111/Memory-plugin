@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { externallyOwnedKeyCount, installMetadataIntegrityForContext, mergeAuxiliaryChatState, setExternallyOwnedKeys, writeMergedChatStore } from './v55-store-integrity.js';
+import { externallyOwnedKeyCount, installMetadataIntegrityForContext, mergeAuxiliaryChatState, setExternallyOwnedKeys, setStoreSerializationFilter, writeMergedChatStore } from './v55-store-integrity.js';
 
 const previous = {
   version: '5.4', memories: { old: { id: 'old' } }, slots: {}, extractions: { old: {} }, baseline: { vector: {} }, vector: {},
@@ -73,4 +73,27 @@ setExternallyOwnedKeys(null);
 assert.equal(externallyOwnedKeyCount(), 0);
 guarded.aetheriaUnifiedMemoryV54 = structuredClone(previous);
 assert.ok(guarded.aetheriaUnifiedMemoryV54.cold_turns, 'clearing the set restores the previous behaviour');
+// A writer that DOES produce an externally owned key must keep it readable: the guard refuses only to
+// resurrect one the writer omitted. Deleting it instead made every derived key invisible to the
+// plugin's own fold, cold-snapshot and spine readers while the external record held the only copy.
+const ownership = ['cold_turns', 'floor_folds'];
+const produced = mergeAuxiliaryChatState(previous, { ...replay, cold_turns: { version: 1, turns: { k2: { source_key: 'k2' } }, order: ['k2'], chars: 10 } }, ownership);
+assert.equal(Object.keys(produced.cold_turns.turns).length, 1, 'a key the writer produced stays readable');
+assert.equal(produced.floor_folds, undefined, 'a key the writer omitted is still never resurrected');
+setExternallyOwnedKeys(ownership);
+const guardedProduced = { aetheriaUnifiedMemoryV54: structuredClone(previous) };
+installMetadataIntegrityForContext({ chatMetadata: guardedProduced });
+guardedProduced.aetheriaUnifiedMemoryV54 = { ...structuredClone(replay), cold_turns: { version: 1, turns: { k3: { source_key: 'k3' } }, order: ['k3'], chars: 10 } };
+assert.equal(Object.keys(guardedProduced.aetheriaUnifiedMemoryV54.cold_turns.turns).length, 1, 'the guard keeps a derived key the writer produced');
+setExternallyOwnedKeys(null);
+
+// The serialization rule is registered by the derived store; it must run on every object the guard
+// produces, not only the ones persistChatStore rewrites.
+let filtered = 0;
+setStoreSerializationFilter(() => { filtered += 1; });
+const guardedFiltered = { aetheriaUnifiedMemoryV54: structuredClone(previous) };
+installMetadataIntegrityForContext({ chatMetadata: guardedFiltered });
+guardedFiltered.aetheriaUnifiedMemoryV54 = structuredClone(replay);
+assert.ok(filtered > 0, 'the registered serialization filter runs on every guarded store write');
+assert.equal(setStoreSerializationFilter(null), false);
 console.log('PASS v5.5 store integrity: canonical replay preserves independently-owned chat state');

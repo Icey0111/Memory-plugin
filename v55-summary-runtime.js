@@ -87,10 +87,11 @@ export function undoLastSummaryTree(ctxInput=getContext()){
 }
 function reset(t){Object.assign(t,{version:3,processed_turn_ids:[],consumed_l1_ids:[],consumed_l2_ids:[],level1:[],level2:[],level3:[],dirty:false,last_run_at:null,last_error:null,visibility_debug:null});}
 export function collectCompletedDialogueTurns(chatInput){const chat=Array.isArray(chatInput)?chatInput:[],out=[];let users=[];for(let i=0;i<chat.length;i++){const r=chat[i];if(!r||!isDialogueRow(r)||!clean(r.mes))continue;if(r.is_user){users.push(clean(r.mes,12000));continue;}const text=`${users.length?`用户：${clean(users.join('\n'),16000)}\n`:''}助手：${clean(r.mes,16000)}`;users=[];const fp=hash(text).toString(36);out.push({id:`turn_${i}_${fp}`,assistant_index:i,fingerprint:fp,text});}return out;}
-function prompt(level,rows,s){const budget=Math.max(2000,Math.min(200000,Number(s?.summary_source_max_chars)||24000)),per=Math.max(400,Math.floor(budget/Math.max(1,rows.length)));const src=rows.map((r,i)=>`【${i+1}】${String(r.text??'').slice(0,per)}`).join('\n\n').slice(0,budget);if(level===1)return`你是长期叙事记忆系统的一级总结器。只保留未来连续性需要的事实、状态变化、关系变化、承诺/计划、物品地点变化和明确新信息。不要续写或创造事实。输出简洁中文，不要标题。\n\n${src}`;if(level===2)return`把下面一级摘要去重聚合成阶段摘要，保留顺序、因果、未解决事项和状态变化，不得创造事实。输出简洁中文，不要标题。\n\n${src}`;return`把下面阶段摘要压缩成长期剧情骨架，只保留关键人物、关系、重大事件、长期目标、持续状态和未解决冲突，不得创造事实。\n\n${src}`;}
+function resolveRawTurnIds(rows){const out=[],seen=new Set();for(const row of Array.isArray(rows)?rows:[]){for(const id of Array.isArray(row?.source_ids)?row.source_ids:[]){if(typeof id!=='string'||id.startsWith('summary_l'))continue;if(seen.has(id))continue;seen.add(id);out.push(id);}}return out;}
+function prompt(level,rows,s){const budget=Math.max(2000,Math.min(200000,Number(s?.summary_source_max_chars)||24000)),per=Math.max(400,Math.floor(budget/Math.max(1,rows.length)));const src=rows.map((r,i)=>`【${i+1}】${String(r.text??'').slice(0,per)}`).join('\n\n').slice(0,budget);if(level===1)return`你是长期叙事记忆系统的一级总结器。只保留未来连续性需要的事实、状态变化、关系变化、承诺/计划、物品地点变化和明确新信息。不要续写或创造事实。输出简洁中文，不要标题。\n\n${src}`;if(level===2)return`把下面原始对话去重聚合成阶段摘要，保留顺序、因果、未解决事项和状态变化，不得创造事实。输出简洁中文，不要标题。\n\n${src}`;return`把下面原始对话压缩成长期剧情骨架，只保留关键人物、关系、重大事件、长期目标、持续状态和未解决冲突，不得创造事实。\n\n${src}`;}
 async function shared(){if(!sharedPromise)sharedPromise=import('/scripts/extensions/shared.js').catch(()=>null);return sharedPromise;}
 async function callModel(ctx,level,rows){const s=settings(ctx);if(!s||s.enabled===false||!s.hierarchical_summary_enabled)throw new Error('Aetheria 已关闭，取消后台总结。');const p=prompt(level,rows,s),max=Math.max(128,Math.min(4096,Number(s.summary_max_tokens)||600));if(s.summary_provider_mode==='connection_profile'){if(!s.summary_connection_profile_id)throw new Error('尚未选择独立总结 Connection Profile。');const svc=(await shared())?.ConnectionManagerRequestService;if(!svc)throw new Error('当前宿主未提供 Connection Manager Request Service。');const messages=[{role:'system',content:'只做忠实的长期叙事记忆压缩。不得续写，不得创造新事实。'},{role:'user',content:p}];const result=await svc.sendRequest(s.summary_connection_profile_id,svc.constructPrompt(messages,s.summary_connection_profile_id),max,{stream:false,extractData:true,includePreset:true,includeInstruct:true},{temperature:0.2});const raw=typeof result==='string'?result:result?.content;const out=clean(typeof raw==='string'?raw:'',30000);if(!out)throw new Error('独立总结接口返回空结果。');if(looksLikeProviderError(out))throw new Error(`总结接口返回错误而不是摘要：${out.slice(0,140)}`);recordModelCall(ctx,{kind:'summary',promptChars:String(p||'').length,completionChars:out.length,promptText:String(p||''),completionText:out});return out;}if(typeof ctx.generateQuietPrompt!=='function')throw new Error('当前 Context 未提供 generateQuietPrompt。');s.__quiet_extraction_in_progress=true;s.__hierarchical_summary_in_progress=true;refreshSummaryPrompt(ctx);try{const result=await ctx.generateQuietPrompt({quietPrompt:p});const out=clean(typeof result==='string'?result:result?.content,30000);if(!out)throw new Error('当前主 API 返回空总结。');if(looksLikeProviderError(out))throw new Error(`主 API 返回错误而不是摘要：${out.slice(0,140)}`);recordModelCall(ctx,{kind:'summary',promptChars:String(p||'').length,completionChars:out.length,promptText:String(p||''),completionText:out});return out;}finally{delete s.__hierarchical_summary_in_progress;delete s.__quiet_extraction_in_progress;refreshSummaryPrompt(ctx);}}
-function push(t,level,source_ids,text){const id=`summary_l${level}_${hash(`${source_ids.join('|')}|${text}`).toString(36)}`;const row={id,level,source_ids:[...source_ids],text:clean(text,30000),created_at:Date.now()};t[`level${level}`].push(row);return row;}
+function push(t,level,source_ids,text,meta={}){const id=`summary_l${level}_${hash(`${source_ids.join('|')}|${text}`).toString(36)}`;const row={id,level,source_ids:[...source_ids],text:clean(text,30000),created_at:Date.now(),...(meta&&typeof meta==='object'?meta:{})};t[`level${level}`].push(row);return row;}
 export async function processSummaryHierarchy(ctxInput=getContext()){
     const ctx=ctxInput,s=settings(ctx);
     if(!ctx||!s||s.enabled===false||!s.hierarchical_summary_enabled)return{skipped:'disabled'};
@@ -98,6 +99,8 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     const first=tree(ctx);
     if(!first)return{skipped:'no-store'};
     if(first.dirty)return{skipped:'history-dirty'};
+    // S3: the original turns are the only admissible source for any level above one.
+    const turnIndex=new Map(collectCompletedDialogueTurns(ctx.chat||[]).map(turn=>[turn.id,turn]));
     const l1=count(s.summary_level1_every_turns,1),l2=count(s.summary_level2_every_l1,3,true),l3=count(s.summary_level3_every_l2,3,true);
     let created=0;
     // One snapshot per distinct tree state, so a failed pass is undoable without filling the ring.
@@ -130,9 +133,15 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
             const available=t[source].filter(x=>!consumed.has(x.id));
             if(available.length<need)break;
             const batch=available.slice(0,need);
-            const text=await callModel(ctx,level,batch);
+            // S3: a higher level is summarised from the ORIGINAL turns its children cover, never from
+            // the children's own text. A summary of a summary drifts, and once it has drifted the
+            // original fact can no longer be recovered from the prompt at all.
+            const rawIds=resolveRawTurnIds(batch);
+            const rawRows=rawIds.map(id=>turnIndex.get(id)).filter(Boolean);
+            const input=rawRows.length?rawRows:batch;
+            const text=await callModel(ctx,level,input);
             const live=tree(ctx);
-            push(live,level,batch.map(x=>x.id),text);
+            push(live,level,rawRows.length?rawIds:batch.map(x=>x.id),text,rawRows.length?{derived_from:batch.map(x=>x.id)}:{});
             live[consumedKey].push(...batch.map(x=>x.id));
             created+=1;
         }

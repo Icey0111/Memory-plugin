@@ -3,6 +3,13 @@
  * No SillyTavern globals are used in this file so it can be unit-tested in Node.
  */
 
+import {
+    SPINE_KEY,
+    appendSpine,
+    mandatoryMemories,
+    provenanceChannel,
+} from './v55-spine.js';
+
 export const MEMORY_VERSION = '5.4';
 export const MEMORY_KINDS = new Set([
     'event', 'state', 'knowledge', 'belief', 'relation',
@@ -355,6 +362,8 @@ function memoryFromAdd(store, op, context) {
         source_op_index: context.opIndex,
         source_hash: context.sourceHash ?? null,
         evidence_excerpt: findEvidenceExcerpt(context.sourceMessageText || '', op),
+        // S6: how this holder came to know it. Deterministic, with an explicit op.channel override.
+        channel: provenanceChannel(op, { kind: op.kind, text: op.text, epistemic: op.epistemic }),
         // Three separate time/scope notions: when it was said (recorded_at), the interval it
         // applies to (effective_*), and the situation it applies in (scope).
         recorded_at: context.sourceMessageIndex,
@@ -388,6 +397,7 @@ function memoryFromAdd(store, op, context) {
 export function applyMemoryOps(storeInput, ops, context = {}) {
     const store = normalizeStore(storeInput);
     const changedIds = new Set();
+    const spineRecords = [];
     const errors = [];
     const sourceMessageIndex = Number(context.sourceMessageIndex ?? -1);
     const sourceHash = context.sourceHash ?? null;
@@ -402,12 +412,36 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
         }
         if (op.op === 'noop') return;
 
+        // S1/S2: every applied operation becomes exactly one spine node. Recording happens here, in
+        // the single place that already mutates memory, so the spine can never disagree with the
+        // memories it describes, and a replay rebuilds it identically.
+        const spineRecord = {
+            op: op.op,
+            kind: op.kind || null,
+            slot: op.slot || null,
+            memory_id: null,
+            target_id: op.target_id || null,
+            superseded_by: null,
+        };
+
         if (op.op === 'add') {
             const repeated = mergeRepeatedSlotAdd(store, op, opContext, changedIds);
-            if (repeated) return;
+            if (repeated) {
+                // A repeated identical add is a confirmation, not a new fact: the spine records the
+                // confirmation against the memory that already exists.
+                spineRecord.memory_id = repeated.id;
+                spineRecord.kind = repeated.kind;
+                spineRecord.slot = repeated.slot;
+                spineRecords.push(spineRecord);
+                return;
+            }
             const memory = memoryFromAdd(store, op, opContext);
             activateSlot(store, memory, changedIds, sourceMessageIndex);
             changedIds.add(memory.id);
+            spineRecord.memory_id = memory.id;
+            spineRecord.kind = memory.kind;
+            spineRecord.slot = memory.slot;
+            spineRecords.push(spineRecord);
             return;
         }
 
@@ -444,6 +478,10 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
                 activateSlot(store, target, changedIds, sourceMessageIndex);
             }
             changedIds.add(target.id);
+            spineRecord.target_id = target.id;
+            spineRecord.kind = target.kind;
+            spineRecord.slot = target.slot;
+            spineRecords.push(spineRecord);
             return;
         }
 
@@ -454,6 +492,10 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             target.close_reason = typeof op.reason === 'string' ? op.reason.trim() : null;
             removeSlotIfOwned(store, target);
             changedIds.add(target.id);
+            spineRecord.target_id = target.id;
+            spineRecord.kind = target.kind;
+            spineRecord.slot = target.slot;
+            spineRecords.push(spineRecord);
             return;
         }
 
@@ -464,6 +506,10 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             target.invalid_reason = typeof op.reason === 'string' ? op.reason.trim() : null;
             removeSlotIfOwned(store, target);
             changedIds.add(target.id);
+            spineRecord.target_id = target.id;
+            spineRecord.kind = target.kind;
+            spineRecord.slot = target.slot;
+            spineRecords.push(spineRecord);
             return;
         }
 
@@ -472,6 +518,10 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             if (op.importance !== undefined) target.importance = op.importance;
             target.last_reinforced_at = sourceMessageIndex;
             changedIds.add(target.id);
+            spineRecord.target_id = target.id;
+            spineRecord.kind = target.kind;
+            spineRecord.slot = target.slot;
+            spineRecords.push(spineRecord);
             return;
         }
 
@@ -500,9 +550,20 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
                 target.superseded_by = memory.id;
                 activateSlot(store, memory, changedIds, sourceMessageIndex);
                 changedIds.add(memory.id);
+                spineRecord.memory_id = memory.id;
+                spineRecord.superseded_by = memory.id;
+                spineRecord.kind = memory.kind;
+                spineRecord.slot = memory.slot;
             }
+            spineRecord.target_id = target.id;
+            spineRecords.push(spineRecord);
         }
     });
+
+    appendSpine(store, spineRecords, { sourceMessageIndex });
+    // normalizeStore copies the store, so a caller still holding the input object would otherwise
+    // never see the spine it just produced.
+    if (storeInput && typeof storeInput === 'object' && !storeInput[SPINE_KEY]) storeInput[SPINE_KEY] = store[SPINE_KEY];
 
     return { store, changedIds: [...changedIds], errors };
 }
@@ -744,6 +805,14 @@ export function replayStoreFromExtractions(chat, extractionInput = {}, { include
     store.last_event_summary = latestEvent;
     store.last_errors = errors.slice(-100);
     return { store, errors, usedLegacy: [...usedLegacy] };
+}
+
+/**
+ * S4: the mandatory baseline. These are injected whatever recall decides, so an irreversible change
+ * can never be missed merely because the current query did not look similar to it.
+ */
+export function getMandatoryMemories(storeInput, limit = 24) {
+    return mandatoryMemories(normalizeStore(storeInput), { limit });
 }
 
 export function getActiveMemories(storeInput, queryText = '', maxItems = 12) {

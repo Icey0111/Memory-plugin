@@ -47,12 +47,16 @@ export function mergeAuxiliaryChatState(previousInput, nextInput, dropKeysInput 
     const next = isObject(nextInput) ? nextInput : {};
     const dropKeys = dropKeysInput instanceof Set ? dropKeysInput : (Array.isArray(dropKeysInput) ? new Set(dropKeysInput) : null);
     const out = { ...next };
-    if (dropKeys) for (const key of dropKeys) delete out[key];
 
     for (const [key, value] of Object.entries(previous)) {
         if (CANONICAL_OWNED_KEYS.has(key) || DERIVED_DROP_KEYS.has(key)) continue;
-        // A key the caller is deliberately moving out of the chat file (the derived store) is not
-        // "missing from the incoming store", it is removed on purpose.
+        // A key another store owns (the derived record) is never resurrected from the previous value:
+        // that store is the authority. It is deliberately NOT deleted from the result. Deleting it
+        // looked equivalent but was not: the object returned here is the one runtime readers read, so
+        // deleting it made every derived key invisible to the plugin's own fold, cold-snapshot and
+        // spine readers while the external record still held a copy. Keeping whatever the writer just
+        // produced, and refusing only to resurrect what it did not, is the same guarantee for the
+        // chat file (the serialization filter removes them at save time) without blinding the runtime.
         if (dropKeys && dropKeys.has(key)) continue;
         // Explicit null / empty / replacement values in the incoming store are authoritative; a key
         // that is merely absent, or present holding undefined, is not. normalizeStore spreads its
@@ -77,7 +81,24 @@ export function mergeAuxiliaryChatState(previousInput, nextInput, dropKeysInput 
 export function writeMergedChatStore(chatMetadata, key, store, { dropKeys = null } = {}) {
     if (!isObject(chatMetadata)) return false;
     chatMetadata[key] = mergeAuxiliaryChatState(chatMetadata[key], store, dropKeys);
+    applyStoreSerializationFilter(chatMetadata[key]);
     return true;
+}
+
+/**
+ * The derived store owns the "do not serialise these keys" rule, but it cannot be imported here
+ * without a cycle. It registers the rule instead, and every store object this module produces runs it.
+ */
+let storeSerializationFilter = null;
+
+export function setStoreSerializationFilter(fn) {
+    storeSerializationFilter = typeof fn === 'function' ? fn : null;
+    return Boolean(storeSerializationFilter);
+}
+
+export function applyStoreSerializationFilter(store) {
+    if (!storeSerializationFilter || !isObject(store)) return false;
+    try { storeSerializationFilter(store); return true; } catch { return false; }
 }
 
 /**
@@ -115,6 +136,7 @@ export function installMetadataIntegrityForContext(ctx) {
         },
         set(next) {
             current = mergeAuxiliaryChatState(current, next, externallyOwnedKeys);
+            applyStoreSerializationFilter(current);
         },
     });
     Object.defineProperty(metadata, MARKER, {

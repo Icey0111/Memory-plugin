@@ -18,7 +18,7 @@ import {
     selectSceneSummaries,
 } from './v55-finalizer.js';
 import { sanitizeStoreForActor } from './v55-privacy.js';
-import { isDialogueRow } from './memory-core.js';
+import { getMandatoryMemories, isDialogueRow } from './memory-core.js';
 import { persistChatStore } from './v55-derived-store.js';
 import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
@@ -201,7 +201,16 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
 
     realSetPrompt(reference.key, bounded.referenceBlock, ...promptArgs(reference.rest, 4));
     realSetPrompt(current.key, bounded.currentStateBlock, ...promptArgs(current.rest, 1));
+    // S4 self-check: which irreversible memories this turn was supposed to carry, and which of them
+    // actually appear in the block that reaches the model. A guarantee nobody can observe is not a
+    // guarantee, and this is what the S7 control experiment reads.
+    const mandatory = getMandatoryMemories(store, 24);
+    const currentStateText = String(visibleCanonical.currentStateBlock || '');
     store.v55_consistency = {
+        mandatory_memory_ids: mandatory.map(memory => memory.id),
+        injected_mandatory_ids: mandatory
+            .filter(memory => memory.text && currentStateText.includes(String(memory.text)))
+            .map(memory => memory.id),
         hidden_private_memory_ids: visibleCanonical.hiddenMemoryIds,
         hidden_extraction_source_keys: sanitized.hiddenSourceKeys,
         hidden_extraction_operation_count: sanitized.hiddenOperationCount,

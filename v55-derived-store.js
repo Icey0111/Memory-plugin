@@ -17,7 +17,7 @@
 //      reachable the keys simply stay in the chat file, which is the previous behaviour.
 
 import { normalizeStore } from './memory-core.js';
-import { setExternallyOwnedKeys, writeMergedChatStore } from './v55-store-integrity.js';
+import { setExternallyOwnedKeys, setStoreSerializationFilter, writeMergedChatStore } from './v55-store-integrity.js';
 
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const NAMESPACE = 'aetheria-unified-memory-v55';
@@ -51,6 +51,10 @@ export const DERIVED_KEYS = Object.freeze([
     'current_state_authority',
     'last_active_state_diagnostic',
     'v55_inner_bundle',
+    // Iteration 14 S1/S2: the deterministic memory spine. It belongs here (it is an index over
+    // operations that are themselves replayable) and can be, now that the ownership guard no longer
+    // deletes externally-owned keys from the object runtime readers see.
+    'spine',
 ]);
 
 const DERIVED_SET = new Set(DERIVED_KEYS);
@@ -313,6 +317,11 @@ export function installDerivedSerializationFilter(store, ctx = getContext()) {
     } catch { /* a frozen store cannot be filtered; the chat file keeps the keys */ }
     return store;
 }
+
+// Every store object the ownership guard produces must carry the projection, not only the ones
+// persistChatStore happens to rewrite: a module that assigns chat_metadata directly would otherwise
+// put the derived keys into the chat file.
+setStoreSerializationFilter(store => installDerivedSerializationFilter(store, getContext()));
 
 function assignDerived(store, keys) {
     let applied = 0;

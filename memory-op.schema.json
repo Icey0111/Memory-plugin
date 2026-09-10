@@ -79,6 +79,14 @@
             "plan"
           ]
         },
+        "channel": {
+          "enum": [
+            "saw",
+            "heard",
+            "told",
+            "inferred"
+          ]
+        },
         "known_by": {
           "type": "array",
           "items": {
@@ -178,6 +186,14 @@
             "belief",
             "inference",
             "plan"
+          ]
+        },
+        "channel": {
+          "enum": [
+            "saw",
+            "heard",
+            "told",
+            "inferred"
           ]
         },
         "known_by": {

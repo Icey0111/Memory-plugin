@@ -1,0 +1,4 @@
+# Local scratch only. Previous revisions, audit snapshots, live-test harnesses and third-party
+# reference checkouts live in remove/ and must never reach the repository: the repository carries
+# exactly one thing, the current revision of the plugin.
+/remove/
