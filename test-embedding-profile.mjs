@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import { applyEmbeddingRoleText, buildTransportQueryViews, classifyAetheriaCollection, detectEmbeddingFamily, fuseRankedMetadata, normalizeEmbeddingProfile, resolveCalibratedThreshold } from './embedding-profile.js';
+
+assert.equal(detectEmbeddingFamily({ model: 'intfloat/multilingual-e5-large' }), 'e5');
+assert.equal(detectEmbeddingFamily({ model: 'jina-embeddings-v5-text-small' }), 'jina');
+assert.equal(detectEmbeddingFamily({ model: 'BAAI/bge-m3' }), 'bge');
+assert.equal(detectEmbeddingFamily({ model: 'Qwen3-Embedding-4B' }), 'qwen3');
+const e5 = normalizeEmbeddingProfile({ provider: 'vllm', model: 'intfloat/multilingual-e5-large' });
+assert.equal(e5.role_strategy, 'prefix');
+assert.equal(applyEmbeddingRoleText('hello', e5, 'query'), 'query: hello');
+assert.equal(applyEmbeddingRoleText('hello', e5, 'document'), 'passage: hello');
+const jina = normalizeEmbeddingProfile({ provider: 'vllm', model: 'jina-embeddings-v5-text-small' });
+assert.equal(jina.role_strategy, 'symmetric');
+assert.ok(jina.warnings.some(x => x.includes('retrieval.query')));
+const a = normalizeEmbeddingProfile({ model: 'm', dimensions: 1024 });
+const b = normalizeEmbeddingProfile({ model: 'm', dimensions: 768 });
+assert.notEqual(a.space_fingerprint, b.space_fingerprint);
+const calibrated = normalizeEmbeddingProfile({ model: 'm', score_policy: { memory: 0.31 } });
+assert.equal(resolveCalibratedThreshold(calibrated, 'memory', 0.22), 0.31);
+assert.equal(classifyAetheriaCollection('aetheria_v54_baseline_x'), 'baseline');
+assert.equal(classifyAetheriaCollection('aetheria_v55_setting_x'), 'setting');
+const views = buildTransportQueryViews('[LAST USER]\nfoo\n\n[CURRENT SCENE ENTITIES]\nA / B\n\n[ACTIVE LOCATION]\nold town');
+assert.ok(views.some(v => v.name === 'focus'));
+assert.ok(views.some(v => v.name === 'entity_scene'));
+const fused = fuseRankedMetadata([[{ hash: 1 }, { hash: 2 }], [{ hash: 2 }, { hash: 3 }]], { weights: [1, 1] });
+assert.equal(fused[0].hash, 2);
+console.log('embedding-profile tests passed');
