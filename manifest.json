@@ -1,5 +1,5 @@
 {
-  "display_name": "Aetheria Unified Memory v5.5 Dev Iteration 08",
+  "display_name": "Aetheria Unified Memory v5.5 Dev Iteration 09",
   "loading_order": 95,
   "requires": [],
   "optional": [],
@@ -7,7 +7,7 @@
   "js": "index-v55-bootstrap.js",
   "css": "style.css",
   "author": "lin lin + OpenAI",
-  "version": "5.5.0-dev.8",
+  "version": "5.5.0-dev.9",
   "auto_update": false,
   "minimum_client_version": "1.18.0",
   "generate_interceptor": "aetheriaUnifiedMemoryV54Interceptor",
