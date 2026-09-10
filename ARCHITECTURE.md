@@ -442,6 +442,16 @@ rotation bridge remain unchanged and are used only when the Tauri ABI is absent.
 the host secret bridge with an Aetheria-owned key, keeps the key session-only (never in WebView
 localStorage or in a vector collection), and normalizes provider URL/store keys.
 
+Native ABI calls on this path are restricted to operations that are safe to fail loudly. TauriTavern
+routes every failure of `get_chat_completions_status`, and a delete of a missing extension-store key,
+through `log_user_visible_error`, and the native backend-error bridge republishes those as a global
+`后端错误` toast that an extension cannot suppress from JavaScript. Embedding model discovery therefore
+never uses the host status command, and `deleteCollection` probes existence with the non-throwing
+`tryGetJson` before deleting. The single native call the transport makes is
+`generate_chat_completion`, whose failures are real provider failures worth surfacing — and whose
+timeout text is annotated with a reachability hint, because a timeout there means the device cannot
+reach the provider through the host's HTTP stack, not that the Aetheria transport is broken.
+
 ### Time and scope model plus the evidence loop (Iteration 13)
 
 Each memory now carries three separate notions instead of one timestamp:

@@ -45,10 +45,18 @@ assert.equal(jinaDocument.task, 'retrieval.passage');
 
 const kv = new Map();
 const storeKeys = [];
+const storeDeletes = [];
 const store = {
-    async tryGetJson({ namespace, table, key }) { storeKeys.push(key); return kv.get(`${namespace}|${table}|${key}`) ?? null; },
+    async tryGetJson({ namespace, table, key }) { storeKeys.push(key); const stored = kv.get(`${namespace}|${table}|${key}`); return stored === undefined ? { found: false } : { found: true, value: structuredClone(stored) }; },
     async setJson({ namespace, table, key, value }) { storeKeys.push(key); assert.match(key, /^[A-Za-z0-9_-]+$/); kv.set(`${namespace}|${table}|${key}`, structuredClone(value)); return true; },
-    async deleteJson({ namespace, table, key }) { storeKeys.push(key); assert.match(key, /^[A-Za-z0-9_-]+$/); kv.delete(`${namespace}|${table}|${key}`); return true; },
+    // Mirrors TauriTavern: deleting an absent key raises CommandError::NotFound, which the Rust
+    // layer (log_user_visible_error) surfaces as a global "后端错误" toast that JS cannot suppress.
+    async deleteJson({ namespace, table, key }) {
+        storeKeys.push(key); storeDeletes.push(key); assert.match(key, /^[A-Za-z0-9_-]+$/);
+        const composed = `${namespace}|${table}|${key}`;
+        if (!kv.has(composed)) { const error = new Error(`Not found: Extension store JSON entry not found: ${key}`); error.details = { code: 'NotFound' }; throw error; }
+        kv.delete(composed); return true;
+    },
 };
 globalThis.__TAURITAVERN__ = { ready: Promise.resolve(), api: { extension: { store } } };
 
@@ -93,6 +101,12 @@ response = await handleTauriVectorRequest('list', { collectionId: 'aetheria_v54_
 assert.deepEqual(await response.json(), [22]);
 response = await handleTauriVectorRequest('purge', { collectionId: 'aetheria_v54_tauri_test:unsafe/path' }, config, providerFetch);
 assert.equal(response.status, 204);
+assert.equal(storeDeletes.length, 1, 'purging a persisted collection deletes its store entry exactly once');
+
+storeDeletes.length = 0;
+response = await handleTauriVectorRequest('purge', { collectionId: 'aetheria_v55_never_persisted' }, config, providerFetch);
+assert.equal(response.status, 204);
+assert.deepEqual(storeDeletes, [], 'purging a collection that was never persisted must not reach deleteJson (TauriTavern answers that with a user-visible NotFound toast)');
 
 assert.ok(providerCalls.every(call => !call.url.includes('/api/vector/')));
 assert.ok(storeKeys.every(key => /^[A-Za-z0-9_-]+$/.test(key)));
@@ -102,4 +116,4 @@ assert.doesNotMatch(backendSource, /\/api\/secrets\/(write|read|rotate|find)/);
 delete globalThis.__TAURITAVERN__;
 delete globalThis.localStorage;
 __testResetTauriVectorBackend();
-console.log('PASS v5.5 Tauri vector backend: LittleWhiteBox-style API isolation + /v1 normalization + safe extension-store keys');
+console.log('PASS v5.5 Tauri vector backend: LittleWhiteBox-style API isolation + /v1 normalization + safe extension-store keys + idempotent store purge');

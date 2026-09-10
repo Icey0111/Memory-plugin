@@ -11,7 +11,6 @@ import {
     resolveOpenAiCompatibleBaseUrl,
     setTauriVectorApiKey,
 } from './v55-tauri-vector-backend.js';
-import { discoverModelsViaTauriNative } from './v55-tauri-native-http-bridge.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const SUMMARY_PROFILE_NAME = 'Aetheria · Summary API';
@@ -184,11 +183,12 @@ async function connectSummary(ctx, settings, root, key) {
 }
 
 async function discoverEmbeddingModels(rawUrl, key) {
-    // TauriTavern WebView fetch can be CORS-blocked; prefer the native Host ABI when present.
-    if (isNativeTauriTavern()) {
-        const viaNative = await discoverModelsViaTauriNative({ baseUrl: normalizeEmbeddingUrl(rawUrl), apiKey: key });
-        if (Array.isArray(viaNative) && viaNative.length) return viaNative;
-    }
+    // Best-effort and deliberately silent on every path. Model enumeration never goes through the
+    // native invoke broker: TauriTavern's get_chat_completions_status command reports failures
+    // through a global user-visible "后端错误" toast that an extension cannot suppress, and the
+    // usual outcomes here (no /models endpoint, proxy-only provider, slow mobile link) are all
+    // failures. A plain WebView fetch fails quietly under CORS, so that is the only network path,
+    // and manual entry remains the fallback.
     return await discoverEmbeddingModelsDirect(rawUrl, key);
 }
 
@@ -284,7 +284,9 @@ function mountCard() {
                         const key = isNativeTauriTavern() ? getTauriVectorApiKey() : '';
                         const models = key ? await discoverEmbeddingModels(settings.vector_direct_api_url, key) : [];
                         if (models.length) { settings.vector_direct_api_models = models; fillModelList(root.querySelector('#aum-v55-vector-direct-model-list'), models); status(root, kind, `模型列表已刷新，共 ${models.length} 个。`, true); }
-                        else status(root, kind, '供应商未提供可用 /models；请直接手动填写 Embedding 模型名。');
+                        else status(root, kind, isNativeTauriTavern()
+                            ? 'TauriTavern 下不会向宿主请求模型列表（失败会弹出宿主级错误）；请直接手动填写 Embedding 模型名。'
+                            : '供应商未提供可用 /models；请直接手动填写 Embedding 模型名。');
                     }
                     ctx.saveSettingsDebounced?.();
                 } catch (error) { status(root, kind, String(error?.message || error), false); }

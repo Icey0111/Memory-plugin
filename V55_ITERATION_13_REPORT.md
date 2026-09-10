@@ -142,3 +142,31 @@ Canonical Memory, extraction transactions and chat正文 are never stored in the
   message positions and explicit operations, not from prose.
 - Token counts are estimates (chars / 4), not provider-reported usage.
 - The self-check hard cases are a fixed regression floor, not a general benchmark.
+
+## Hotfix — TauriTavern host error toasts
+
+Two failures reported from a real TauriTavern (Android) session were both caused by the plugin
+touching host ABI surface whose errors the host turns into global toasts:
+
+1. **Embedding model discovery.** `v55-api-connections.js` enumerated models through the host
+   command `get_chat_completions_status`. TauriTavern routes every failure of that command through
+   `log_user_visible_error` (`src-tauri/crates/tauritavern/src/presentation/commands/helpers.rs`),
+   which the native backend-error bridge (`src/tauri/main/bootstrap/backend-error-bridge.js`,
+   consumed from Rust `app/backend_errors.rs`) publishes as a global `后端错误` toast. Because the
+   toast is emitted by Rust, the extension's own `try/catch` cannot suppress it. Discovery is now
+   WebView-`fetch` only and silent on failure; the status command is no longer reachable from
+   `v55-tauri-native-http-bridge.js` at all.
+2. **Purging a never-persisted collection.** `v55-tauri-vector-backend.js` called
+   `extension.store.deleteJson` unconditionally; TauriTavern answers a missing key with
+   `CommandError::NotFound`, producing the same class of toast. `deleteCollection` now probes with
+   the documented non-throwing `tryGetJson` and returns early when the key is absent.
+
+A third symptom in the same session — `The request timed out before the target service responded`
+for `https://api.jina.ai/v1/embeddings` — is **not** a plugin defect: the request is constructed
+correctly (the query-suffix trick keeps the HTTP path at `/v1/embeddings`, which the host error
+text confirms), and the failure is reachability between that device and the provider through the
+host's own HTTP stack and proxy configuration. The native transport now appends an explicit
+reachability hint so users do not read it as a transport bug.
+
+`get_chat_completions_status` remains documented as reachable host ABI, but it must never be used
+for optional or best-effort work: any miss is user-visible.

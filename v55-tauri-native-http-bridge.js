@@ -15,6 +15,12 @@
 // custom_exclude_body removes the temporary messages/prompt. proxy_password is request-local
 // and becomes the Bearer token inside TauriTavern; no host secret is read, written, selected,
 // or rotated.
+//
+// Only generate_chat_completion is used. The sibling get_chat_completions_status command is
+// deliberately NOT used for embedding model discovery: TauriTavern maps any failure of that
+// command through log_user_visible_error (presentation/commands/helpers.rs), which pushes a
+// global "后端错误" toast to the user through the native backend-error bridge. That toast is
+// emitted by the Rust side, so an extension cannot suppress it by catching the rejection.
 
 const clean = (value, max = 20000) => String(value ?? '').replace(/\u0000/g, '').trim().slice(0, max);
 const getHost = () => globalThis.__TAURITAVERN__ || globalThis.window?.__TAURITAVERN__ || null;
@@ -85,42 +91,20 @@ export async function requestEmbeddingJsonViaTauriNative({ endpoint, apiKey, bod
         return result;
     } catch (error) {
         const message = String(error?.message || error || 'unknown native transport error');
-        throw new Error(`TauriTavern Native HTTP Embedding 请求失败：${message}`);
+        throw new Error(`TauriTavern Native HTTP Embedding 请求失败：${message}${nativeTransportHint(message)}`);
     }
 }
 
-export function buildTauriModelDiscoveryInvoke({ baseUrl, apiKey }) {
-    const base = clean(baseUrl, 4000).replace(/\/+$/, '');
-    const key = clean(apiKey, 20000);
-    if (!base || !/^https?:\/\//i.test(base)) throw new Error('Embedding API base URL 无效。');
-    if (!key) throw new Error('Embedding API Key 为空。');
-    return {
-        command: 'get_chat_completions_status',
-        args: {
-            dto: {
-                chat_completion_source: 'custom',
-                reverse_proxy: base,
-                proxy_password: key,
-                custom_url: '',
-                custom_include_headers: { Accept: 'application/json' },
-                bypass_status_check: false,
-            },
-        },
-    };
+// Requests leaving through the host native stack inherit the host's own connect/read budget and
+// proxy configuration (or its absence). A timeout here is a reachability problem between this
+// device and the provider, not a plugin misconfiguration, so say so explicitly instead of
+// leaving the raw host text to be misread as a bug in the Aetheria transport.
+function nativeTransportHint(message) {
+    if (!/timed out|timeout|time-out/i.test(message)) return '';
+    return '（宿主原生 HTTP 请求超时：请确认本机/移动网络能直连该供应商，必要时在宿主侧配置代理，或把接口地址换成可直连的镜像地址后重试。）';
 }
 
-export async function discoverModelsViaTauriNative({ baseUrl, apiKey }) {
-    const host = getHost();
-    if (!host) return [];
-    try { await (host.ready ?? globalThis.window?.__TAURITAVERN_MAIN_READY__ ?? Promise.resolve()); } catch {}
-    const safeInvoke = getTauriSafeInvoke();
-    if (!safeInvoke) return [];
-    const request = buildTauriModelDiscoveryInvoke({ baseUrl, apiKey });
-    try {
-        const result = await safeInvoke(request.command, request.args);
-        const rows = [result?.data, result?.models, result?.model_list, result].find(Array.isArray) || [];
-        return [...new Set(rows.map(row => typeof row === 'string' ? row : (row?.id || row?.model || row?.name || row?.slug || '')).map(String).map(value => value.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-    } catch {
-        return [];
-    }
-}
+// NOTE: there is intentionally no discoverModelsViaTauriNative()/buildTauriModelDiscoveryInvoke()
+// here. Enumerating embedding models is optional decoration, and the only host ABI that could do it
+// (get_chat_completions_status) turns every miss into an unsuppressable user-visible backend error
+// toast. See the header comment.

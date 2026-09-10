@@ -65,11 +65,28 @@ async function saveCollection(collection) {
     const key = safeCollectionStoreKey(collection.collection_id); collection.updated_at = Date.now();
     const store = await extensionStore(); await store.setJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key, value: collection }); collectionCache.set(key, collection);
 }
+// TauriTavern answers a delete of a missing key with CommandError::NotFound, and its Rust layer
+// (presentation/commands/helpers.rs -> log_user_visible_error) raises a global "后端错误" toast for
+// that error class. The toast is emitted natively, so catching the rejection in JS is not enough:
+// purging a collection that was never persisted must not reach deleteJson at all. tryGetJson is the
+// documented non-throwing probe, so it is used as the existence check.
+function isStoreNotFoundError(error) {
+    const text = String(error?.message ?? error ?? '').toLowerCase();
+    if (text.includes('not found') || text.includes('notfound')) return true;
+    const code = error?.details?.code ?? error?.details?.kind ?? error?.code;
+    return typeof code === 'string' && code.toLowerCase().includes('notfound');
+}
+async function collectionEntryExists(store, key) {
+    try { return Boolean((await store.tryGetJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key }))?.found); }
+    catch { return false; }
+}
 async function deleteCollection(id) {
     const key = safeCollectionStoreKey(id); const store = await extensionStore();
-    if (typeof store.deleteJson === 'function') await store.deleteJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key });
-    else await store.setJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key, value: blankCollection(id) });
     collectionCache.delete(key);
+    if (typeof store.deleteJson !== 'function') { await store.setJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key, value: blankCollection(id) }); return; }
+    if (!(await collectionEntryExists(store, key))) return;
+    try { await store.deleteJson({ namespace: STORE_NAMESPACE, table: STORE_TABLE, key }); }
+    catch (error) { if (!isStoreNotFoundError(error)) throw error; }
 }
 function withCollectionLock(id, task) {
     const key = safeCollectionStoreKey(id), previous = collectionLocks.get(key) || Promise.resolve();

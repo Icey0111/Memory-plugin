@@ -1,5 +1,17 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix — TauriTavern host error toasts and store purge
+
+### Fixed
+- **Model discovery provoked a host-level error toast.** `v55-api-connections.js` enumerated Embedding models through TauriTavern's `get_chat_completions_status` command. TauriTavern maps every failure of that command through `log_user_visible_error` (`presentation/commands/helpers.rs`), and the native backend-error bridge `emit`s it as a global `后端错误` toast — emitted by Rust, so catching the rejection in the extension could not suppress it. Whenever a provider has no `/models` endpoint (Jina lists chat models, not embedding models), sits behind a proxy, or is slow on a mobile link, the user got a red toast for what is optional decoration. Discovery is now a plain WebView `fetch` only and stays silent on every failure; `buildTauriModelDiscoveryInvoke` / `discoverModelsViaTauriNative` are removed from `v55-tauri-native-http-bridge.js`, and the panel says so in TauriTavern instead of promising a model list.
+- **Purging a collection that was never persisted raised `NotFound`.** `v55-tauri-vector-backend.js` called `extension.store.deleteJson` unconditionally, and TauriTavern answers a missing key with `CommandError::NotFound` → a second unsuppressable `后端错误` toast. `deleteCollection` now probes with the documented non-throwing `tryGetJson` and returns early when the key is absent, and still tolerates a `NotFound` race rather than converting it into a failure.
+
+### Changed
+- Native Embedding timeouts now carry a reachability hint (device network / host proxy / mirror endpoint) instead of surfacing only the raw host text, because a timeout there is a network path problem, not a transport defect.
+
+### Validated
+- `npm run check` passes; the full offline suite passes, including the updated `test-v55-tauri-native-http-bridge.mjs` (no host status ABI reachable from the bridge, timeout guidance present) and `test-v55-tauri-vector-backend.mjs` (store mock now implements the documented `{ found, value }` contract and fails like TauriTavern on a missing delete).
+
 ## 5.5-dev Iteration 13 — Reliability fixes, time/scope model and the evidence loop
 
 ### Added
