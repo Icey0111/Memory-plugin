@@ -11,6 +11,12 @@
 //
 // The host parses that block, resolves it against the live chat first and the cold snapshot
 // second, and returns bounded original-text evidence for the next generation.
+//
+// Both halves are optional and neither is load-bearing: canonical memory (memory-core.js) does not
+// import this module and does not read cold_turns, so with `cold_turn_snapshot_enabled` and
+// `memory_evidence_enabled` both off the plugin still extracts, stores, summarizes and recalls. That
+// is deliberate — a path that only works when the model chooses to speak is the failure mode this
+// project was warned about, so it is allowed to be a supplement and nothing more.
 
 import { computeDialoguePairFingerprint, isDialogueRow, lexicalSearchMemories, normalizeStore } from './memory-core.js';
 

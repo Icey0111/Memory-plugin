@@ -34,6 +34,7 @@ Files are numbered so their reading order is explicit:
 | `03_data_model.md`   | Entities, schema, relationships (omit if not applicable) |
 | `04_roadmap.md`      | Milestones, phases, open questions, risks |
 | `05_worktree.md`     | The project directory tree and the responsibility of each part |
+| `06_architecture_drift.md` | Where the codebase stops being a memory system, and what was done about it |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.

@@ -421,4 +421,5 @@ export const __test = {
     estimateTokens,
     effectiveReferenceCap,
     classifyCurrentMemories,
+    buildCurrentStateBlock,
 };

@@ -36,6 +36,10 @@ import {
     parseExtractionResult,
 } from './memory-extractor.js';
 
+// A8: the quality side of the measurement story. v55-metrics.js meters cost; this meters whether
+// memory stayed good. Pure module, no host globals, so it is fully offline-testable.
+import { qualityReport as computeQualityReport } from './v55-quality-metrics.js';
+
 import {
     buildBaselineRecords,
     computeBaselineFingerprint,
@@ -148,6 +152,14 @@ const DEFAULT_SETTINGS = Object.freeze({
     setting_retrieval_max_chars: 10000,
     setting_extraction_max_chars: 7000,
     setting_retrieval_constant_limit: 2,
+    // Iteration 14 (architecture drift): the setting (world-info) plane and the memory plane are two
+    // different products, but a coupling had grown between them in both directions:
+    //   memory -> setting : active memories seed the setting retrieval query
+    //   setting -> memory : setting chunks become baseline records and can reject a memory write
+    // Both are now explicit switches with the historical behaviour as the default, so a memory-only
+    // run is measurable instead of impossible to construct.
+    setting_baseline_veto_enabled: true,
+    setting_query_seed_from_memories: true,
     // v5.5-dev Commit F: one context assembler, two extension-prompt blocks.
     reference_context_max_chars: 12000,
     current_state_context_max_chars: 5000,
@@ -165,6 +177,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     spine_injection_enabled: true,
     spine_injection_max_chars: 600,
     spine_injection_max_rows: 8,
+    // Iteration 14 (drift fix): the current-state block renders EVERY active memory, not only the
+    // mandatory set, so it was already a baseline wider than S4 claimed. That was implicit, which
+    // made the "irreversible-only" experiment impossible to run. Now it is a named setting and the
+    // default is the behaviour real users already have.
+    current_state_scope: 'mandatory+broad', // mandatory+broad | mandatory-only
     vector_recall: true,
     vector_source_mode: 'inherit', // inherit | transformers
     query_messages: 3,
@@ -222,6 +239,8 @@ let pendingSettingImportPreview = null;
 let lastSettingRetrievalDebug = null;
 let lastGenerationSettingRetrieval = null;
 let lastGenerationContextDiagnostics = null;
+// Iteration 14 (drift fix): observable proof of whether memories seeded the setting query.
+let lastSettingSeedDebug = null;
 
 function getContext() {
     return globalThis.SillyTavern?.getContext?.();
@@ -1110,6 +1129,9 @@ ${pair.assistantText}`,
     store.extractions[pair.key] = record;
     // Cold原文 snapshot: the live chat is the only other copy, and an edit or delete would
     // destroy it. Snapshot the pair under the same fingerprint the memory points at.
+    // This is an EVIDENCE CACHE, not memory: memory-core.js never reads cold_turns, and the extractor
+    // stays correct with the switch off. It exists so 【查阅记忆】 can still show original wording
+    // after the host text changed — which is why it is a copy of the transcript and not a fact store.
     if (settings.cold_turn_snapshot_enabled === false) {
         pruneColdTurns(store, settings.cold_turn_max_chars);
     } else {
@@ -1899,12 +1921,15 @@ async function retrieveGenerationSettings(ctx, interceptorChat, storeInput = nul
     const settings = getSettings(ctx);
     const store = normalizeStore(storeInput || getStore(ctx));
     const querySeed = buildQueryText(interceptorChat, settings.query_messages);
-    const activeMemories = getActiveMemories(store, querySeed, settings.max_active_items);
+    const activeMemories = settings.setting_query_seed_from_memories === false
+        ? []
+        : getActiveMemories(store, querySeed, settings.max_active_items);
     const query = buildGenerationSettingQuery({
         chat: interceptorChat,
         activeMemories,
         activeState: store.last_active_state,
     });
+    lastSettingSeedDebug = { scope: 'generation', from_memories: settings.setting_query_seed_from_memories !== false, memory_seed_count: activeMemories.length, at: Date.now() };
     const retrieval = await retrievePluginSettings(ctx, query, { mode: 'generation' });
     // Role-private setting visibility: the active character only receives entries whose explicit
     // audience includes them. Baseline write dedup still uses the full objective snapshot.
@@ -1918,13 +1943,16 @@ async function retrieveExtractionSettings(ctx, pair, storeInput, prepared = null
     const store = normalizeStore(storeInput || getStore(ctx));
     const pairSeed = `${pair?.userText || ''}
 ${pair?.assistantText || ''}`;
-    const activeMemories = getActiveMemories(store, pairSeed, Math.max(settings.max_active_items, 18));
+    const activeMemories = settings.setting_query_seed_from_memories === false
+        ? []
+        : getActiveMemories(store, pairSeed, Math.max(settings.max_active_items, 18));
     const query = buildExtractionSettingQuery({
         userText: pair?.userText || '',
         assistantText: pair?.assistantText || '',
         activeMemories,
         currentState: store.last_active_state,
     });
+    lastSettingSeedDebug = { scope: 'extraction', from_memories: settings.setting_query_seed_from_memories !== false, memory_seed_count: activeMemories.length, at: Date.now() };
     const retrieval = await retrievePluginSettings(ctx, query, {
         mode: 'extraction',
         prepared,
@@ -1944,6 +1972,9 @@ function createPluginBaselineDeduper(ctx, preparedSettingIndex) {
         snapshot: prepared,
         records,
         async findPossibleMatches(candidateOperation) {
+            if (settings.setting_baseline_veto_enabled === false) {
+                return { blocked: false, reason: 'setting-veto-disabled', source: 'plugin_setting', records, semanticMatches: [] };
+            }
             if (!settings.semantic_baseline_gate || !isBaselineGateEligible(candidateOperation) || !records.length) {
                 return { blocked: false, reason: 'ineligible-or-empty', source: 'plugin_setting', records, semanticMatches: [] };
             }
@@ -2449,7 +2480,8 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
     await operationQueue;
     const store = getStore(ctx);
     const queryText = buildQueryText(interceptorChat, settings.query_messages);
-    const baseActive = settings.inject_current_state
+    const currentStateScope = resolveCurrentStateScope(settings);
+    const baseActive = settings.inject_current_state && currentStateScope === 'mandatory+broad'
         ? getActiveMemories(store, queryText, settings.max_active_items)
         : [];
     // S4: the mandatory baseline is unioned in before assembly and marked, so the budget trim inside
@@ -2498,6 +2530,8 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
         ...bundle.diagnostics,
         spine: spineStats(store),
         mandatory_ids: [...mandatoryIds],
+        current_state_scope: currentStateScope,
+        broad_active_count: baseActive.length,
         at: Date.now(),
         reference_prompt_key: REFERENCE_PROMPT_KEY,
         current_state_prompt_key: CURRENT_STATE_PROMPT_KEY,
@@ -3013,6 +3047,9 @@ async function setupUi() {
     bindNumber('aum-v54-setting-retrieval-budget', 'setting_retrieval_max_chars', { min: 1000, max: 50000, integer: true });
     bindNumber('aum-v54-setting-extraction-budget', 'setting_extraction_max_chars', { min: 1000, max: 30000, integer: true });
     bindNumber('aum-v54-setting-constant-limit', 'setting_retrieval_constant_limit', { min: 0, max: 20, integer: true });
+    // Iteration 14 (architecture drift): the two directions of the setting<->memory coupling.
+    bindCheckbox('aum-v54-setting-veto', 'setting_baseline_veto_enabled');
+    bindCheckbox('aum-v54-setting-seed', 'setting_query_seed_from_memories');
     bindNumber('aum-v54-keep-recent', 'keep_recent_messages', { min: 2, max: 200, integer: true });
     bindNumber('aum-v54-query-messages', 'query_messages', { min: 1, max: 12, integer: true });
     bindNumber('aum-v54-candidate-k', 'candidate_top_k', { min: 1, max: 80, integer: true });
@@ -3031,6 +3068,7 @@ async function setupUi() {
     bindNumber('aum-v54-current-state-depth', 'current_state_injection_depth', { min: 0, max: 100, integer: true });
     bindNumber('aum-v54-reply-reserve', 'context_reply_reserve_tokens', { min: 0, max: 32000, integer: true });
     bindNumber('aum-v54-max-active', 'max_active_items', { min: 0, max: 50, integer: true });
+    bindSelect('aum-v54-current-state-scope', 'current_state_scope');
     bindNumber('aum-v54-protect-recent', 'protect_recent_messages', { min: 0, max: 100, integer: true });
 
     bindSettingImportUi(ctx);
@@ -3263,6 +3301,57 @@ export async function __testEnsureSemanticBaseline(ctx, options = {}) {
 
 export async function __testFilterOperationsAgainstBaseline(ctx, ops, prepared) {
     return filterOperationsAgainstBaseline(ctx, ops, prepared);
+}
+
+/**
+ * The current-state block is a baseline wider than the mandatory set: it renders every active
+ * memory, not only the irreversible ones. This resolves which of the two a run is using, so the
+ * choice is a named policy rather than an implicit property of the assembly path.
+ */
+export function resolveCurrentStateScope(settings) {
+    return settings?.current_state_scope === 'mandatory-only' ? 'mandatory-only' : 'mandatory+broad';
+}
+
+export function __testResolveCurrentStateScope(settings) {
+    return resolveCurrentStateScope(settings);
+}
+
+export function __testGetLastSettingSeedDebug() {
+    return lastSettingSeedDebug;
+}
+
+/**
+ * A8 quality report for the current chat: key retention, causal recall (canonical vs injected) and
+ * the compression curve. Reads only the store and the last published bundle, so it spends no model
+ * call and can be run at any time — including by the live acceptance harness.
+ */
+export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit = 60 } = {}) {
+    const ctx = ctxInput || getContext();
+    if (!ctx) return null;
+    const settings = getSettings(ctx);
+    const store = getStore(ctx);
+    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
+    const dialogueTextsPerFloor = chat
+        .filter(row => isDialogueRow(row))
+        .map(row => String(row.mes ?? ''));
+    const published = ctx.chatMetadata?.[METADATA_KEY]?.v55_inner_bundle || null;
+    const injectedText = [published?.reference_block, published?.current_state_block].filter(Boolean).join('\n\n');
+    const mandatory = settings.inject_current_state
+        ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
+        : [];
+    return computeQualityReport({
+        store,
+        rendered: String(published?.current_state_block || ''),
+        injectedText,
+        mandatory,
+        dialogueTextsPerFloor,
+        everyFloors,
+        probeLimit,
+    });
+}
+
+export function __testQualityReport(ctx, options = {}) {
+    return getQualityReport(ctx, options);
 }
 
 /** Manifest lifecycle hook. Keep activation lightweight; async work is deferred. */

@@ -96,6 +96,12 @@
         <label class="checkbox_label"><input id="aum-v54-baseline-vector" type="checkbox"> 启用 Baseline 语义向量复核</label>
         <label class="checkbox_label"><input id="aum-v54-baseline-auto" type="checkbox"> Persona / World Info 指纹变化时自动重建 Baseline 向量</label>
         <label class="checkbox_label"><input id="aum-v54-baseline-active-wi" type="checkbox"> 纳入当前激活 World Info（同时仍读取 Persona/角色绑定世界书）</label>
+        <p class="aum-v51-muted">
+            设定平面与记忆平面是两个独立产品。下面两个开关把两者之间原本隐式的耦合显式化：默认保持既有行为，
+            关闭后可构造“只测记忆通道”的对照实验。
+        </p>
+        <label class="checkbox_label"><input id="aum-v54-setting-veto" type="checkbox"> 允许世界书内容否决一条记忆的写入</label>
+        <label class="checkbox_label"><input id="aum-v54-setting-seed" type="checkbox"> 允许当前活跃记忆参与构造世界书检索查询</label>
         <div class="aum-v51-grid">
             <label>词法重复阈值<input id="aum-v54-baseline-lexical" class="text_pole" type="number" step="0.01"></label>
             <label>向量重复阈值<input id="aum-v54-baseline-semantic" class="text_pole" type="number" step="0.01"></label>
@@ -144,6 +150,10 @@
             <label>回复预留 tokens<input id="aum-v54-reply-reserve" class="text_pole" type="number" step="100"></label>
             <label class="checkbox_label"><input id="aum-v54-quiet-third-party" type="checkbox"> 允许第三方 quiet 请求注入上下文（插件自身抽取始终清空）</label>
             <label>Active 上限<input id="aum-v54-max-active" class="text_pole" type="number" step="1"></label>
+            <label>Current State 基线范围<select id="aum-v54-current-state-scope" class="text_pole">
+                <option value="mandatory+broad">不可逆 + 全部活跃记忆（默认）</option>
+                <option value="mandatory-only">仅不可逆变更</option>
+            </select></label>
             <label>保护最近消息<input id="aum-v54-protect-recent" class="text_pole" type="number" step="1"></label>
         </div>
 
