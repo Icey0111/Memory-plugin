@@ -1,5 +1,67 @@
 # Changelog
 
+## 5.5-dev Iteration 13 hotfix 7 — the injected memory finally reaches the model
+
+Verified against a live TauriTavern session with the real provider (WebView2 CDP, retained host request
+logs, real Jina embeddings). This session's test chat ran a 12-turn scripted scenario end to end.
+
+### Fixed
+- **No Aetheria block ever reached the model.** The three v5.5 layers (runtime → finalizer → consistency)
+  coordinated by swapping `ctx.setExtensionPrompt` on the context object they were handed. Real
+  SillyTavern builds a **fresh context object on every `getContext()` call**, so the swap only ever
+  mutated a throwaway: nothing was captured, and `v55-consistency` re-emitted the composed block using
+  `position`/`depth` from an empty capture. `Number(undefined)` is `NaN`, SillyTavern matches
+  `position` against its own `extension_prompt_types`, and `NaN` matches nothing — so every block was
+  silently dropped while the plugin kept reporting success. Retained requests proved it: the recorded
+  generation carried neither `PLUGIN REFERENCE DATA` nor `PLUGIN CURRENT STATE`. The legacy runtime now
+  **publishes** its bundle for the outer layers to compose on top of, and every re-emit normalises the
+  prompt arguments to a real numeric position and depth. The same request now carries both blocks, the
+  hierarchical summary, scene locators, scene evidence and the recalled memory ids.
+- **The whole summary tree was wiped and re-summarised on every launch.** `dirty()` treated every
+  history-mutation event as an edit, and the host re-emits those events while it hydrates a chat at
+  startup. It now resets only when a turn that had already been summarised actually disappeared, so an
+  edit/swipe/delete still invalidates the tree while a plain reload does not.
+- **One chat could own two vector collections.** `getCollectionId()` hashed whatever
+  `getCurrentChatId()` returned, and the host reports the same chat with and without its `.jsonl`
+  suffix depending on which path opened it (UI switch vs. `openCharacterChat`/restore). The plugin built
+  a second collection and then reported the first as a stale index with no per-index space_fingerprint.
+  Chat identity is now normalised once and used for the memory collection, the baseline collection and
+  the per-chat registry.
+- **A fresh chat reported a stale Dense index.** `indexLooksBuilt()` counted the provider fingerprint
+  the plugin stamps when it merely *ensures* a collection, so a chat with zero vectorised rows was
+  reported as `stale` with "现有 memory Dense 索引没有 per-index space_fingerprint；拒绝把它当作当前空间
+  使用" — a message about a rebuild that had nothing to rebuild. A memory dense index now counts as built
+  only when it actually holds a vectorised row; a genuine legacy index still carries rows, so it is still
+  detected and rebuilt.
+
+### Added
+- `test-v55-injection-host-fresh-context.mjs` reproduces the real host shape (a new context object per
+  `getContext()`) and asserts the reference/current-state blocks survive with a numeric position and
+  depth. The existing lifecycle test used one stable context object, which is exactly why it never caught
+  the defect.
+- `test-v55-summary-dirty.mjs` asserts that hydration update events keep the tree and that a real edit
+  still invalidates it.
+- The extraction debug record now carries an `attempts` array (phase, budget, value type, length,
+  parsed, starved) so a failed extraction says which provider round-trips ran instead of leaving the same
+  parse error for every cause.
+
+## 5.5-dev Iteration 13 hotfix 6 — any parse failure retries, and the retry is observable
+
+### Fixed
+- **The doubled retry never ran for a brace-less completion.** `budget-retry` was gated on
+  `looksLikeStarvedJson()`, which requires the completion to start with `{`. A reasoning model that
+  spends the entire budget before emitting its first brace returns prose (or two stray characters), the
+  gate rejected it, and the turn was abandoned with nothing but a parse error. The gate is now simply
+  "did not parse, and there is budget headroom".
+- Live proof with `extraction_response_tokens: 256`: the recorded `attempts` show
+  `structured@256 → budget-retry@512 → plain-json-retry@256`, and with 1024 the first structured attempt
+  succeeded. Across the 12-turn scenario two turns needed the doubled retry and both then parsed cleanly.
+
+### Changed
+- **Summary budget.** `summary_max_tokens` raised to 2048 for this install (and
+  `extraction_response_tokens` to 2048): the same provider was truncating summaries at 600 with
+  `finish_reason: "length"`. After the change every summary in the run finished with `stop`.
+
 ## 5.5-dev Iteration 13 hotfix 5 — a starved extraction retries with more budget
 
 ### Fixed

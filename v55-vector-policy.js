@@ -79,7 +79,12 @@ function makeRequest(input, init, payload) { return { input, init: { ...init, bo
 async function readJson(response) { try { return await response.json(); } catch { return null; } }
 function makeJsonResponse(data, source = null) { const headers = new Headers(source?.headers || undefined); headers.set('content-type', 'application/json; charset=utf-8'); return new Response(JSON.stringify(data), { status: source?.ok ? source.status : 200, statusText: source?.ok ? source.statusText : 'OK', headers }); }
 function indexStateForKind(ctx, kind) { const store = ctx?.chatMetadata?.[METADATA_KEY]; if (!store || typeof store !== 'object') return null; if (kind === 'memory') return store.vector && typeof store.vector === 'object' ? store.vector : null; if (kind === 'baseline') return store.baseline?.vector && typeof store.baseline.vector === 'object' ? store.baseline.vector : null; return null; }
-function indexLooksBuilt(indexState, kind, store) { if (!indexState) return false; if (indexState.fingerprint || indexState.provider_fingerprint || indexState.last_sync_at) return true; if (kind === 'memory') return Object.values(store?.memories || {}).some(memory => Number.isFinite(Number(memory?.vector_hash))); return false; }
+// A memory dense index only exists once it holds at least one vectorized row. The plugin stamps a
+// provider fingerprint as soon as it merely *ensures* the collection, so reading that stamp as
+// "built" made a brand-new chat report `stale` together with "现有 memory Dense 索引没有 per-index
+// space_fingerprint；拒绝把它当作当前空间使用" even though no memory had ever been indexed. A legacy
+// index that really was built always carries vectorized rows, so it is still detected.
+function indexLooksBuilt(indexState, kind, store) { if (!indexState) return false; if (kind === 'memory') return Object.values(store?.memories || {}).some(memory => Number.isFinite(Number(memory?.vector_hash))); return Boolean(indexState.fingerprint || indexState.provider_fingerprint || indexState.last_sync_at); }
 function markIndexSpaceStale(ctx, kind, indexState, expected, reason) { if (!indexState) return false; indexState.stale = true; indexState.expected_space_fingerprint = expected; indexState.last_error = reason; ctx?.saveMetadataDebounced?.(); return true; }
 
 export function ensureCurrentVectorSpaceIdentity(ctxInput = getContext(), profileInput = null) {

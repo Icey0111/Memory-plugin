@@ -43,6 +43,39 @@ function latestQuery(chatInput) {
         .join('\n');
 }
 
+// SillyTavern matches an extension prompt's position against its own extension_prompt_types and
+// silently skips anything else. `Number(undefined)` is NaN, so re-emitting a captured row whose
+// position was never captured erased the block from the request with no error anywhere.
+function promptArgs(rest, fallbackDepth) {
+    const position = Number(rest?.[0]);
+    const depth = Number(rest?.[1]);
+    return [
+        Number.isFinite(position) ? position : IN_CHAT,
+        Number.isFinite(depth) ? depth : fallbackDepth,
+        rest?.[2] ?? false,
+        rest?.[3] ?? SYSTEM_ROLE,
+    ];
+}
+
+// The legacy runtime publishes what it injected so this pass can compose on top of it without
+// swapping ctx.setExtensionPrompt, which does not work when getContext() hands out a fresh object.
+function captureOrPublished(captured, published, key) {
+    const capturedRow = captured.get(key);
+    if (capturedRow) return capturedRow;
+    if (!published || typeof published !== 'object') return { key, value: '', rest: [] };
+    const isReference = key === REFERENCE_PROMPT_KEY;
+    return {
+        key,
+        value: String((isReference ? published.reference_block : published.current_state_block) || ''),
+        rest: [
+            isReference ? published.reference_position : published.current_state_position,
+            isReference ? published.reference_depth : published.current_state_depth,
+            false,
+            SYSTEM_ROLE,
+        ],
+    };
+}
+
 function clearStandaloneSummary(realSetPrompt, settings) {
     const depth = normalizeSummaryInjectionDepth(settings?.summary_injection_depth, 4);
     realSetPrompt(SUMMARY_PROMPT_KEY, '', IN_CHAT, depth, false, SYSTEM_ROLE);
@@ -101,20 +134,24 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
         ctx.setExtensionPrompt = realSetPrompt;
     }
 
-    const reference = captured.get(REFERENCE_PROMPT_KEY) || { key: REFERENCE_PROMPT_KEY, value: '', rest: [] };
-    const current = captured.get(CURRENT_STATE_PROMPT_KEY) || { key: CURRENT_STATE_PROMPT_KEY, value: '', rest: [] };
+    const published = ctx.chatMetadata?.[METADATA_KEY]?.v55_inner_bundle || null;
+    const reference = captureOrPublished(captured, published, REFERENCE_PROMPT_KEY);
+    const current = captureOrPublished(captured, published, CURRENT_STATE_PROMPT_KEY);
+    // Scratch value for this one generation; it must not accumulate in chat metadata.
+    if (published && ctx.chatMetadata?.[METADATA_KEY]) delete ctx.chatMetadata[METADATA_KEY].v55_inner_bundle;
     clearStandaloneSummary(realSetPrompt, settings);
 
     const store = ctx.chatMetadata?.[METADATA_KEY];
     if (!store) {
-        for (const row of [reference, current]) realSetPrompt(row.key, row.value, ...row.rest);
+        realSetPrompt(reference.key, reference.value, ...promptArgs(reference.rest, 4));
+        realSetPrompt(current.key, current.value, ...promptArgs(current.rest, 1));
         return;
     }
 
     const lifecycle = generationSuppressed(settings, args);
     if (lifecycle.suppressed) {
-        realSetPrompt(reference.key, '', ...reference.rest);
-        realSetPrompt(current.key, '', ...current.rest);
+        realSetPrompt(reference.key, '', ...promptArgs(reference.rest, 4));
+        realSetPrompt(current.key, '', ...promptArgs(current.rest, 1));
         return;
     }
 
@@ -160,8 +197,8 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
         maxCurrentStateChars: settings.current_state_context_max_chars,
     });
 
-    realSetPrompt(reference.key, bounded.referenceBlock, ...reference.rest);
-    realSetPrompt(current.key, bounded.currentStateBlock, ...current.rest);
+    realSetPrompt(reference.key, bounded.referenceBlock, ...promptArgs(reference.rest, 4));
+    realSetPrompt(current.key, bounded.currentStateBlock, ...promptArgs(current.rest, 1));
     store.v55_consistency = {
         hidden_private_memory_ids: visibleCanonical.hiddenMemoryIds,
         hidden_extraction_source_keys: sanitized.hiddenSourceKeys,

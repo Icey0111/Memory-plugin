@@ -24,6 +24,7 @@ const shared = makeSettings();
 const a = makeCtx(shared), b = makeCtx(shared), oldProfile = getV55EmbeddingProfile(a);
 shared.vector_embedding_policy_signature = oldProfile.space_fingerprint;
 for (const x of [a, b]) {
+  x.chatMetadata.aetheriaUnifiedMemoryV54.memories = { m_indexed: { id: 'm_indexed', vector_hash: 424242, text: 'a row that really lives in the dense index' } };
   x.chatMetadata.aetheriaUnifiedMemoryV54.vector = { fingerprint: 'provider-built', stale: false, last_sync_at: 1, space_fingerprint: oldProfile.space_fingerprint };
   x.chatMetadata.aetheriaUnifiedMemoryV54.baseline.vector = { fingerprint: 'baseline-built', provider_fingerprint: 'provider-built', stale: false, last_sync_at: 1, space_fingerprint: oldProfile.space_fingerprint };
 }
@@ -39,8 +40,19 @@ assert.equal(b.chatMetadata.aetheriaUnifiedMemoryV54.vector.stale, true);
 assert.equal(b.chatMetadata.aetheriaUnifiedMemoryV54.vector.expected_space_fingerprint, newSpace);
 const legacyCtx = makeCtx(makeSettings());
 const legacyProfile = getV55EmbeddingProfile(legacyCtx);
+legacyCtx.chatMetadata.aetheriaUnifiedMemoryV54.memories = { m_legacy: { id: 'm_legacy', vector_hash: 7, text: 'vectorised by an older plugin version' } };
 legacyCtx.chatMetadata.aetheriaUnifiedMemoryV54.vector = { fingerprint: 'old-provider', stale: false, last_sync_at: 1 };
 const legacyCheck = ensureCurrentVectorSpaceIdentity(legacyCtx, legacyProfile);
 assert.equal(legacyCheck.mismatches[0].stored, null);
 assert.equal(legacyCtx.chatMetadata.aetheriaUnifiedMemoryV54.vector.stale, true);
+
+// A dense index that was only *ensured* (provider fingerprint stamped, zero vectorized rows) is not a
+// stale index: there is nothing to rebuild, and the "no per-index space_fingerprint" message that a
+// fresh chat used to get was simply false. It self-healed only once a memory was actually indexed.
+const ensuredOnly = makeCtx(makeSettings());
+ensuredOnly.chatMetadata.aetheriaUnifiedMemoryV54.vector = { fingerprint: 'provider-ensured', stale: true, last_sync_at: null };
+const ensuredCheck = ensureCurrentVectorSpaceIdentity(ensuredOnly, getV55EmbeddingProfile(ensuredOnly));
+assert.equal(ensuredCheck.mismatches.length, 0, 'an ensured but empty memory index must not be reported as a space mismatch');
+assert.equal(ensuredOnly.chatMetadata.aetheriaUnifiedMemoryV54.vector.last_error, undefined, 'a fresh chat must not be given a stale-index error');
+assert.equal(ensuredOnly.chatMetadata.aetheriaUnifiedMemoryV54.vector.expected_space_fingerprint, undefined);
 console.log('PASS v55 vector policy: role transforms plus per-chat space identity prevent cross-space reuse');

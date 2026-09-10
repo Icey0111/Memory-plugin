@@ -5,6 +5,7 @@ const requests=[];
 let rawCalls=0;
 let extractionMode=1;
 let starveOnce=false;
+let proseOnce=false;
 const budgets=[];
 function extractionReply(){ if (extractionMode===2) return JSON.stringify({
   event_summary:'重新审阅后只保留平成结束实验回家的事件。',
@@ -60,6 +61,7 @@ const context={
     assert.ok(options.jsonSchema,'structured extraction should pass JSON schema');
     assert.ok([2048,4096].includes(options.responseLength),'extraction must set its own budget instead of inheriting the chat preset max_tokens');
     if (starveOnce) { starveOnce=false; return '{"event_summary": "被截断'; }
+    if (proseOnce) { proseOnce=false; return '我需要先梳理一下这一轮。用户只是确认了今晚的安排，没有出现值得写入统一记忆池的新变化。'; }
     return extractionReply();
   },
   generateQuietPrompt:async ()=>{ throw new Error('extraction must prefer generateRaw over generateQuietPrompt'); },
@@ -124,5 +126,24 @@ assert.equal(starved.skipped,undefined,'a starved JSON completion must be retrie
 assert.equal(starved.record.generation_mode,'budget-retry');
 assert.deepEqual(budgets.slice(budgetsBefore),[2048,4096],'the retry doubles the extraction budget');
 assert.match(mod.__testGetStore(context).last_event_summary,/平成/);
+
+// The retry gate must not require the completion to look like JSON. A reasoning model can spend the
+// entire budget before it emits a single brace, and that shape used to fall through both retries and
+// abandon the turn with nothing but a parse error and no record of which attempts had run.
+context.chat.push({name:'用户',mes:'最后确认一次。',is_user:true,is_system:false});
+context.chat.push({name:'平成',mes:'我最后确认一次今晚的安排。',is_user:false,is_system:false});
+const budgetsBeforeProse=budgets.length;
+proseOnce=true;
+const prose=await mod.__testExtractMemoryForAssistant(context,7,{force:false});
+assert.equal(prose.skipped,undefined);
+assert.equal(prose.record.generation_mode,'budget-retry','a brace-less starved completion must retry too');
+assert.deepEqual(budgets.slice(budgetsBeforeProse),[2048,4096],'the brace-less retry also doubles the budget');
+const proseDebug=mod.__testGetStore(context).last_extraction_debug;
+assert.equal(Array.isArray(proseDebug.attempts),true,'extraction debug must record every provider round-trip');
+assert.deepEqual(proseDebug.attempts.map(a=>a.phase),['structured','budget-retry']);
+assert.equal(proseDebug.attempts[0].parsed,false);
+assert.equal(proseDebug.attempts[1].parsed,true);
+assert.equal(proseDebug.attempts[0].type,'string');
+assert.equal(proseDebug.mode,'budget-retry');
 
 console.log('PASS v5.4 autonomous after-AI extraction + immediate vector sync + dedupe/migration guard');

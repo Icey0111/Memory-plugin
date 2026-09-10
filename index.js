@@ -441,8 +441,9 @@ function withVectorLock(task) {
 }
 
 function getCollectionId(ctx) {
-    const rawChatId = ctx.getCurrentChatId?.() ?? ctx.chatId ?? '';
-    const chatId = String(rawChatId || '').trim();
+    // Same identity normalisation as getChatIdentity(): collection ids must not depend on whether the
+    // host spelled the chat id with its file extension.
+    const chatId = getChatIdentity(ctx);
     if (!chatId) return null;
     const id = `aetheria_v54_${fnv1a32(chatId).toString(36)}`;
     rememberVectorCollection(ctx, id, 'memory');
@@ -451,7 +452,11 @@ function getCollectionId(ctx) {
 
 
 function getChatIdentity(ctx) {
-    return String(ctx?.getCurrentChatId?.() ?? ctx?.chatId ?? '').trim();
+    // The host reports the same chat with and without its .jsonl suffix depending on which path
+    // opened it (a UI chat switch versus openCharacterChat / restore-at-startup). Hashing the raw
+    // string produced two different vector collections for one chat: the plugin rebuilt into the
+    // second one and then reported the first as a stale index with no per-index space_fingerprint.
+    return String(ctx?.getCurrentChatId?.() ?? ctx?.chatId ?? '').trim().replace(/\.jsonl$/i, '');
 }
 
 
@@ -927,19 +932,38 @@ ${pair.assistantText}`,
     let raw = '';
     let parsed = null;
     let mode = 'structured';
+    // Every provider round-trip is recorded, failures included. Without this a truncated attempt and
+    // a skipped retry look identical from the outside: both end in the same parse error, and the only
+    // way to tell them apart was to correlate host-side request logs by hand.
+    const attempts = [];
+    const noteAttempt = (phase, value, ok) => attempts.push({
+        phase,
+        budget: runQuietExtraction.lastBudget ?? null,
+        type: typeof value,
+        chars: typeof value === 'string' ? value.length : null,
+        parsed: Boolean(ok),
+        starved: looksLikeStarvedJson(value),
+    });
     try {
         raw = await runQuietExtraction(ctx, prompt, Boolean(settings.extraction_structured_output));
         parsed = parseExtractionResult(raw);
+        noteAttempt('structured', raw, parsed.ok);
         const configuredBudget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
-        if (!parsed.ok && configuredBudget < 8192 && looksLikeStarvedJson(raw)) {
+        // Retry on any parse failure with budget headroom, not only on "looks truncated" output: a
+        // reasoning model can also spend the whole budget before it emits its first brace, and that
+        // shape is indistinguishable from a formatting mistake. The doubled budget is the fix for
+        // both, so the gate is deliberately just "did not parse".
+        if (!parsed.ok && configuredBudget < 8192) {
             mode = 'budget-retry';
             raw = await runQuietExtraction(ctx, prompt, Boolean(settings.extraction_structured_output), Math.min(8192, configuredBudget * 2));
             parsed = parseExtractionResult(raw);
+            noteAttempt('budget-retry', raw, parsed.ok);
         }
-        if ((!parsed.ok || (raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json) {
+        if ((!parsed.ok || (typeof raw === 'string' && raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json) {
             mode = 'plain-json-retry';
             raw = await runQuietExtraction(ctx, `${prompt}\n\n严格只输出JSON，不要代码围栏。`, false);
             parsed = parseExtractionResult(raw);
+            noteAttempt('plain-json-retry', raw, parsed.ok);
         }
     } catch (error) {
         store.last_extraction_debug = {
@@ -957,6 +981,8 @@ ${pair.assistantText}`,
             raw_preview: rawText.slice(0, 1200), error: error.message, at: Date.now(),
             raw_length: rawText.length,
             response_tokens_budget: runQuietExtraction.lastBudget ?? null,
+            mode,
+            attempts,
             // A completion that carries no JSON delimiter at all is almost always a starved or
             // reasoning-dominated generation rather than a formatting mistake, so say which.
             truncated_hint: !rawText.includes('{')
@@ -1087,6 +1113,7 @@ ${pair.assistantText}`,
         validation_errors: validationErrors,
         apply_errors: applyErrors,
         mode,
+        attempts,
         replaced_existing: replacingExistingRecord,
         at: Date.now(),
     };
@@ -2266,6 +2293,24 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
         reference_depth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
         current_state_depth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
     };
+    // The outer layers used to capture this write by swapping ctx.setExtensionPrompt on the context
+    // they were handed. That cannot work on a real host: getContext() returns a fresh object each
+    // call, so the swap mutated a throwaway and this module wrote through the real host function.
+    // v55-consistency then overwrote the block using position/depth from an empty capture, and
+    // Number(undefined) is NaN, which SillyTavern silently drops because it matches no position type.
+    // Publishing the bundle is how the outer layers now get the text they are responsible for.
+    const publishTarget = ctx.chatMetadata?.[METADATA_KEY];
+    if (publishTarget && typeof publishTarget === 'object') {
+        publishTarget.v55_inner_bundle = {
+            reference_block: String(bundle.referenceBlock || ''),
+            current_state_block: String(bundle.currentStateBlock || ''),
+            reference_position: IN_CHAT,
+            reference_depth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
+            current_state_position: IN_CHAT,
+            current_state_depth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
+            at: Date.now(),
+        };
+    }
     return bundle;
 }
 
