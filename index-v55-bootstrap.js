@@ -1,5 +1,7 @@
 // Aetheria Unified Memory v5.5 — host bootstrap.
-// Keeps the core staged entry point intact and layers host-facing UI/localization/summary/API services on top.
+// Store ownership guard is evaluated before the staged core so Canonical replay assignments cannot
+// erase v5.5 module-owned chat state during initialization or later history reconciliation.
+import { installV55StoreIntegrity } from './v55-store-integrity.js';
 import { init as coreInit } from './index-v55.js';
 import { installV55UiPolish, localizeV55Ui } from './v55-ui-polish.js';
 import { installV55HierarchicalSummary } from './v55-summary-runtime.js';
@@ -9,6 +11,7 @@ import { installV55VectorPolicy, configureV55VectorPolicy } from './v55-vector-p
 import { installV55EmbeddingProfileUi } from './v55-embedding-profile-ui.js';
 
 function installUi() {
+    installV55StoreIntegrity();
     installV55UiPolish();
     localizeV55Ui();
     installV55HierarchicalSummary();
@@ -19,9 +22,7 @@ function installUi() {
 }
 
 export function init() {
-    // Order matters: Iteration 08 remains the inner private-provider boundary; Iteration 09 wraps
-    // it with representation-space/retrieval-policy semantics before the core builds or queries
-    // Aetheria-owned derived vector collections.
+    installV55StoreIntegrity();
     installV55PrivateVectorTransport();
     installV55VectorPolicy();
     const result = coreInit();
@@ -30,6 +31,7 @@ export function init() {
     return result;
 }
 
+installV55StoreIntegrity();
 installV55PrivateVectorTransport();
 installV55VectorPolicy();
 installUi();

@@ -1,8 +1,13 @@
 // Aetheria Unified Memory v5.5 — post-runtime consistency pass.
-// Re-acquires chat metadata after the compatibility runtime has normalized/replayed
-// it, then performs the final v5.5 prompt transformation against the current object.
+// Every generated Aetheria context channel is finalized here so privacy, generation lifecycle,
+// and the shared prompt budget are applied once, after the legacy runtime has normalized state.
 
-import { budgetPromptPair, ensureChatSettingBinding, stampRuntimeIdentity } from './v55-runtime.js';
+import {
+    budgetPromptPair,
+    deriveActorIdentity,
+    ensureChatSettingBinding,
+    stampRuntimeIdentity,
+} from './v55-runtime.js';
 import {
     buildSceneSummaries,
     collectSceneEvidence,
@@ -12,35 +17,20 @@ import {
     injectSceneSummaryBlock,
     selectSceneSummaries,
 } from './v55-finalizer.js';
+import { sanitizeStoreForActor } from './v55-privacy.js';
+import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const REFERENCE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_reference';
 const CURRENT_STATE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_current_state';
+const SUMMARY_PROMPT_KEY = 'aetheria_unified_memory_v5_5_hierarchical_summary';
+const IN_CHAT = 1;
+const SYSTEM_ROLE = 0;
 
 function clean(value, max = 10_000) {
     return String(value ?? '').replace(/\u0000/g, '').trim().slice(0, max);
-}
-
-function unique(values) {
-    return [...new Set((Array.isArray(values) ? values : []).map(x => clean(x, 300)).filter(Boolean))];
-}
-
-function actorIdentity(ctx, store) {
-    const aliases = unique([
-        ctx?.name2,
-        ctx?.character?.name,
-        ctx?.characters?.[ctx?.characterId]?.name,
-    ]).map(x => x.normalize('NFKC').toLocaleLowerCase());
-    const ids = [];
-    const discriminator = ctx?.characterId !== undefined && ctx?.characterId !== null ? `st-character:${ctx.characterId}` : null;
-    for (const row of Object.values(store?.entity_registry || {})) {
-        if (!row?.entity_id) continue;
-        if (discriminator && row.discriminator === discriminator) ids.push(row.entity_id);
-        else if (!discriminator && (row.aliases || []).some(alias => aliases.includes(clean(alias, 300).normalize('NFKC').toLocaleLowerCase()))) ids.push(row.entity_id);
-    }
-    return { aliases, ids: unique(ids) };
 }
 
 function latestQuery(chatInput) {
@@ -52,6 +42,25 @@ function latestQuery(chatInput) {
         .join('\n');
 }
 
+function clearStandaloneSummary(realSetPrompt, settings) {
+    const depth = normalizeSummaryInjectionDepth(settings?.summary_injection_depth, 4);
+    realSetPrompt(SUMMARY_PROMPT_KEY, '', IN_CHAT, depth, false, SYSTEM_ROLE);
+}
+
+function generationSuppressed(settings, args) {
+    const generationType = String(args?.[3] || '').toLowerCase();
+    const pluginOwnedQuiet = settings.__quiet_extraction_in_progress === true
+        || settings.__hierarchical_summary_in_progress === true;
+    const thirdPartyQuietInjection = settings.quiet_allow_third_party_injection === true && !pluginOwnedQuiet;
+    return {
+        generationType,
+        pluginOwnedQuiet,
+        suppressed: settings.enabled === false
+            || generationType === 'impersonate'
+            || (generationType === 'quiet' && !thirdPartyQuietInjection),
+    };
+}
+
 export async function runWithV55Consistency(ctx, innerInterceptor, args) {
     if (!ctx || typeof innerInterceptor !== 'function') return;
     const settings = ctx.extensionSettings?.[SETTINGS_KEY];
@@ -59,10 +68,15 @@ export async function runWithV55Consistency(ctx, innerInterceptor, args) {
 
     const realSetPrompt = typeof ctx.setExtensionPrompt === 'function' ? ctx.setExtensionPrompt.bind(ctx) : null;
     if (!realSetPrompt) return innerInterceptor(...args);
+
     const captured = new Map();
     ctx.setExtensionPrompt = (key, value, ...rest) => {
         if (key === REFERENCE_PROMPT_KEY || key === CURRENT_STATE_PROMPT_KEY) {
             captured.set(key, { key, value: String(value ?? ''), rest });
+            return;
+        }
+        if (key === SUMMARY_PROMPT_KEY) {
+            captured.set(key, { key, value: '', rest });
             return;
         }
         return realSetPrompt(key, value, ...rest);
@@ -73,44 +87,45 @@ export async function runWithV55Consistency(ctx, innerInterceptor, args) {
         ctx.setExtensionPrompt = realSetPrompt;
     }
 
-    const store = ctx.chatMetadata?.[METADATA_KEY];
-    if (!store || !captured.size) {
-        for (const row of captured.values()) realSetPrompt(row.key, row.value, ...row.rest);
-        return;
-    }
-    ensureChatSettingBinding(ctx);
-    // Provenance must observe the pre-stamp branch ownership first: stampRuntimeIdentity()
-    // unconditionally rewrites record.branch_id, so stabilizing afterwards would record the
-    // freshly derived branch as the origin and lose the first-observed origin (I07 defect).
-    stabilizeProvenanceStore(store, store.runtime_identity?.branch_id);
-    stampRuntimeIdentity(ctx);
-
     const reference = captured.get(REFERENCE_PROMPT_KEY) || { key: REFERENCE_PROMPT_KEY, value: '', rest: [] };
     const current = captured.get(CURRENT_STATE_PROMPT_KEY) || { key: CURRENT_STATE_PROMPT_KEY, value: '', rest: [] };
-    // Suppressed generations (plugin disabled / quiet / impersonate) must stay cleared. The
-    // legacy interceptor already emitted empty payloads; without this guard the scene-summary
-    // pass below would refill the Reference key (I07 defect).
-    const generationType = String(args?.[3] || '').toLowerCase();
-    const pluginOwnedQuiet = settings.__quiet_extraction_in_progress === true;
-    const thirdPartyQuietInjection = settings.quiet_allow_third_party_injection === true && !pluginOwnedQuiet;
-    const suppressed = settings.enabled === false
-        || generationType === 'impersonate'
-        || (generationType === 'quiet' && !thirdPartyQuietInjection);
-    if (suppressed) {
+    clearStandaloneSummary(realSetPrompt, settings);
+
+    const store = ctx.chatMetadata?.[METADATA_KEY];
+    if (!store) {
+        for (const row of [reference, current]) realSetPrompt(row.key, row.value, ...row.rest);
+        return;
+    }
+
+    const lifecycle = generationSuppressed(settings, args);
+    if (lifecycle.suppressed) {
         realSetPrompt(reference.key, '', ...reference.rest);
         realSetPrompt(current.key, '', ...current.rest);
         return;
     }
 
-    const scenes = buildSceneSummaries(store);
+    ensureChatSettingBinding(ctx);
+    stabilizeProvenanceStore(store, store.runtime_identity?.branch_id);
+    stampRuntimeIdentity(ctx);
+
+    const actor = deriveActorIdentity(ctx, store);
+    const visibleCanonical = filterPrivateKnowledge(reference.value, current.value, store, actor);
+    const sanitized = sanitizeStoreForActor(store, actor);
+    const scenes = buildSceneSummaries(sanitized.store);
     store.scene_summaries = scenes;
-    store.scene_summary_source = 'extraction-transactions-only';
+    store.scene_summary_source = 'visibility-filtered-extraction-transactions';
     const selectedScenes = selectSceneSummaries(scenes, latestQuery(args?.[0] || ctx.chat || []), { limit: 3 });
 
-    const visible = filterPrivateKnowledge(reference.value, current.value, store, actorIdentity(ctx, store));
-    const withScenes = injectSceneSummaryBlock(visible.referenceBlock, formatSceneSummaryBlock(selectedScenes));
-    const withEvidence = injectSceneEvidenceBlock(withScenes, collectSceneEvidence(store, selectedScenes, { maxChars: 1200 }));
-    const bounded = budgetPromptPair(withEvidence, visible.currentStateBlock, {
+    const hierarchicalBlock = getHierarchicalSummaryContext(ctx, { actor, store, maxChars: settings.summary_max_context_chars });
+    const summaryVisibility = store.hierarchical_summaries?.visibility_debug || {};
+    let referenceWithDerived = injectSceneSummaryBlock(visibleCanonical.referenceBlock, hierarchicalBlock);
+    referenceWithDerived = injectSceneSummaryBlock(referenceWithDerived, formatSceneSummaryBlock(selectedScenes));
+    referenceWithDerived = injectSceneEvidenceBlock(
+        referenceWithDerived,
+        collectSceneEvidence(sanitized.store, selectedScenes, { maxChars: 1200 }),
+    );
+
+    const bounded = budgetPromptPair(referenceWithDerived, visibleCanonical.currentStateBlock, {
         contextSize: args?.[1],
         replyReserve: settings.context_reply_reserve_tokens,
         maxReferenceChars: settings.reference_context_max_chars,
@@ -120,9 +135,14 @@ export async function runWithV55Consistency(ctx, innerInterceptor, args) {
     realSetPrompt(reference.key, bounded.referenceBlock, ...reference.rest);
     realSetPrompt(current.key, bounded.currentStateBlock, ...current.rest);
     store.v55_consistency = {
-        hidden_private_memory_ids: visible.hiddenMemoryIds,
+        hidden_private_memory_ids: visibleCanonical.hiddenMemoryIds,
+        hidden_extraction_source_keys: sanitized.hiddenSourceKeys,
+        hidden_extraction_operation_count: sanitized.hiddenOperationCount,
+        hidden_hierarchical_summary_ids: summaryVisibility.hidden_summary_ids || [],
         selected_scene_ids: selectedScenes.map(scene => scene.scene_id),
         scene_count: scenes.length,
+        generation_type: lifecycle.generationType || 'normal',
+        summary_in_reference_chars: hierarchicalBlock.length,
         ...bounded.diagnostics,
         at: Date.now(),
     };
