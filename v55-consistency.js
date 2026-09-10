@@ -23,6 +23,10 @@ import { persistChatStore } from './v55-derived-store.js';
 import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
 import { formatEvidenceBlock, resolveMemoryLookupRequests } from './v55-evidence.js';
+// A8 computed where the injected text actually exists. The published bundle is deleted a few lines
+// below, so an external reader can never measure what reached the prompt; the plugin has to measure
+// itself, at the one moment it can.
+import { buildCausalProbes, scoreCausalProbes } from './v55-quality-metrics.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -206,11 +210,28 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
     // guarantee, and this is what the S7 control experiment reads.
     const mandatory = getMandatoryMemories(store, 24);
     const currentStateText = String(visibleCanonical.currentStateBlock || '');
+    const injectedMandatoryIds = mandatory
+        .filter(memory => memory.text && currentStateText.includes(String(memory.text)))
+        .map(memory => memory.id);
+    // The deterministic half of A8, evaluated against the exact text that is about to be published.
+    // Bounded: at most 16 probes, and only the scores are kept, never the probe texts.
+    let causal = { total: 0, hit: null, rate: null };
+    try {
+        const probes = buildCausalProbes(store, { limit: 16 });
+        const injectedText = String(bounded.referenceBlock || '') + '\n\n' + currentStateText;
+        causal = scoreCausalProbes(store, probes, { scope: 'injected', injectedText, available: true });
+    } catch (error) {
+        causal = { total: 0, hit: null, rate: null, error: String(error?.message || error).slice(0, 120) };
+    }
     store.v55_consistency = {
         mandatory_memory_ids: mandatory.map(memory => memory.id),
-        injected_mandatory_ids: mandatory
-            .filter(memory => memory.text && currentStateText.includes(String(memory.text)))
-            .map(memory => memory.id),
+        injected_mandatory_ids: injectedMandatoryIds,
+        key_retention: {
+            total: mandatory.length,
+            kept: injectedMandatoryIds.length,
+            rate: mandatory.length ? injectedMandatoryIds.length / mandatory.length : 1,
+        },
+        causal_injected: { total: causal.total, hit: causal.hit, rate: causal.rate },
         hidden_private_memory_ids: visibleCanonical.hiddenMemoryIds,
         hidden_extraction_source_keys: sanitized.hiddenSourceKeys,
         hidden_extraction_operation_count: sanitized.hiddenOperationCount,
