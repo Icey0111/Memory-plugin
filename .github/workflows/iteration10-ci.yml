@@ -1,10 +1,11 @@
-name: Iteration 10-11 CI
+name: Iteration 10-12 CI
 
 on:
   push:
     branches:
       - v5.5-dev-iteration10
       - v5.5-dev-iteration11
+      - v5.5-dev-iteration12
   pull_request:
     branches:
       - main
