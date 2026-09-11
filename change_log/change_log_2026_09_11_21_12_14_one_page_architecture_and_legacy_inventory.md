@@ -167,3 +167,47 @@ One file could not be deleted: `remove/CENTRALIZED_MEMORY_PROPOSAL.md`. Its ACL 
 Not yet done: the change was verified by the test suite and by a live probe taken before the edit.
 Re-running the probe against the edited code requires reloading the extension in the live app, which
 is the next step rather than a completed one.
+
+---
+
+## Entry 4 - live verification of the unified keys
+
+- Date: 2026-09-11 21:42:00
+- Session: same conversation, continuing Entry 3.
+
+## Problem / Requirement
+
+Entry 3 closed with the change verified by the test suite and by a live probe taken *before* the
+edit. The edited modules had not been loaded by the running app.
+
+## Purpose of Change
+
+Confirm in the real TauriTavern session that the edited modules load and that both unified constant
+names resolve at runtime. Entry 3 is left untouched; this entry records what it left open.
+
+## How It Was Changed
+
+- The four edited modules were copied into the live extension folder, which is outside the workspace, so this step needed the wider sandbox mode.
+- The page was reloaded and the chat re-opened, then probed with `remove/.audit-v55/live-check/expr-spine-recheck.js`.
+- No project file changed in this entry.
+
+## Result
+
+Probed after reload on chat "Seraphina - 2026-09-11@20h22m03s183ms":
+
+| Reading | Before the edit | After the edit |
+|---|---|---|
+| `store.spine` is an own property of the live store | true | true |
+| spine nodes | 50 | 50 |
+| `spinePromptBlock` characters | 476 | 476 |
+| `DERIVED_KEYS.length` | 16 | 16 |
+| last `DERIVED_KEYS` entry resolves to | "spine" | "spine" |
+| `v55-summary-runtime.js` exports `SUMMARY_PROMPT_KEY` | no - it held a private `SUMMARY_KEY` | "aetheria_unified_memory_v5_5_hierarchical_summary" |
+
+The last row is the discriminator. The pre-edit module did not export that name at all, so the probe
+proves the edited module is the one the app loaded. Behaviour is otherwise identical, the derived
+backend is still hydrated, and the spine still reaches the prompt.
+
+The reload step itself reports `ok: false` with `Execution context was destroyed`. That is the
+expected artifact of `location.reload()` destroying the execution context mid-evaluation, not a
+failure: the fresh page and the successful character re-open confirm the reload happened.
