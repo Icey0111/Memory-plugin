@@ -1,6 +1,6 @@
 # Aetheria Unified Memory v5.5-dev — Semantic Baseline Index
 
-> **v5.5 development note (Iteration 08):** this source tree contains Commit A+B+C+D+E+F+G plus the Iteration 07 architecture closure and the Iteration 08 fixes. Plugin-owned settings can be imported, indexed, retrieved and maintained with per-entry vector diffs plus embedding-profile-safe staging/switch; role-private settings are filtered per character; scene summaries expand to bounded linked-event evidence. Main generation still uses the central Context Assembler and dual System prompts. Runtime namespace remains v5.4 intentionally until real SillyTavern acceptance completes. See `V55_ITERATION_07_REPORT.md` and the Iteration 08 change report.
+> **v5.5 development note (Iteration 08):** this source tree contains Commit A+B+C+D+E+F+G plus the Iteration 07 architecture closure and the Iteration 08 fixes. Plugin-owned settings can be imported, indexed, retrieved and maintained with per-entry vector diffs plus embedding-profile-safe staging/switch; role-private settings are filtered per character; scene summaries expand to bounded linked-event evidence. Main generation still uses the central Context Assembler and dual System prompts. Runtime namespace remains v5.4 intentionally until real SillyTavern acceptance completes. See `archive/V55_ITERATION_07_REPORT.md` and the Iteration 08 change report.
 
 
 v5.4 在 v5.3 **Autonomous Memory Plugin** 基础上新增一个独立的 **Persona / Character / World Info Semantic Baseline Index**，把“不要重复记住本来就在角色卡/世界书里的东西”从主要依赖提示词，升级成 **LLM 抽取 + 写入层硬过滤** 的双保险。
@@ -326,7 +326,7 @@ v5.4 会读取旧设置/metadata：
 - `aetheriaUnifiedMemoryV52`
 - `aetheriaUnifiedMemoryV51`
 
-旧 `<memory_ops>` 仍只作为迁移兼容层。详情见 `MIGRATION_V53_TO_V54.md`。
+旧 `<memory_ops>` 仍只作为迁移兼容层。详情见 `archive/MIGRATION_V53_TO_V54.md`。
 
 ## 安全边界
 
