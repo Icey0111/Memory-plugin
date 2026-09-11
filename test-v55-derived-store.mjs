@@ -3,6 +3,7 @@
 //   1. an unhydrated store looks exactly like an empty one, so writing it would erase the real record;
 //   2. derived keys are only stripped from chat_metadata after the external write succeeded.
 import assert from 'node:assert/strict';
+import { decodeRecordMap } from './memory-core.js';
 import { floorFoldStatus } from './v55-floor-fold.js';
 import { summaryTreeHistoryStatus } from './v55-summary-runtime.js';
 import {
@@ -84,8 +85,14 @@ assert.equal(serialised.cold_turns, undefined, 'the derived keys must not serial
 assert.equal(serialised.floor_folds, undefined);
 assert.equal(serialised.scene_summaries, undefined);
 assert.ok(serialised.derived_store && serialised.derived_store.backend === 'test-memory', 'a small pointer replaces them');
-assert.equal(serialised.memories.m1.text, 'fact', 'authoritative memory stays in the chat');
-assert.equal(serialised.extractions.x.source_key, 'x', 'transactions stay in the chat');
+// The two record maps are written column-encoded (one copy of each field name per map). What has to stay
+// in the chat is the DATA, and the decoder is the proof that it does. `normalizeStore` runs it, so this
+// assert is also the check that a chat written by this version loads with the records it wrote.
+assert.equal(serialised.memories.__columns, 1, 'memory records are written as columns');
+assert.equal(JSON.stringify(serialised.memories).includes('"text"'), true, 'the field name is written once, not once per record');
+const roundTripped = decodeRecordMap(serialised.memories);
+assert.equal(roundTripped.m1.text, 'fact', 'authoritative memory stays in the chat');
+assert.equal(decodeRecordMap(serialised.extractions).x.source_key, 'x', 'transactions stay in the chat');
 assert.equal(serialised.entity_registry.e1.entity_id, 'e1', 'the entity registry stays in the chat');
 assert.equal(Object.keys(liveStore).includes('toJSON'), false, 'the filter itself must not become chat data');
 const projected = serialised;

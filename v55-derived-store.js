@@ -17,7 +17,7 @@
 //      reachable the keys simply stay in the chat file, which is the previous behaviour.
 
 import { normalizeStore } from './memory-core.js';
-import { compactRecordMap } from './v55-store-compact.js';
+import { COMPACT_DROP_FIELDS, encodeRecordMap } from './v55-store-compact.js';
 import { SPINE_KEY } from './v55-spine.js';
 import { setExternallyOwnedKeys, setStoreSerializationFilter, writeMergedChatStore } from './v55-store-integrity.js';
 
@@ -304,8 +304,13 @@ export function installDerivedSerializationFilter(store, ctx = getContext()) {
                 // See v55-store-compact.js: the per-memory wrapper is mostly absent fields and per-record
                 // copies of the store's own identity. This is the only place a chat store is serialised, so
                 // it is the only place that has to know.
-                out.memories = compactRecordMap(out.memories, this.runtime_identity);
-                out.extractions = compactRecordMap(out.extractions, this.runtime_identity);
+                out.memories = encodeRecordMap(out.memories, this.runtime_identity, { drop: COMPACT_DROP_FIELDS.memories });
+                out.extractions = encodeRecordMap(out.extractions, this.runtime_identity, { drop: COMPACT_DROP_FIELDS.extractions });
+                // The canonical state summary is `buildCanonicalState` over `memories`, which this same file
+                // already carries in full - 14,571 bytes per 50 floors saying what the memory records say.
+                // It is rebuilt on load (index.js getStore). A state written by the LEGACY extractor carries a
+                // different source and is kept: that one is not derivable from anything here.
+                if (out.last_active_state_source === 'canonical-memory') delete out.last_active_state;
                 // Before hydration the chat file owns the derived keys, so it keeps them.
                 if (!ready) {
                     for (const key of DERIVED_KEYS) {

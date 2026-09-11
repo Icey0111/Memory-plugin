@@ -122,3 +122,94 @@ Follow-ups recorded but not taken here: (1) the remaining storage wrapper is dom
 names written once per record - 24,620 bytes of key overhead for 74 records - and removing that needs a
 columnar chat format, which was not taken in the same pass as a behaviour change; (2) `extractions` is now
 the largest single store key at 94,476 bytes and is kept whole because it is the replay source.
+## Second change: the record wrapper, the extraction log, and a scoring defect
+
+- Date: 2026-09-12 02:26:16
+
+### Problem / Requirement
+
+The previous entry left three items on the table in size order: the repeated key names inside the memory
+records (24,620 bytes), the `extractions` log (then the largest single store key at 94,476 bytes, 47% of
+the store), and a scoring defect found while building the projection.
+
+### Purpose of Change
+
+Take the two storage items that can be taken without giving up replay or memory content, and fix the
+scoring defect properly instead of hiding it in the storage layer.
+
+### How It Was Changed
+
+#### 1. The scoring defect, fixed rather than hidden
+
+`fuseHybridCandidates` computed `Number(memory.last_recalled_message)` and applied a recall cooldown
+whenever the result was finite. `Number(null)` is 0 and finite, so a memory that had NEVER been recalled
+was treated as recalled at message 0 and penalised hardest exactly when the chat was short enough for that
+stamp to fall inside the window. The previous entry excluded the field from the storage projection so the
+bug could not be resolved by accident; this entry fixes the guard itself.
+
+- [memory-core.js L1150-L1160](file:///D:/memory_plugin/memory-core.js#L1150-L1160) - the cooldown requires a positive stamp, which is what it always meant.
+- [test-v55-recall-cooldown.mjs L1-L35](file:///D:/memory_plugin/test-v55-recall-cooldown.mjs#L1-L35) (new) - null, absent and zero now score identically, and a memory
+  recalled on the previous turn is still cooled down.
+- [v55-store-compact.js L14-L22](file:///D:/memory_plugin/v55-store-compact.js#L14-L22) and [test-v55-store-compact.mjs L20-L22](file:///D:/memory_plugin/test-v55-store-compact.mjs#L20-L22) - the exemption is removed, because
+  the value no longer means two different things.
+
+#### 2. Fields with no reader, and caches that are recomputed
+
+- [v55-store-compact.js L24-L37](file:///D:/memory_plugin/v55-store-compact.js#L24-L37) - `prompt_plan`, `setting_index_fingerprint`, `generation_mode` and
+  `user_index_at_creation` are written in one place and read nowhere; `entity_ids` is a cache of the entity
+  registry that `stampRuntimeIdentity` recomputes deterministically every generation. `known_by_ids` is
+  deliberately excluded: two visibility checks read it, and a missing value there would make a private
+  memory look public if the check ran before the next stamp.
+
+#### 3. One column per field instead of one key per field per record
+
+After the removals, what was left of the memory wrapper was almost entirely repeated key names. The record
+maps are now written column-encoded: the field names once, the values in rows.
+
+- [memory-core.js L201-L235](file:///D:/memory_plugin/memory-core.js#L201-L235) - the codec's shape and `decodeRecordMap`. It lives HERE, next to the record
+  definition, because decoding has to happen inside `normalizeStore` and this module deliberately depends on
+  nothing but the deterministic spine (an invariant `test-v55-drift-switches.mjs` pins - the first attempt put
+  the decoder in the projection module and that test caught it).
+- [memory-core.js L275-L279](file:///D:/memory_plugin/memory-core.js#L275-L279) - `normalizeStore` decodes both record maps, so every reader in the codebase
+  keeps seeing the plain object map it always saw.
+- [v55-store-compact.js L66-L96](file:///D:/memory_plugin/v55-store-compact.js#L66-L96) - `encodeRecordMap` writes the same shape from the projection rules.
+- [v55-derived-store.js L300-L312](file:///D:/memory_plugin/v55-derived-store.js#L300-L312) - `toJSON` writes columns; the state summary is dropped whenever it IS the
+  canonical form (`last_active_state_source === 'canonical-memory'`), which is the 14,571-byte copy that
+  restates the memory records.
+- [index.js L507-L520](file:///D:/memory_plugin/index.js#L507-L520) - `getStore` rebuilds that summary from `memories` when it is missing, at the one
+  point every reader obtains a store from.
+
+### Result
+
+Live acceptance chat, same chat, measured after a page reload with no manual override:
+
+| | before this entry | after |
+|---|---|---|
+| plugin store bytes (76 memories) | 199,492 (at 74 memories) | **154,949** |
+| memory records | 1,140 bytes per record | **533 (-53%)** |
+| extraction records | 3,652 bytes per record | 3,047 (-17%) |
+| chat file | 495,694 | 463,482 |
+| injection | 7,885 tokens | **8,044** (the chat grew by two turns and two memories) |
+| certificate | state 10/10, stale 0, commitment 23/23, causal 3/3, T-Causal 12/14 | state **12/12**, stale 0, commitment 23/23, causal 3/3, T-Causal **14/16**, violations 0 |
+
+Verified end to end again: a real generation turn on the live chat after the format change (reply 462
+characters, extraction 65 seconds, memories 74 -> 76, extractions 27 -> 28, spine 83 -> 85, `save: ok`,
+transcript 27 user turns / 27 replies / `healthy: true`), then the page was reloaded from the
+column-encoded chat file and the store came back whole (76 memories, same injection, state 12/12).
+
+Offline suite: **77/77 in 19.8s** (76 before; one new file).
+
+### What is still not taken, with the arithmetic
+
+Cumulative reduction from the original measurement: the store went 218,279 -> 154,949 bytes for the same
+chat, about -29%; the memory records themselves are the smallest they have been at 533 bytes each. A
+halving remains out of reach without losing a capability, and this is the honest breakdown of what is
+left in the 154,949 bytes:
+
+| key | bytes | why it stays |
+|---|---|---|
+| `extractions` | 85,325 | `operations` is read by the privacy filter that hides secret floors from the prompt, so it cannot be aged out without redesigning that path |
+| `memories` (76) | 40,523 | of which the memory text is ~14,000 bytes; the rest is ~500 bytes of per-record provenance (ids, turn indexes, hashes, dates) that replay and the causal chain need |
+| `hierarchical_summaries` | 17,222 | the only narrative carrier for folded floors - the raw prompt holds 402 tokens of transcript |
+| `entity_registry` | 7,101 | losing it fragments entity identity for every later mention |
+| the rest | ~4,800 | baseline, slots, source fingerprints |

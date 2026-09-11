@@ -77,7 +77,7 @@ import {
     settingChunksToBaselineRecords,
 } from './setting-retriever.js';
 import { assembleGenerationContext } from './context-assembler.js';
-import { deriveActorIdentity, orderCanonicalMemories } from './v55-runtime.js';
+import { buildCanonicalState, deriveActorIdentity, orderCanonicalMemories } from './v55-runtime.js';
 import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
 import { writeMergedChatStore } from './v55-store-integrity.js';
 import { awaitDerivedReady, ensureDerivedHydrated, installV55DerivedStore, persistChatStore, resetDerivedHydration } from './v55-derived-store.js';
@@ -508,6 +508,13 @@ function getStore(ctx) {
     const legacySource = LEGACY_METADATA_KEYS.map(key => ctx.chatMetadata?.[key]).find(value => value && typeof value === 'object');
     const source = ctx.chatMetadata?.[METADATA_KEY] ?? legacySource;
     const normalized = normalizeStore(source);
+    // The canonical state summary is not persisted: it is `buildCanonicalState` over `memories`, which the
+    // same chat file already carries in full (see v55-store-compact.js). Rebuild it here - at the single
+    // point every reader obtains a store from - so no reader can observe the difference. A summary whose
+    // source is not 'canonical-memory' came from the legacy extractor and is left exactly as loaded.
+    if (normalized.last_active_state_source === 'canonical-memory' && !String(normalized.last_active_state || '').trim()) {
+        normalized.last_active_state = buildCanonicalState(normalized);
+    }
     if (!ctx.chatMetadata) return normalized;
     return persistStore(ctx, normalized, false);
 }

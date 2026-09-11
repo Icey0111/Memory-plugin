@@ -94,3 +94,69 @@ parts of it carried no information at all and were removed at serialisation:
 4. **This is one chat, one character, one run.** The token numbers are from a single 25-user-turn chat and
    the storage numbers from a single 74-memory store. The certificate is judged over the store, so a store
    with fewer recorded facts asks fewer questions.
+<!-- VERSION 2 -->
+## v2 - 2026-09-12 02:26:16 - the column format, the write-only fields, and the recall-cooldown defect
+
+v1 measured the two costs, removed the double rendering of the state (-18.7% per turn) and the empty part of
+the memory wrapper, and left three things on the table: the repeated key names, the `extractions` log, and a
+scoring defect it refused to hide. This version takes the first, explains why the second stays, and fixes the
+third at its source.
+
+### Per-turn injection
+
+Unchanged by this version, as intended: removing storage wrapper must not move what the model sees. The chat
+has since grown by two verification turns, so the live figures are 8,044 tokens over 76 memories against
+7,731 over 72 - the same configuration, a larger store, a clean certificate (state 12/12, stale 0,
+commitment 23/23, causal 3/3, T-Causal 14/16, violations 0).
+
+### Stored bytes
+
+| key | v1 measurement (74 records) | v2 measurement (76 records) |
+|---|---|---|
+| `extractions` | 94,476 (at 26) | 85,325 (at 28) |
+| `memories` | 62,385 | 40,523 |
+| `hierarchical_summaries` | 16,588 | 17,222 |
+| `last_active_state` | 14,571 | not written |
+| `entity_registry` | 6,943 | 7,101 |
+| **store total** | **199,492** | **154,949** |
+| chat file | 495,694 | 463,482 |
+
+Per record: 1,140 -> 533 bytes for a memory (**-53%**), 3,652 -> 3,047 bytes for an extraction (-17%).
+Against the first measurement of this chat (218,279 bytes at 72 memories) the store is about 29% smaller.
+
+Three changes produced that:
+
+1. **Columns.** After v1's removals, the memory wrapper was almost entirely repeated key names - 74 records
+   spending 24,620 bytes writing the same 28 field names 74 times. Both record maps are now written with one
+   column per field. `decodeRecordMap` lives in `memory-core.js`, next to the record definition, because
+   decoding has to happen inside `normalizeStore` and that module is pinned to one dependency by
+   `test-v55-drift-switches.mjs`.
+2. **Fields nothing reads.** `prompt_plan`, `setting_index_fingerprint`, `generation_mode` and
+   `user_index_at_creation` were written in one place and read nowhere. `entity_ids` is a cache that
+   `stampRuntimeIdentity` recomputes deterministically. `known_by_ids` is NOT removed: two visibility checks
+   read it, and a missing value there would make a private memory look public if the check ran before the
+   next stamp.
+3. **The canonical state summary is not persisted.** It is `buildCanonicalState` over `memories` - the same
+   file already carries those records in full - and `getStore` rebuilds it on load. It is dropped only when
+   it IS that canonical form; a state written by the legacy extractor carries a different source and is kept.
+
+### The cooldown defect, now fixed
+
+v1 recorded it and refused to resolve it by removing the key. `fuseHybridCandidates` read
+`Number(memory.last_recalled_message)` and applied a cooldown whenever the result was finite; `Number(null)`
+is 0 and finite, so a memory that had NEVER been recalled was treated as recalled at message 0 and penalised
+hardest exactly when the chat was short enough for that stamp to fall inside the window. The guard now
+requires a positive stamp. `test-v55-recall-cooldown.mjs` pins null, absent and zero to the same score, and a
+memory recalled on the previous turn to a lower one.
+
+### What is still not taken, with the arithmetic
+
+A halving of the store is not reachable without giving up a capability. Of the remaining 154,949 bytes:
+`extractions` is 85,325 and its `operations` array is read by the privacy filter that hides secret floors
+from the prompt, so it cannot be aged out without redesigning that path; `memories` is 40,523 of which the
+text is about 14,000 and the rest is per-record provenance that replay and the causal chain need;
+`hierarchical_summaries` is 17,222 and is the only narrative carrier for folded floors; `entity_registry` is
+7,101 and losing it fragments entity identity. Reported rather than promised: the honest target here was
+the wrapper, and the wrapper is what was taken.
+
+Limits unchanged from v1: one chat, one character, one run.

@@ -198,6 +198,40 @@ export function extractSummarySections(text) {
     };
 }
 
+/**
+ * The compact record-map encoding used in the chat file, and its decoder.
+ *
+ * The chat file writes one column per field instead of one key per field per record: the repeated key
+ * names were 24,620 bytes of a 74-record store, more than the memory text they wrapped. The shape lives
+ * HERE, next to the record definition, because decoding has to happen inside `normalizeStore` - the one
+ * function every reader obtains a store through - and this module deliberately depends on nothing but
+ * the deterministic spine. `v55-store-compact.js` imports these constants to build the same shape.
+ */
+export const STORE_COLUMNS_VERSION = 1;
+export const STORE_COLUMNS_MARKER = '__columns';
+
+export function decodeRecordMap(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    if (value[STORE_COLUMNS_MARKER] === undefined) return value;
+    const keys = Array.isArray(value.keys) ? value.keys : [];
+    const fields = Array.isArray(value.fields) ? value.fields : [];
+    const rows = Array.isArray(value.rows) ? value.rows : [];
+    const out = {};
+    for (let i = 0; i < keys.length; i += 1) {
+        const row = Array.isArray(rows[i]) ? rows[i] : [];
+        const record = {};
+        for (let j = 0; j < fields.length; j += 1) {
+            const cell = row[j];
+            // An empty cell is how the encoder writes every value no reader can tell apart from an
+            // absent one: null, undefined, '' , false and []. A 0 survives as 0.
+            if (cell === null || cell === undefined) continue;
+            record[fields[j]] = cell;
+        }
+        out[keys[i]] = record;
+    }
+    return out;
+}
+
 export function createEmptyStore() {
     return {
         version: MEMORY_VERSION,
@@ -247,10 +281,13 @@ export function normalizeStore(store) {
     const base = createEmptyStore();
     if (!store || typeof store !== 'object') return base;
     const out = { ...base, ...store };
-    out.memories = store.memories && typeof store.memories === 'object' && !Array.isArray(store.memories) ? store.memories : {};
+    // The chat file stores these two maps column-encoded - one copy of each field name per map instead of
+    // one per record (see v55-store-compact.js). Decoding at the single normalisation point is what keeps
+    // every reader in the codebase seeing the plain object map it has always seen.
+    out.memories = decodeRecordMap(store.memories);
     out.slots = store.slots && typeof store.slots === 'object' && !Array.isArray(store.slots) ? store.slots : {};
     out.source_fingerprints = Array.isArray(store.source_fingerprints) ? store.source_fingerprints : [];
-    out.extractions = store.extractions && typeof store.extractions === 'object' && !Array.isArray(store.extractions) ? store.extractions : {};
+    out.extractions = decodeRecordMap(store.extractions);
     out.last_event_summary = typeof store.last_event_summary === 'string' ? store.last_event_summary : '';
     out.last_extraction_debug = store.last_extraction_debug && typeof store.last_extraction_debug === 'object' ? store.last_extraction_debug : null;
     out.last_errors = Array.isArray(store.last_errors) ? store.last_errors : [];
@@ -1113,8 +1150,12 @@ export function fuseHybridCandidates(storeInput, denseLists, lexicalList, option
             row.score *= 0.82;
             row.evidencePenalty = 0.82;
         }
+        // Never-recalled and recalled-at-message-0 are not the same thing, and `Number(null)` is 0 - so the
+        // old guard treated a memory that had never been recalled as recalled at the very start of the chat
+        // and penalised it hardest exactly when the chat was short enough for that stamp to fall inside the
+        // cooldown window. Requiring a positive value is what the cooldown always meant.
         const last = Number(row.memory.last_recalled_message);
-        if (cooldownTurns > 0 && Number.isFinite(last) && currentMessage > last) {
+        if (cooldownTurns > 0 && Number.isFinite(last) && last > 0 && currentMessage > last) {
             const age = currentMessage - last;
             if (age <= cooldownTurns) {
                 const penalty = 0.42 + 0.58 * (age / (cooldownTurns + 1));
