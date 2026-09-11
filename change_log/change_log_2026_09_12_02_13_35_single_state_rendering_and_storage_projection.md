@@ -448,3 +448,48 @@ is still retrievable and the path is complete* - which has never been checked, b
 
 Nothing was measured in this entry. The four hypotheses and the LongMemEval acceptance table are stated in
 the document and are not yet run.
+
+## Eighth change: the plan after the compression discussion
+
+### Problem / Requirement
+
+The user asked what the whole project should do next, now that the compression discussion has been
+folded in — not another measurement, a plan.
+
+### Purpose of Change
+
+Turn the converged thesis plus the compression findings into a sequenced plan, and state explicitly what
+is *not* being built, so the answer to "what do we do" also answers "what do we stop paying for".
+
+### How It Was Changed
+
+- [dev_docs/22_plan_after_compression.md](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md) (new) - the ruler (W0), measurement
+  before building (Phase A), the last hop (Phase B), the gist layer (Phase C), deferred enhancements
+  (Phase D), external validation (Phase E), the stop-doing list, and acceptance criteria.
+- [dev_docs/header.md L53](file:///D:/memory_plugin/dev_docs/header.md#L53) - registered in the index.
+- No code changed.
+
+### Result
+
+Three things the compression discussion changed about **what to build**, and they are the whole reason
+this plan is not a re-run of `19`:
+
+**1. Compression and summarization are different operations.** DeepSeek-OCR reaches 96% recovery at 10× by
+*re-encoding*, not by summarizing, so there are several compression–fidelity curves rather than one. The
+lesson that transfers is the **paired metric** — compression ratio against decodability — and **both halves
+are already measured here** (2.25 / 1.09 / 0.71 / 0.52 / 0.41 at 10/20/30/40/50 floors; `key_retention
+23/23 = 1.00`) and have never been plotted together. That plot is W0, and it costs nothing.
+
+**2. The original is stored for free in this scenario.** SillyTavern keeps `ctx.chat` and folding only
+excludes rows from the prompt, so the scarce resource is **injected tokens, not storage**. The
+compression-rate knob therefore applies to the **gist layer alone**. This is what finally makes C1 of the
+thesis cheap to fix: the batch row does not have to carry detail, because retrieval carries detail.
+
+**3. The verbatim layer never needed compressing.** Which is why the broken vector collection is demoted
+from prerequisite to enhancement. Everything in Phases W0, A and C is measurable or buildable with **zero
+additional model calls**; only Phases D and E have a bill, and both are deferrable.
+
+The stop-doing list is the other half of the answer: no model judge holding the veto, no L2/L3 narrative
+merge, no model-written batch narrative, no ported retrieval pipeline, and no per-turn model call. The
+first four are the declined plan's expensive items; the fifth is a standing constraint because every call
+is billed to the user.

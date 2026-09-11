@@ -50,6 +50,7 @@ Files are numbered so their reading order is explicit:
 | `19_next_steps.md` | The narrative layer contract: what this project should take from the reference implementation, what it must not, and the sequenced plan. **Declined at v2** - see the repair-versus-architecture split |
 | `20_narrative_coverage.md` | Level-1 batch sealing: how narrative coverage stopped being O(window), the 445 raw floors it prevents at 500, and what it costs |
 | `21_memory_thesis.md` | The converged thesis scoped to this plugin: retrieval is memory, the summary is a five-dimension situation model, the index is already half-extracted, and the two defects that exposes in what shipped |
+| `22_plan_after_compression.md` | The plan after the compression discussion: the ruler first, measurement before building, the last hop, the gist row, the stop-doing list, and the acceptance criteria |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.
