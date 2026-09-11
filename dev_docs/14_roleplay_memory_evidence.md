@@ -1,0 +1,40 @@
+# Roleplay Memory & Long-Term Consistency: Evidence Review
+
+## Findings
+1. **Front-ends implement prompt engineering, not durable world state.** Mechanisms are conditional text injection (keyword "lorebooks", AI Dungeon Plot Essentials), one rolling LLM summary, and optional embedding retrieval. None keeps a mutable, contradiction-checked world model; all are bounded by a per-call token budget.
+2. **Every mechanism is lossy by construction.** World Info entries are dropped once its budget is exhausted; summaries are LLM output the official docs warn "may lose some important details or contain hallucinations."
+3. **Length alone degrades reliability:** information use is position-dependent (U-shaped), and non-literal retrieval collapses at 32K even in models claiming 128K–1M.
+4. **Persona fidelity is measurably fragile over long dialogues** (100+ turns), fading toward non-persona baselines; in 3,746–9,716-turn agentic sessions drift is general across 23 frontier models and compaction does not reliably reset it.
+5. **Roleplay benchmarks score single-response character quality, not multi-session continuity.** Forgotten promises/commitments as a roleplay metric is **unmeasured**.
+
+## Claim | Evidence | Source
+| Claim | Evidence (type) | Source |
+|---|---|---|
+| World Info = key→value entries; keyword match over **scan depth in messages** (0 = recursed/AN only, 1 = last message); regex keys; AND ANY/ALL; 1 point per key match | Official docs | [worldinfo](https://docs.sillytavern.app/usage/worldinfo/) |
+| Insertion: before/after char def, top/bottom of Author's Note, or `@ Depth d` as system/user/assistant; budget = **Context % of model max or absolute token Budget**; when exhausted entries stop; constants first, then order; direct-key beats recursion | Official docs | [worldinfo](https://docs.sillytavern.app/usage/worldinfo/) |
+| Schedules: **sticky N messages**, **cooldown N**, **delay ≥N**, **probability 0–100%**, weighted inclusion groups | Official docs | [worldinfo](https://docs.sillytavern.app/usage/worldinfo/) |
+| Author's Note = user text at **depth d** (0 = end, 4 = 4th-from-end) or after Scenario, at **insertion frequency** (1 = every turn, 4 = every 4th); static, not extracted | Official docs | [author's-note](https://docs.sillytavern.app/usage/core-concepts/authors-note/) |
+| Vector storage: Vectra JSON index per document in `/vectors`; **chunk 400 chars** default, overlap %, retrieve-N, **score threshold 0.2–0.5**, Query messages, injection template/position | Official docs | [data-bank](https://docs.sillytavern.app/usage/core-concepts/data-bank/) |
+| Chat vectorization: embeds every message, **query = last 2 messages**, shuffles matches to prompt start/end; docs warn it "does not guarantee ... improved memory" and breaks caching | Official docs | [chat-vectorization](https://docs.sillytavern.app/extensions/chat-vectorization/) |
+| Summarize: stored in chat-file metadata on the last in-context message; **update every X messages**; injected via `{{summary}}`; buffer = context − prompt − prior summary − response | Official docs | [summarize](https://docs.sillytavern.app/extensions/summarize/) |
+| Character.AI "chat memories" = **400-char user box**; pinned + auto-memories (c.ai+); 2026 Story Memory/Facts auto-captured per Persona/Character/side-character, background "tidying", pins protected; use not guaranteed | Marketing/product blog (design claim) | [c.ai](https://blog.character.ai/helping-characters-remember-what-matters-most/) · [c.ai](https://blog.character.ai/memory/) |
+| AI Dungeon: Plot Essentials always in context; Memory System = Auto Summarization + Memory Bank (embeddings); FAQ attributes "forgetting" to oldest text being dropped | Official docs (platform claim) | [aidungeon](https://help.aidungeon.com/faq/the-memory-system) · [aidungeon](https://help.aidungeon.com/faq/why-does-the-ai-forget-or-mix-things-up) |
+| Performance is position-dependent (highest at start/end, degrades mid-context); 32K+ models lose accuracy with length; at 32K, 11/13 fall below 50% of short baseline; length alone degrades 18 models on simple tasks | Peer-reviewed + preprints + vendor report | [Lost in Middle](https://aclanthology.org/2024.tacl-1.9/) · [RULER](https://arxiv.org/abs/2404.06654) · [NoLiMa](https://arxiv.org/abs/2502.05167) · [Context Rot](https://www.trychroma.com/research/context-rot) |
+| Persona fidelity degrades over 100+ round dialogues (trade-off with instruction-following); drift across 23 models over 3,746–9,716 turns, not reset by compaction; multi-turn drops 39% and wrong early turns are not recovered | Measured preprints | [Persistent Personas?](https://arxiv.org/abs/2512.12775) · [ContextEcho](https://arxiv.org/abs/2605.24279) · [LLMs Get Lost](https://arxiv.org/abs/2505.06120) |
+| Long-narrative consistency errors concentrate in **factual and temporal** dimensions, peak mid-narrative (5 categories/19 subtypes); point-in-time character hallucination measurable (10,895 instances); inducible via role-query conflict | Measured preprints | [Lost in Stories](https://arxiv.org/abs/2603.05890) · [TimeChara](https://arxiv.org/abs/2405.18027) · [RoleBreak](https://arxiv.org/abs/2409.16727) |
+| CharacterEval = 13 metrics/4 dims: conversational ability; character consistency (knowledge exposure/accuracy/hallucination, persona behaviour/utterance); attractiveness; MBTI back-testing | Peer-reviewed | [CharacterEval](https://aclanthology.org/2024.acl-long.638/) |
+| RoleEval = role-knowledge MC; CharacterBench = 11 dims/3,956 characters; InCharacter = 14 psych scales, ≤80.7% alignment; PersonaGym = PersonaScore/200 personas; RPBench-Auto = GPT-4o-judged A/B, 5–10 turns | Papers + vendor benchmark | [RoleEval](https://arxiv.org/abs/2312.16132) · [CharacterBench](https://arxiv.org/abs/2412.11912) · [InCharacter](https://aclanthology.org/2024.acl-long.102/) · [PersonaGym](https://arxiv.org/abs/2407.18416) · [RPBench-Auto](https://www.boson.ai/blog/rpbench-blog) |
+| Community RP-Bench taxonomy: F1 agency violation, F2 POV/tense, F3 lore contradiction, F4 long-range consistency; reports 64% judge flips and ρ = −0.43 vs community ELO | Community repo (not peer-reviewed) | [RP-Bench](https://github.com/LeviTheWeasel/rp-benchmark) |
+| LoCoMo = 300-turn/35-session dialogues scored on QA (F1), summarization (ROUGE), multimodal generation; LongMemEval = 500 questions over 5 abilities (extraction, multi-session, temporal, knowledge updates, abstention), ~30% drop | Peer-reviewed benchmarks | [LoCoMo](https://arxiv.org/abs/2402.17753) · [LongMemEval](https://arxiv.org/abs/2410.10813) |
+
+### Where sources disagree
+- **Marketing vs docs:** Character.AI frames memory as substantially improved; SillyTavern's docs say vectorization "does not guarantee a better chatting experience or improved memory of any sort."
+- **Judge validity:** CharacterBench claims LLM judges beat GPT-4; RP-Bench finds judge rankings negatively correlated with community preference (ρ = −0.43, 64% flips). Do not average these.
+- **Whether long context suffices:** LoCoMo concludes long-context LLMs still lag humans; LongMemEval shows memory-equipped assistants drop ~30%.
+
+## What this does NOT establish
+- **Not measured:** a dedicated roleplay metric for forgotten commitments/promises, or for lore-contradiction rate vs transcript length in roleplay (as opposed to generic narrative).
+- **Not measured:** the causal effect of any specific SillyTavern feature (sticky/cooldown, score threshold, chunk size) on consistency. Defaults are documented; effect sizes are not.
+- **Not established:** that these mechanisms beat a stronger base model at equal token budget — no head-to-head study found.
+- **Talkie and similar apps:** mechanism docs inaccessible (403); internal design **unmeasured** — do not infer from marketing.
+- **Provenance:** these 2025–26 papers are recent, not all peer-reviewed; Chroma is a RAG vendor; RP-Bench is community-run.

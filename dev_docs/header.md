@@ -42,6 +42,7 @@ Files are numbered so their reading order is explicit:
 | `11_human_memory_analogy_evidence.md` | Evidence review of human-memory analogies for agent memory, including the dissent |
 | `12_long_context_evidence.md` | Long-context benchmarks and what they do not measure |
 | `13_agent_memory_systems_evidence.md` | How production and research agent-memory systems store, retrieve and supersede |
+| `14_roleplay_memory_evidence.md` | What roleplay front-ends actually implement, roleplay benchmarks, and the metrics nobody has measured |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.
