@@ -147,6 +147,14 @@ export function buildCausalProbes(store, { limit = 60 } = {}) {
 /**
  * The text a reader gets. 'canonical' is everything the memory system owns (including superseded
  * values, which is where the change chain lives). 'injected' is only what reached the prompt.
+ *
+ * READ THE TWO SCORES WITH THE RIGHT DENOMINATOR, or `causal_injected` will be misread as a failure.
+ * It is scored against every slot the store owns, while a turn only ever injects the mandatory set
+ * plus a retrieval-selected subset. Measured live at 20 floors: 81 memories, 6 mandatory, ~12 active,
+ * and a score of 0.50. That 0.50 is INJECTION COVERAGE - how much of memory is in the prompt - not a
+ * correctness failure. The guarantee is `key_retention` (the irreversible set), which was 1.00 on
+ * every one of 20 sampled turns. Do not "fix" a low causal_injected by injecting more memory; that is
+ * a budget decision (plan section 3 A5), not a bug.
  */
 export function buildMemoryCorpus(store, { scope = 'canonical', injectedText = '' } = {}) {
     if (scope === 'injected') return collapse(injectedText);
@@ -156,6 +164,10 @@ export function buildMemoryCorpus(store, { scope = 'canonical', injectedText = '
     return collapse(memoryTexts.join('\n'));
 }
 
+/**
+ * Scores probes against a corpus. For scope 'injected' the rate is coverage over the whole store, not
+ * over what the turn was supposed to carry — see the note on buildMemoryCorpus.
+ */
 export function scoreCausalProbes(store, probes, { scope = 'canonical', injectedText = '', available = null } = {}) {
     const list = Array.isArray(probes) ? probes : [];
     // Same rule as key retention: an empty injected view usually means "the block could not be read

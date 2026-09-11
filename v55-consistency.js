@@ -231,7 +231,10 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
             kept: injectedMandatoryIds.length,
             rate: mandatory.length ? injectedMandatoryIds.length / mandatory.length : 1,
         },
-        causal_injected: { total: causal.total, hit: causal.hit, rate: causal.rate },
+        // Injection coverage over every slot the store owns, NOT a correctness guarantee: a turn only
+        // injects the mandatory set plus a retrieval-selected subset, so this number is structurally
+        // well below 1 on a long chat and is an A5 budget input. The guarantee is key_retention above.
+        injection_coverage: { total: causal.total, hit: causal.hit, rate: causal.rate },
         hidden_private_memory_ids: visibleCanonical.hiddenMemoryIds,
         hidden_extraction_source_keys: sanitized.hiddenSourceKeys,
         hidden_extraction_operation_count: sanitized.hiddenOperationCount,
