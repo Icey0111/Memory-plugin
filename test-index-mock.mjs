@@ -3,10 +3,17 @@ import { createEmptyStore } from './memory-core.js';
 
 const prompts = [];
 const store = createEmptyStore();
+// `last_active_state` is the stored canonical summary. It must NOT be what the prompt is built from:
+// the prompt carries the memories themselves, once, through the grouped rows.
 store.last_active_state = '【当前有效状态】平成在东街，当前仍在等璃月回复。';
 store.memories.m1 = {
   id:'m1', kind:'commitment', slot:'平成.commitment.reply', text:'平成仍在等待璃月对合作提案的回复。',
   entities:['平成','璃月'], topics:['合作','等待回复'], status:'active', importance:'high', epistemic:'fact', known_by:['平成'],
+  indexable:false, source_message:2, vector_hash:null,
+};
+store.memories.m2 = {
+  id:'m2', kind:'state', slot:'平成.location.current', text:'平成在东街的茶摊前。',
+  entities:['平成'], status:'active', importance:'medium', epistemic:'fact',
   indexable:false, source_message:2, vector_hash:null,
 };
 
@@ -52,8 +59,9 @@ assert.ok(current,'current-state prompt must be set');
 assert.equal(reference[3],4);
 assert.equal(current[3],1);
 assert.match(current[1],/PLUGIN CURRENT STATE/);
-assert.match(current[1],/平成在东街/);
+assert.match(current[1],/平成在东街/,'a live location reaches the prompt as a row');
 assert.match(current[1],/等待璃月/);
+assert.doesNotMatch(current[1],/State summary:/,'the stored summary must not be rendered on top of the rows');
 assert.doesNotMatch(reference[1],/平成在东街/,'current state must not leak into reference prompt');
 
 const diag=mod.__testGetLastGenerationContextDiagnostics();

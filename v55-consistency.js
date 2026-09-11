@@ -12,7 +12,6 @@ import {
     buildSceneSummaries,
     collectSceneEvidence,
     filterPrivateKnowledge,
-    formatSceneSummaryBlock,
     injectSceneEvidenceBlock,
     injectSceneSummaryBlock,
     selectSceneSummaries,
@@ -23,6 +22,7 @@ import { persistChatStore } from './v55-derived-store.js';
 import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth, SUMMARY_PROMPT_KEY } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
 import { formatEvidenceBlock, resolveMemoryLookupRequests } from './v55-evidence.js';
+import { REFERENCE_HEADER_CHARS } from './context-assembler.js';
 // A8 computed where the injected text actually exists. The published bundle is deleted a few lines
 // below, so an external reader can never measure what reached the prompt; the plugin has to measure
 // itself, at the one moment it can.
@@ -172,7 +172,20 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
     store.scene_summary_source = 'visibility-filtered-extraction-transactions';
     const selectedScenes = selectSceneSummaries(scenes, latestQuery(args?.[0] || ctx.chat || []), { limit: 3 });
 
-    const hierarchicalBlock = getHierarchicalSummaryContext(ctx, { actor, store, maxChars: settings.summary_max_context_chars });
+    // The layered summary rides inside the reference block, so the reference cap truncates it - and
+    // `truncate` keeps the head, which is the OLDEST narration. On the 50-floor acceptance chat the tree
+    // was 3,697 characters against roughly 3,500 of room, so the newest floors were being cut mid-
+    // sentence while the oldest were kept. Handing the summary a share of the reference cap lets its own
+    // formatter trim instead, and that one keeps the tail: the same characters, the recent end of them.
+    // The share is large because the summary is the only carrier left for folded floors (the raw prompt
+    // holds 402 tokens of transcript), while the recalled-memory rows below it restate memories the
+    // current-state block now renders in full.
+    const referenceRoom = Math.max(0, Number(settings.reference_context_max_chars) || 0);
+    const summaryMaxChars = Math.min(
+        Math.max(0, Number(settings.summary_max_context_chars) || 0),
+        Math.max(600, referenceRoom - REFERENCE_HEADER_CHARS),
+    );
+    const hierarchicalBlock = getHierarchicalSummaryContext(ctx, { actor, store, maxChars: summaryMaxChars });
     const summaryVisibility = store.hierarchical_summaries?.visibility_debug || {};
     // On-demand backlink: if the previous assistant turn emitted a 【查阅记忆】 block, resolve it
     // against the live chat first and the cold snapshot second, and add bounded原文 evidence.
@@ -185,8 +198,14 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
         });
         return formatEvidenceBlock(resolved.entries, { maxChars: settings.memory_evidence_max_chars });
     })();
+    // The scene-locator block is deliberately NOT injected. It calls itself "derived, rebuildable, not a
+    // source of new facts" and exists to point at history, but 66% of its characters were measured to be
+    // verbatim substrings of the layered summary above (24-character n-gram containment over the live
+    // 50-floor chat, 242 of 369 probes), and it was spending 2,297 of the 4,000 reference characters to
+    // do it. That was already the whole block being cut by the cap whenever the summary was funded;
+    // funding the summary shrank it instead, which traded the ONLY multi-level recap of folded floors
+    // for a duplicated locator list. The scenes are still built and still feed the evidence channel.
     let referenceWithDerived = injectSceneSummaryBlock(visibleCanonical.referenceBlock, hierarchicalBlock);
-    referenceWithDerived = injectSceneSummaryBlock(referenceWithDerived, formatSceneSummaryBlock(selectedScenes));
     referenceWithDerived = injectSceneEvidenceBlock(
         referenceWithDerived,
         collectSceneEvidence(sanitized.store, selectedScenes, { maxChars: 1200 }),

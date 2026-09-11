@@ -287,14 +287,27 @@ function canonicalLine(memory) {
     return `- [${label}] ${clean(memory?.text)}`;
 }
 
-export function buildCanonicalState(storeInput, maxChars = 12_000) {
+const CANONICAL_KIND_WEIGHT = Object.freeze({ state: 7, intention: 6, commitment: 5, relation: 4, ownership: 4, knowledge: 3, belief: 2, world_delta: 1, event: 0 });
+
+/**
+ * Every live memory, in the order this file has always rendered canonical state: the most
+ * consequential kinds first, then most recent, then a stable id tiebreak.
+ *
+ * Exported because the generation prompt now renders this exact list once, in topical groups,
+ * instead of rendering it once as a flat summary and again as groups. Both renderings wanted the
+ * same order, and duplicating the comparator is how the two drift apart.
+ */
+export function orderCanonicalMemories(storeInput) {
     const store = storeInput && typeof storeInput === 'object' ? storeInput : {};
     const memories = Object.values(store.memories || {}).filter(memory => memory?.status === 'active' && clean(memory?.text));
-    const kindWeight = { state: 7, intention: 6, commitment: 5, relation: 4, ownership: 4, knowledge: 3, belief: 2, world_delta: 1, event: 0 };
-    memories.sort((a, b) => (kindWeight[b.kind] || 0) - (kindWeight[a.kind] || 0)
+    memories.sort((a, b) => (CANONICAL_KIND_WEIGHT[b.kind] || 0) - (CANONICAL_KIND_WEIGHT[a.kind] || 0)
         || Number(b.source_message ?? -1) - Number(a.source_message ?? -1)
         || clean(a.id).localeCompare(clean(b.id)));
-    const lines = memories.map(canonicalLine);
+    return memories;
+}
+
+export function buildCanonicalState(storeInput, maxChars = 12_000) {
+    const lines = orderCanonicalMemories(storeInput).map(canonicalLine);
     let text = lines.join('\n');
     const cap = Math.max(0, Number(maxChars) || 0);
     if (cap && text.length > cap) text = `${text.slice(0, Math.max(0, cap - 42)).trimEnd()}\n…[canonical state truncated]`;

@@ -77,7 +77,7 @@ import {
     settingChunksToBaselineRecords,
 } from './setting-retriever.js';
 import { assembleGenerationContext } from './context-assembler.js';
-import { deriveActorIdentity } from './v55-runtime.js';
+import { deriveActorIdentity, orderCanonicalMemories } from './v55-runtime.js';
 import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
 import { writeMergedChatStore } from './v55-store-integrity.js';
 import { awaitDerivedReady, ensureDerivedHydrated, installV55DerivedStore, persistChatStore, resetDerivedHydration } from './v55-derived-store.js';
@@ -174,14 +174,15 @@ const DEFAULT_SETTINGS = Object.freeze({
     // exactly when a conversation has more going on. 4,000 is the point that is free on the sparse chat and
     // still funded on the dense one.
     reference_context_max_chars: 4000,
-    // Measured on a 50-floor live chat by ablation, not by argument (change_log Entry 10). The block was
-    // pinned at its 5,000-character cap while carrying only 17 of 31 live slot values, and the layered
-    // summary was spending budget for no measurable gain in state, causal or T-Causal coverage. Raising
-    // this cap to 20,000 moved state coverage 55% -> 90% and T-Causal 43% -> 65% while total injected
-    // tokens FELL from 8,897 to 7,213: state the model is simply given no longer has to be recalled.
-    // The cap is not a cost, because the block is bounded by the live memory set and stops growing on
-    // its own once every live value fits.
-    current_state_context_max_chars: 20000,
+    // Measured on a 50-floor live chat by ablation, not by argument (change_log Entry 10): at a 5,000
+    // character cap the block carried only 17 of 31 live values, and raising it moved state coverage
+    // 55% -> 90% and T-Causal 43% -> 65% while total injected tokens FELL from 8,897 to 7,213, because
+    // state the model is given no longer has to be recalled.
+    // Since v4 this cap bounds ONE rendering of the state instead of a 45% share of a double one, so it
+    // is set to keep the block no larger than the double rendering ever was: the old summary alone was
+    // capped at 9,000 characters and the must-rows plus groups added roughly 3,000 more. 12,000 carries
+    // at least what that did, and bounds the block so a lengthening chat cannot grow it without limit.
+    current_state_context_max_chars: 12000,
     context_reply_reserve_tokens: 1200,
     current_state_injection_depth: 1,
     // Iteration 08: quiet generations are cleared by default (including background extraction).
@@ -310,7 +311,7 @@ function notify(type, message, title = '艾瑟瑞亚统一记忆') {
  * explicitly. The migration rewrites only the budget keys, and only once: after it runs the version is
  * stamped, so a value the user edits afterwards is kept.
  */
-export const MEMORY_BUDGET_VERSION = 3;
+export const MEMORY_BUDGET_VERSION = 4;
 export const MEMORY_BUDGET_MIGRATIONS = Object.freeze({
     2: Object.freeze({
         spine_injection_max_chars: 4000,
@@ -319,6 +320,12 @@ export const MEMORY_BUDGET_MIGRATIONS = Object.freeze({
     }),
     3: Object.freeze({
         reference_context_max_chars: 4000,
+    }),
+    // v4 renders the current state once instead of twice. The old 20,000 cap was never reached because
+    // the flat summary inside it was independently capped at 9,000; with that summary gone the cap is
+    // the only bound, so it is set to the size the double rendering actually produced.
+    4: Object.freeze({
+        current_state_context_max_chars: 12000,
     }),
 });
 
@@ -2601,8 +2608,16 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
         ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
         : [];
     const mandatoryIds = new Set(mandatory.map(memory => memory.id));
-    const activeMemories = [...mandatory, ...baseActive.filter(memory => !mandatoryIds.has(memory.id))];
-    const activeState = settings.inject_current_state ? store.last_active_state : '';
+    // The rows are the state carrier now, so they must span everything the flat canonical summary used
+    // to carry: every live memory, in the canonical order. Handing them a query-scoped slice is what
+    // made the old block render the state twice - summary plus the subset that fit - and that subset is
+    // also why trimming the summary once dropped coverage from 10/10 to 8/10. `baseActive` is still
+    // computed because its size is the diagnostic for how much recall would have chosen on its own.
+    const activeMemories = !settings.inject_current_state
+        ? []
+        : currentStateScope === 'mandatory-only'
+            ? mandatory
+            : orderCanonicalMemories(store);
     const settingResults = await retrieveGenerationSettings(ctx, interceptorChat, store);
     // Prefer the ranking the host's message events already computed. It is committed here, so the
     // recall counters and the cooldown only ever move for a generation that really happened.
@@ -2611,7 +2626,6 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
     const bundle = assembleGenerationContext({
         scope: settingResults?.snapshot?.scope || null,
         latestMessages: interceptorChat,
-        currentState: activeState,
         activeMemories,
         mandatoryIds,
         settingResults,

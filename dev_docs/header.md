@@ -46,6 +46,7 @@ Files are numbered so their reading order is explicit:
 | `15_innovation_path.md` | The decision: what is blank, what to own, what not to build, and the staged path |
 | `16_100floor_run_result.md` | The 100-floor run: the curve, what held, what failed, and the measured root cause |
 | `17_iteration_result.md` | What the iteration changed, end to end, and what is still not claimed |
+| `18_token_cost_and_storage.md` | What the memory system costs per turn and in the chat file, what was removed, and the defects left open |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.

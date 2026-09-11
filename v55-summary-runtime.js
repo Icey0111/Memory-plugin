@@ -271,10 +271,17 @@ function format(t,v,max,opts={}){
     const folding=opts.folding===true;
     const c1=new Set(t.consumed_l1_ids),c2=new Set(t.consumed_l2_ids);
     const pick=(rows,share)=>{const out=[];let used=0;for(let i=rows.length-1;i>=0;i--){const text=String(rows[i]?.text??'');const cost=text.length+3;if(used+cost>share&&out.length)break;out.unshift(`- ${text}`);used+=cost;}return out;};
-    const share=ratio=>Math.max(200,Math.floor(max*ratio));
-    const l3=pick(v.level3,share(0.24));
-    const l2=pick(folding?v.level2:v.level2.filter(x=>!c2.has(x.id)),share(0.26));
-    const l1=pick(folding?v.level1:v.level1.filter(x=>!c1.has(x.id)),share(0.42));
+    const rows3=v.level3,rows2=folding?v.level2:v.level2.filter(x=>!c2.has(x.id)),rows1=folding?v.level1:v.level1.filter(x=>!c1.has(x.id));
+    // The budget is divided among the levels that HAVE something to say, in the same 24/26/42 proportions
+    // they would get if all three were populated. The fixed split was measured to waste most of a reduced
+    // budget: on the 50-floor acceptance chat levels two and three are still empty, so asking for 3,400
+    // characters produced 1,201, because level one was pinned to its 42% share with 58% of the budget
+    // sitting unused in empty levels.
+    const shareTotal=[rows3,rows2,rows1].reduce((sum,rows,i)=>sum+(rows.length?[0.24,0.26,0.42][i]:0),0)||1;
+    const share=ratio=>Math.max(200,Math.floor(max*(ratio||0)/shareTotal));
+    const l3=pick(rows3,share(rows3.length?0.24:0));
+    const l2=pick(rows2,share(rows2.length?0.26:0));
+    const l1=pick(rows1,share(rows1.length?0.42:0));
     const blocks=[];
     if(l3.length)blocks.push(`[三级长期摘要]\n${l3.join('\n')}`);
     if(l2.length)blocks.push(`[二级阶段摘要]\n${l2.join('\n')}`);

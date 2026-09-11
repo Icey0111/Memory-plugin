@@ -23,7 +23,7 @@ const ids = new Set(mandatory.map(memory => memory.id));
 const active = getActiveMemories(store, '白鸢镇 黄铜钥匙', 12);
 const merged = [...mandatory, ...active.filter(memory => !ids.has(memory.id))];
 const bundle = assembleGenerationContext({
-  currentState: '', activeMemories: merged, mandatoryIds: ids,
+  activeMemories: merged, mandatoryIds: ids,
   historyResults: [], settingResults: null,
   maxReferenceChars: 12000, maxCurrentStateChars: 5000,
 });
@@ -36,7 +36,7 @@ assert.equal(bundle.diagnostics.mandatoryCount, 2);
 
 // The guarantee is structural, not budgetary: even the smallest budget keeps the mandatory rows.
 const tiny = assembleGenerationContext({
-  currentState: '林昭与塞拉菲娜在船舱里。', activeMemories: merged, mandatoryIds: ids,
+  activeMemories: merged, mandatoryIds: ids,
   historyResults: [], settingResults: null, maxCurrentStateChars: 800,
 });
 for (const memory of mandatory) {

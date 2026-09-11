@@ -17,6 +17,7 @@
 //      reachable the keys simply stay in the chat file, which is the previous behaviour.
 
 import { normalizeStore } from './memory-core.js';
+import { compactRecordMap } from './v55-store-compact.js';
 import { SPINE_KEY } from './v55-spine.js';
 import { setExternallyOwnedKeys, setStoreSerializationFilter, writeMergedChatStore } from './v55-store-integrity.js';
 
@@ -300,6 +301,11 @@ export function installDerivedSerializationFilter(store, ctx = getContext()) {
                     if (DERIVED_SET.has(key) || key === 'toJSON') continue;
                     out[key] = this[key];
                 }
+                // See v55-store-compact.js: the per-memory wrapper is mostly absent fields and per-record
+                // copies of the store's own identity. This is the only place a chat store is serialised, so
+                // it is the only place that has to know.
+                out.memories = compactRecordMap(out.memories, this.runtime_identity);
+                out.extractions = compactRecordMap(out.extractions, this.runtime_identity);
                 // Before hydration the chat file owns the derived keys, so it keeps them.
                 if (!ready) {
                     for (const key of DERIVED_KEYS) {

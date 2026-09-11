@@ -56,7 +56,11 @@ const current = prompts.find(row => row.key === 'aetheria_unified_memory_v5_4_cu
 assert.ok(reference && current);
 assert.doesNotMatch(reference.value, /password is RED/);
 assert.doesNotMatch(current.value, /password is RED/);
-assert.match(reference.value, /SCENE SUMMARY LOCATORS/);
+// The scene-locator block is not injected: 66% of its characters were measured to be verbatim substrings
+// of the layered summary, and it was spending the reference budget the summary needs. The scenes are
+// still built and still feed the evidence channel.
+assert.doesNotMatch(reference.value, /SCENE SUMMARY LOCATORS/);
+assert.match(reference.value, /SCENE EVIDENCE/);
 assert.match(reference.value, /archive hall/i);
 assert.match(current.value, /Archive Hall/);
 assert.ok(ctx.chatMetadata[META].scene_summaries.length === 1);

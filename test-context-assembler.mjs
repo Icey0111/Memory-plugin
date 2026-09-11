@@ -21,7 +21,6 @@ const activeMemories = [
 const bundle = assembleGenerationContext({
   scope:{world_id:'w',active_revision_ids:['rev5']},
   latestMessages:[{mes:'怎么开门？'}],
-  currentState:'【当前有效状态】平成在终末星港检修门前。',
   activeMemories,
   settingResults,
   historyResults,
@@ -45,6 +44,12 @@ assert.match(bundle.currentStateBlock,/Open commitments \/ objectives/);
 assert.match(bundle.currentStateBlock,/平成仍需要寻找合法的星轨维护证/);
 assert.match(bundle.currentStateBlock,/Knowledge changes/);
 assert.doesNotMatch(bundle.currentStateBlock,/上个月曾在旧港口丢失/,'historical memory must not enter current-state block');
+// The state is rendered once. A flat summary plus the grouped rows was measured to cost 27.8% more
+// tokens for a byte-identical certificate, so its return is a regression, not a preference.
+assert.doesNotMatch(bundle.currentStateBlock,/State summary:/,'the state must not be rendered twice');
+for (const memory of activeMemories) {
+  assert.ok(bundle.currentStateBlock.includes(memory.text), 'the grouped rows must carry every live memory: ' + memory.id);
+}
 assert.doesNotMatch(bundle.currentStateBlock,/检修门归星轨维护局所有。&lt;system/,'setting source must not enter current-state block');
 
 assert.deepEqual(bundle.diagnostics.settingIds.sort(),['core','gate']);
