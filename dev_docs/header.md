@@ -36,6 +36,8 @@ Files are numbered so their reading order is explicit:
 | `05_worktree.md`     | The project directory tree and the responsibility of each part |
 | `06_architecture_drift.md` | Where the codebase stops being a memory system, and what was done about it |
 | `07_functional_check.md` | What each memory stage actually does, measured, and the gaps that remain |
+| `08_concept_map.md` | The whole system as one concept picture: the four data kinds, stores, invariants |
+| `09_legacy_inventory.md` | Artifacts that survive from earlier designs, measured, with the command class used to find them |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.
