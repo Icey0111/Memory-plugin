@@ -20,6 +20,33 @@ export const MEMORY_IMPORTANCE = new Set(['low', 'medium', 'high', 'critical']);
 export const MEMORY_EPISTEMIC = new Set(['fact', 'observed', 'reported', 'rumor', 'belief', 'inference', 'plan']);
 export const MEMORY_OPS = new Set(['add', 'update', 'close', 'supersede', 'reinforce', 'invalidate', 'noop']);
 
+/**
+ * How a memory's holder came to know something and how strong the claim is are two different axes, and
+ * the extractor prompt asks for both. Measured over 844 real operations, the model wrote `channel`
+ * (saw 316 / heard 145 / inferred 120 / told 26) every time and `epistemic` never. The old default
+ * (`op.kind === 'intention' ? 'plan' : 'fact'`) therefore published every belief and every inference to
+ * the prompt as `epistemic="fact"` - the injection literal said a guess was a fact, which is the one
+ * upgrade the extraction rules forbid. The channel vocabulary leaked in as a second source of the same
+ * mistake, so it is accepted as an alias rather than allowed to invalidate the whole operation.
+ */
+const EPISTEMIC_ALIASES = Object.freeze({
+    saw: 'observed', seen: 'observed', witnessed: 'observed',
+    heard: 'reported', told: 'reported', reported: 'reported',
+    inferred: 'inference', inference: 'inference', deduced: 'inference',
+    guessed: 'belief', guess: 'belief', suspected: 'belief',
+});
+
+/** Resolve what the model meant, then fall back to the record's own kind. Never returns undefined. */
+export function normalizeEpistemic(value, kind = '') {
+    const raw = String(value ?? '').trim().toLowerCase();
+    if (MEMORY_EPISTEMIC.has(raw)) return raw;
+    if (EPISTEMIC_ALIASES[raw]) return EPISTEMIC_ALIASES[raw];
+    // No usable value from the model: the kind is the only honest source. A belief is not a fact.
+    if (kind === 'belief') return 'belief';
+    if (kind === 'intention') return 'plan';
+    return 'fact';
+}
+
 const ACTIVE_EXACT_KINDS = new Set(['state', 'intention', 'commitment']);
 const ACTIVE_CONTEXTUAL_KINDS = new Set(['relation', 'ownership', 'knowledge', 'belief']);
 const IMPORTANCE_WEIGHT = { low: 0, medium: 1, high: 2, critical: 3 };
@@ -115,7 +142,12 @@ export function validateMemoryOp(op) {
     if (op.kind !== undefined && !MEMORY_KINDS.has(op.kind)) errors.push(`invalid kind: ${String(op.kind)}`);
     if (op.status !== undefined && !MEMORY_STATUSES.has(op.status)) errors.push(`invalid status: ${String(op.status)}`);
     if (op.importance !== undefined && !MEMORY_IMPORTANCE.has(op.importance)) errors.push(`invalid importance: ${String(op.importance)}`);
-    if (op.epistemic !== undefined && !MEMORY_EPISTEMIC.has(op.epistemic)) errors.push(`invalid epistemic: ${String(op.epistemic)}`);
+    // A value in the channel vocabulary is a wrong field name, not a wrong operation: dropping the op
+    // loses a memory, so it is accepted here and resolved by normalizeEpistemic().
+    if (op.epistemic !== undefined && !MEMORY_EPISTEMIC.has(op.epistemic)
+        && !Object.prototype.hasOwnProperty.call(EPISTEMIC_ALIASES, String(op.epistemic ?? '').trim().toLowerCase())) {
+        errors.push(`invalid epistemic: ${String(op.epistemic)}`);
+    }
     if (op.scope !== undefined && op.scope !== null && (typeof op.scope !== 'string' || op.scope.length > 200)) errors.push('scope must be a string of at most 200 characters');
     if (typeof op.text === 'string' && op.text.length > 1200) errors.push('text exceeds 1200 characters');
     for (const key of ['entities', 'topics', 'known_by']) {
@@ -355,7 +387,7 @@ function memoryFromAdd(store, op, context) {
         topics: uniqueStrings(op.topics),
         status,
         importance: op.importance || 'medium',
-        epistemic: op.epistemic || (op.kind === 'intention' ? 'plan' : 'fact'),
+        epistemic: normalizeEpistemic(op.epistemic, op.kind),
         known_by: uniqueStrings(op.known_by),
         indexable: op.indexable === true,
         source_message: context.sourceMessageIndex,
@@ -457,6 +489,9 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             for (const key of editable) {
                 if (op[key] !== undefined) target[key] = key === 'slot' ? (String(op[key]).trim() || null) : op[key];
             }
+            // `epistemic` is derived from `kind` when the model does not state it, so a kind change has to
+            // re-derive it or an event stays labelled with the belief it used to be.
+            if (op.kind !== undefined && op.epistemic === undefined) target.epistemic = normalizeEpistemic(undefined, target.kind);
             for (const key of ['entities', 'topics', 'known_by']) {
                 if (op[key] !== undefined) target[key] = uniqueStrings(op[key]);
             }
