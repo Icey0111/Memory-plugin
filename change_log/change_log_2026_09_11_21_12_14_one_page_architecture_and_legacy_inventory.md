@@ -716,6 +716,72 @@ in-run certificate in this session should be treated as suspect. This is recorde
 class of error that produced the blank-turn and zero-coverage mistakes earlier: **a measurement that
 agrees with itself while measuring the wrong moment.**
 
+---
+
+## Entry 13 - the measurement is settled, and the change is much larger than the run reported
+
+- Date: 2026-09-12 02:05:00
+- Session: same conversation, fixing the measurement before doing any more tuning.
+
+## Problem / Requirement
+
+Entry 12 recorded that the in-run certificate (state 53%) and the post-run reconstruction (state 97%)
+disagreed on the same chat, and that tuning on an untrusted ruler would tune the wrong thing. The leading
+hypothesis was that the quiet extraction call re-runs the interceptor and overwrites the host prompt slots.
+
+## How It Was Changed
+
+Instrumented the interceptor itself: wrapped `globalThis.aetheriaUnifiedMemoryV54Interceptor` so every
+invocation records its arguments and the resulting block sizes, then ran one real generation.
+
+## Result
+
+**The hypothesis is refuted.** One generation produced **exactly one** interceptor call:
+
+    { contextSize: 1998400, refChars: 12000, stateChars: 12306 }
+
+- The extraction does **not** invoke the interceptor, so it cannot overwrite the projection.
+- `contextSize` is **1,998,400**, not 8,192. The context clamp `(contextSize - reserve) * 2` therefore never
+  binds, and the configured caps decide the split. The earlier 13,184 figure came from a probe that passed
+  8,192 by hand; it was self-inflicted and, briefly, the basis of a wrong conclusion.
+- The projection for a real generation is **12,000 + 12,306 = 24,307 characters**.
+
+**Both projection-extraction methods agree at this moment**, which removes the last doubt:
+
+| method | state | commitment | causal | T-Causal | tokens |
+|---|---|---|---|---|---|
+| every prompt slot joined | **34/34 (100%)** | 12/12 | 6/17 | **30/40 (75%)** | 14,600 |
+| the two named keys | **34/34 (100%)** | 12/12 | 6/17 | **30/40 (75%)** | 14,600 |
+
+**Why the in-run certificate read low.** It is taken after the generation and the extraction wait. When a
+generation fails the prompt slots are empty (the run's dropped turn read `tokens=0, state=0/28`), and
+between generations they can hold a partially rebuilt projection (the final turn read 10,253 tokens
+against the true 14,600). **The in-run certificate samples a mutable global at an unconstrained moment.**
+
+**The protocol is therefore fixed for the rest of this work: never trust a post-hoc probe or an in-run
+sample. Call the interceptor, then read the two named prompt keys.** That is what every measurement in
+Entries 10 to 12 should have been, and the ones that were not are to be treated as noise.
+
+## The corrected headline
+
+Same scenario prefix, floor 50, trustworthy method:
+
+| | before this iteration | after |
+|---|---|---|
+| state coverage | 48% | **100%** |
+| commitment | 100% | 100% |
+| causal coverage | 20% | 35% |
+| T-Causal | 35% | **75%** |
+| injected tokens | 10,963 | 14,600 (+33%) |
+
+The iteration that Entry 11 called a null result was in fact the largest single improvement of the session.
+The null result was an artefact of the ruler.
+
+Two things remain true and are not claimed as fixed: **causal coverage is still 6/17 (35%)**, and the
+injection is 33% more expensive, with the measured frontier (Entry 12) offering a deliberate way to trade
+that back.
+
+
 
 
 
