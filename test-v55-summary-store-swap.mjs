@@ -17,6 +17,8 @@ const settings = {
   summary_level1_every_turns: 10, summary_level2_every_l1: 2, summary_level3_every_l2: 2,
   summary_max_context_chars: 9000, summary_source_max_chars: 24000,
   summary_fold_hidden_floors: false, summary_fold_keep_recent_floors: 1,
+  // Exercises the model-written Level-1 path; the deterministic digest has its own tests.
+  summary_digest_enabled: false,
 };
 const ctx = {
   extensionSettings: { [KEY]: settings },

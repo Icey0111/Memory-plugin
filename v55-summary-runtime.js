@@ -4,7 +4,8 @@ import { deriveActorIdentity } from './v55-runtime.js';
 import { filterSummaryTreeForActor } from './v55-privacy.js';
 import { recordModelCall } from './v55-metrics.js';
 import { isDialogueRow } from './memory-core.js';
-import { floorFoldStatus, foldSummarizedFloors, unfoldAllFloors } from './v55-floor-fold.js';
+import { floorFoldStatus, foldSummarizedFloors, unfoldAllFloors, unfoldFloorsNotCovered, parseTurnAssistantIndex } from './v55-floor-fold.js';
+import { digestRows, digestToLevel1, digestCoveredIndexes, digestStats } from './v55-digest.js';
 import { persistChatStore } from './v55-derived-store.js';
 
 const SETTINGS_KEY='aetheriaUnifiedMemoryV54';
@@ -15,7 +16,7 @@ const SUMMARY_KEY='aetheria_unified_memory_v5_5_hierarchical_summary';
 // because a reasoning model bills its hidden reasoning against the same budget and 600 truncated the
 // visible summary mid-sentence in a live session. summary_source_max_chars bounds the summarizer
 // input so a ten-floor batch cannot overflow the context window.
-const DEFAULTS={hierarchical_summary_enabled:true,summary_provider_mode:'current',summary_connection_profile_id:'',summary_max_tokens:2048,summary_level1_every_turns:10,summary_level2_every_l1:3,summary_level3_every_l2:3,summary_injection_depth:4,summary_max_context_chars:9000,summary_auto_rebuild_on_history_change:true,summary_fold_hidden_floors:true,summary_fold_keep_recent_floors:1,summary_source_max_chars:24000};
+const DEFAULTS={hierarchical_summary_enabled:true,summary_provider_mode:'current',summary_connection_profile_id:'',summary_max_tokens:2048,summary_level1_every_turns:10,summary_level2_every_l1:3,summary_level3_every_l2:3,summary_injection_depth:4,summary_max_context_chars:9000,summary_auto_rebuild_on_history_change:true,summary_fold_hidden_floors:true,summary_fold_keep_recent_floors:1,summary_source_max_chars:24000,summary_digest_enabled:true,summary_digest_max_rows:120,summary_digest_max_chars:8000};
 let installed=false,queue=Promise.resolve(),timer=null,sharedPromise=null;
 const getContext=()=>globalThis.SillyTavern?.getContext?.();
 const clean=(v,max=100000)=>String(v??'').replace(/\r\n?/g,'\n').replace(/\u0000/g,'').trim().slice(0,max);
@@ -109,6 +110,30 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     let created=0;
     // One snapshot per distinct tree state, so a failed pass is undoable without filling the ring.
     try{snapshotSummaryTree(ctx,'before-summarize');}catch(e){/* history is best effort */}
+    // Deterministic Level 1, before any model call. Folding is the only thing here that makes the
+    // prompt cheaper, and it used to be gated on a model summary that was itself gated on a ten-turn
+    // clock: a ten-floor chat could never fold anything, and seven of thirteen retained chats had zero
+    // folded floors. The extractor already writes one event_summary per turn it processed, so Level 1
+    // is assembled from those instead - no model call to starve, no clock to wait for, and no line
+    // that is a summary of another summary (S3 / invariant I2).
+    const digestOn=s.summary_digest_enabled!==false;
+    let digestLines=0;
+    if(digestOn){
+        const live0=tree(ctx);
+        if(live0){
+            const turnsNow=collectCompletedDialogueTurns(ctx.chat||[]);
+            const built=digestToLevel1(digestRows(storeOf(ctx),turnsNow,{maxRows:s.summary_digest_max_rows,maxChars:s.summary_digest_max_chars}));
+            live0.level1=[...live0.level1.filter(row=>!row?.digest),...built];
+            const coveredIds=new Set(built.flatMap(row=>row.source_ids));
+            const processed0=new Set(live0.processed_turn_ids||[]);
+            for(const id of coveredIds)processed0.add(id);
+            live0.processed_turn_ids=[...processed0];
+            digestLines=built.length;
+            // The window is bounded, so a floor can roll out of it. A hidden floor with no stand-in is
+            // exactly the failure this project forbids: bring the raw text back first.
+            try{unfoldFloorsNotCovered(ctx,digestCoveredIndexes(built));}catch(e){live0.last_error=String(e?.message||e);}
+        }
+    }
     // Every mutation re-reads the tree out of chat metadata instead of holding the reference it read
     // before the model call. A Canonical replay replaces the whole store object, and a summary tree
     // captured across that await receives every subsequent batch while the store that actually reaches
@@ -127,7 +152,10 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
         live.processed_turn_ids.push(...batch.map(x=>x.id));
         created+=1;
     }
-    for(const[level,need,source,consumedKey]of[[2,l2,'level1','consumed_l1_ids'],[3,l3,'level2','consumed_l2_ids']]){
+    for(const[level,needBase,source,consumedKey]of[[2,l2,'level1','consumed_l1_ids'],[3,l3,'level2','consumed_l2_ids']]){
+        // With one deterministic Level 1 per turn, an L2 has to span l1*l2 turns to keep the meaning
+        // the setting always had (one stage summary per ten floors, not per three).
+        const need=level===2&&digestOn?Math.min(100,l2*l1):needBase;
         if(!need)continue;
         for(;;){
             if(s.enabled===false)return{skipped:'disabled-mid-run',created};
@@ -158,7 +186,7 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     let fold=null;
     try{fold=foldSummarizedFloors(ctx);}catch(e){finalTree.last_error=String(e?.message||e);}
     render(ctx);
-    return{created,level1:finalTree.level1.length,level2:finalTree.level2.length,level3:finalTree.level3.length,fold};
+    return{created,digest_lines:digestLines,level1:finalTree.level1.length,level2:finalTree.level2.length,level3:finalTree.level3.length,fold};
 }
 // A folded floor is gone from the raw prompt, so the summary tree is the only thing still carrying it.
 // The previous shape injected three or five newest items per level and dropped every item a higher

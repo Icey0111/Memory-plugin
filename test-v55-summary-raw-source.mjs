@@ -18,6 +18,9 @@ const ctx = {
     summary_max_tokens: 256,
     summary_source_max_chars: 24000,
     summary_fold_hidden_floors: false,
+    // This file covers the model-written Level-1 fallback path. The deterministic digest path is
+    // covered by test-v55-digest.mjs and test-v55-digest-integration.mjs.
+    summary_digest_enabled: false,
   } },
   chatMetadata: { aetheriaUnifiedMemoryV54: { hierarchical_summaries: {
     version: 3, processed_turn_ids: [], consumed_l1_ids: [], consumed_l2_ids: [],

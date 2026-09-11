@@ -60,6 +60,36 @@ function foldsOf(store, create = true) {
     return f;
 }
 
+/**
+ * Restore any floor whose stand-in is gone. A floor may only stay hidden while something still covers
+ * it; the deterministic digest window rolls forward, so the oldest line eventually drops out and its
+ * floor has to come back. Without this the plugin would hide raw text that nothing stands in for,
+ * which is the one thing folding must never do.
+ */
+export function unfoldFloorsNotCovered(ctxInput = getContext(), coveredAssistantIndexes = new Set()) {
+    const ctx = ctxInput;
+    const store = storeOf(ctx);
+    const rows = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const folds = foldsOf(store, false);
+    if (!store || !folds) return { restored: 0 };
+    const covered = coveredAssistantIndexes instanceof Set ? coveredAssistantIndexes : new Set(coveredAssistantIndexes || []);
+    let restored = 0;
+    for (const key of Object.keys(folds.hidden)) {
+        const index = Number(key);
+        const entry = folds.hidden[key];
+        if (Number.isFinite(Number(entry?.turn_assistant_index)) && covered.has(Number(entry.turn_assistant_index))) continue;
+        const row = rows[index];
+        if (!row || !isFoldedRow(row)) { delete folds.hidden[key]; continue; }
+        if (row.extra && typeof row.extra === 'object') delete row.extra[FOLD_EXTRA_KEY];
+        row.is_system = false;
+        syncDom(index, false);
+        delete folds.hidden[key];
+        restored += 1;
+    }
+    if (restored) folds.last_run_at = Date.now();
+    return { restored };
+}
+
 /** `turn_<assistantIndex>_<fingerprint>` — the id shape collectCompletedDialogueTurns emits. */
 export function parseTurnAssistantIndex(turnId) {
     const match = /^turn_(\d+)_/.exec(String(turnId ?? ''));
