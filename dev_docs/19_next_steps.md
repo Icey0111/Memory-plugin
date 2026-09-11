@@ -230,3 +230,38 @@ If this is ever reopened, the split that matters is **repair versus architecture
 Nothing already banked depends on any of them. The tree is clean, the suite is 77/77 in ~20 s, and this
 document exists so the analysis survives even though the work does not happen. D1–D4 are moot while v1 is
 declined.
+
+<!-- VERSION 3 -->
+## v3 - 2026-09-12 04:01:24 - the repair half of N2 has shipped; the table in v2 was too broad
+
+The user returned to this item and said it still mattered: *the one about summarising once every N
+floors*. Investigating it found a defect that v2 had not, and the split in v2 turned out to be drawn in
+the wrong place.
+
+**What was found.** Level 1 was rebuilt on every pass from `digestRows` - the newest lines that fit
+`summary_digest_max_chars` - and every digest row outside that window was discarded. Coverage was
+therefore O(window): measured with the live chat's own event summaries, the window saturates at about 45
+floors, and because a floor may only stay hidden while something stands in for it, `unfoldFloorsNotCovered`
+restored every older floor as raw text. At 500 floors that is 445-456 raw floors, more text than the memory
+system removes.
+
+**What shipped.** Level 1 now seals floor-aligned batches of `summary_level1_every_turns` - a setting that
+already existed, was already set to 10, and did nothing but set a boundary beat. A full batch becomes one
+row with an id hashed from its floors; a part-full batch keeps one row per floor; a stored sealed batch is
+carried verbatim while its floors still exist. No new settings, no new storage key, no new prompt key, no
+model call. See `20_narrative_coverage.md`.
+
+**The correction.** v2's table put N2 in the architecture column. The batching half of N2 was not
+architecture - it was a repair of a setting that lied, and without it the fold's own safety rule guarantees
+unbounded prompt growth. That half has shipped. The table should have read:
+
+| item | is it architecture? |
+|---|---|
+| N0, N1, N4, N5-bug | no - repairs |
+| N2 — the batching half | **no - repaired, shipped as `20_narrative_coverage.md`** |
+| N2 — the model-written narrative, and N3 | yes - still declined |
+
+The distinction that survives is sharper than "adds a layer": **a change is architecture when it adds a
+thing that can be wrong on its own.** Sealing adds no such thing - it makes an existing layer's coverage
+complete and checkable by identifier comparison. A model-written narrative per batch and an L2/L3 merge
+would each add one, and both remain declined.

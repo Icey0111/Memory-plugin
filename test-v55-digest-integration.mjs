@@ -2,6 +2,10 @@
 // extractor processed, and costs ZERO model calls. Folding is the only mechanism in this plugin that
 // makes the prompt cheaper, and it used to wait on a model summary that waited on a ten-turn clock -
 // so a ten-floor chat could never fold, and half of the retained test chats had zero folded floors.
+//
+// The fixture deletes one extraction record on purpose, which is also what keeps every batch here
+// unsealed: sealing and coverage are pinned properly in test-v55-digest-batch.mjs, and what this file
+// pins is that level 1 covers exactly the turns the extractor processed, at zero model cost.
 import assert from 'node:assert/strict';
 import { processSummaryHierarchy } from './v55-summary-runtime.js';
 import { digestCoveredIndexes } from './v55-digest.js';
@@ -45,16 +49,21 @@ const ctx = {
 const result = await processSummaryHierarchy(ctx);
 const tree = ctx.chatMetadata.aetheriaUnifiedMemoryV54.hierarchical_summaries;
 
-// Coverage starts at the FIRST extracted turn, not at the tenth.
+// Twelve floors at the default of ten per batch, but one of them was never extracted. A batch seals
+// only when EVERY floor it owns has a line, so nothing seals here: eleven extracted floors keep eleven
+// per-turn rows and the unextracted floor keeps its raw text. That is the coupling folding depends on -
+// a floor with no line can never end up inside a sealed batch that then gets folded.
 assert.equal(result.digest_lines, 11, 'one line per extracted turn; the unextracted turn has none');
 assert.equal(tree.level1.length, 11);
 assert.ok(tree.level1.every(row => row.digest === true), 'level 1 is the deterministic digest');
+assert.ok(tree.level1.every(row => row.sealed === false), 'a batch with a missing floor never seals');
 assert.ok(!tree.level1.some(row => row.text === '事件纪要第5条。'), 'the unextracted turn contributes nothing');
 
 // Order is the story order, and each line stands for exactly one original turn.
 const orderIndexes = tree.level1.map(row => Number(/^turn_(\d+)_/.exec(row.source_ids[0])[1]));
 assert.deepEqual(orderIndexes, [...orderIndexes].sort((a, b) => a - b), 'lines are in story order');
 assert.equal(orderIndexes[0], 1, 'the digest starts at the first extracted turn, not the tenth');
+
 const indexes = [...digestCoveredIndexes(tree.level1)].sort((a, b) => a - b);
 // x5 was deleted, and it belongs to the assistant message at index 11.
 assert.deepEqual(indexes, [1, 3, 5, 7, 9, 13, 15, 17, 19, 21, 23], 'every extracted turn is covered, and only those');

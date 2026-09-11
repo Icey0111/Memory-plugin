@@ -347,3 +347,53 @@ as surprises: `summary_fold_keep_recent_floors = 1` disagrees with `protect_rece
 default that disagrees with the first), and the memory vector collection is stale
 (`请求空间 es1:14fzu5i 与已建索引 (missing) 不一致`), so dense recall is off and only lexical plus temporal run.
 Neither is architecture, and neither blocks anything already shipped.
+
+## Sixth change: narrative coverage is O(chat) now, not O(window)
+
+### Problem / Requirement
+
+The user came back to the one item they had raised twice before: *"你还有一个事情就是楼层的问题，我之前说的那个还是很重要N层总结一次的那个"*. It mattered more than the plan document said it did.
+
+### Purpose of Change
+
+Find out whether the fear behind it was real. It was, and the mechanism was not the one `19_next_steps.md` described.
+
+### How It Was Changed
+
+- [v55-digest.js L129-L235](file:///D:/memory_plugin/v55-digest.js#L129-L235) - new `coalesceDigestBatches` plus `digestRowFloorIndexes`: floor-aligned
+  batches of `everyTurns`, aligned on a floor's ordinal in the completed turn list, sealing a full batch
+  into one row whose id hashes its floors. A still-filling batch keeps one row per floor.
+- [v55-summary-runtime.js L125-L200](file:///D:/memory_plugin/v55-summary-runtime.js#L125-L200) - `reconcileFoldCoverage` reads the full ordered
+  line list instead of the capped window, seals into batches, and carries stored sealed batches verbatim
+  while every floor they name is still a completed turn.
+- [test-v55-digest-batch.mjs](file:///D:/memory_plugin/test-v55-digest-batch.mjs) (new) - the batching contract, the carry across a pruned
+  extraction log, and the control that shows what the carry prevents.
+- [test-v55-digest-integration.mjs L48-L62](file:///D:/memory_plugin/test-v55-digest-integration.mjs#L48-L62), [package.json L7](file:///D:/memory_plugin/package.json#L7) - updated.
+- [dev_docs/20_narrative_coverage.md](file:///D:/memory_plugin/dev_docs/20_narrative_coverage.md) (new) and its index row in
+  [dev_docs/header.md L51](file:///D:/memory_plugin/dev_docs/header.md#L51).
+
+### Result
+
+`digestRows` returns only the newest rows that fit `summary_digest_max_chars` (8,000 by default), and
+`reconcileFoldCoverage` used to rebuild `level1` from that window while discarding every digest row it
+did not rebuild. Coverage was O(window), and because a floor may only stay hidden while something stands in
+for it, every older floor came back as raw text. Simulated with the live chat's own event summaries the
+window saturates at about 45 floors: 120 floors left 75 raw, 500 floors left **445-456 raw floors** - more
+text than the memory system removes.
+
+Sealing fixes it. Live on the acceptance chat: Level-1 rows 23 -> **10**, narrative 4,578 -> **2,334
+characters**, coverage still 28/28, folded rows still 53, injected total 8,044 -> **7,736 tokens**.
+Simulated: 500 floors are **500/500 covered by 50 rows and 19,950 characters**, at a flat 39.9 characters
+per floor. The suite is **78/78**.
+
+**A correction to the previous entry.** `19_next_steps.md` v2 sorted N2 - N as a real setting, batches of
+N - into the architecture column, and it was declined on that basis. That sorting was too broad: the
+batching half of N2 repairs a setting that already shipped and did nothing, and without it the fold's own
+safety rule guarantees the prompt re-grows without bound. What stays architectural is the model-written
+narrative and the L2/L3 merge (N3), and that is still declined.
+
+**What is not claimed.** `l2: 0`, `l3: 0` - the consolidation levels have still never merged, because the
+model loop's `pending` comes from `processed_turn_ids`, which the digest fills for every turn. Narrative
+reach is still bounded by the summary budget: about the newest 90 floors, not all 500. And a floor's
+narrative detail is now ~39 characters instead of ~164 - the facts are unaffected because they live in the
+state block, but the story-so-far block is thinner per floor.

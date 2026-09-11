@@ -5,7 +5,7 @@ import { filterSummaryTreeForActor } from './v55-privacy.js';
 import { recordModelCall } from './v55-metrics.js';
 import { isDialogueRow } from './memory-core.js';
 import { floorFoldStatus, foldSummarizedFloors, unfoldAllFloors, unfoldFloorsNotCovered, parseTurnAssistantIndex } from './v55-floor-fold.js';
-import { digestRows, digestToLevel1, digestCoveredIndexes, digestStats } from './v55-digest.js';
+import { digestRows, digestToLevel1, digestCoveredIndexes, digestStats, coalesceDigestBatches, digestRowFloorIndexes, DIGEST_LINE_MAX_CHARS } from './v55-digest.js';
 import { detectBoundaries } from './v55-boundary.js';
 import { compressionPlan, groupDigestRows, repetitionScore } from './v55-compression.js';
 import { persistChatStore } from './v55-derived-store.js';
@@ -129,6 +129,13 @@ export function reconcileFoldCoverage(ctxInput=getContext()){
         // turns into one line that still names every turn it covers. The WINDOW is deliberately left
         // alone - shrinking it would restore raw floors and make the prompt bigger, not smaller.
         const store0=storeOf(ctx);
+        // The FULL ordered line list, not the capped window. Sealing aligns batches on a floor's ORDINAL,
+        // and an ordinal read off the window would move every time the window slides - so no sealed batch
+        // would ever be recognised twice. `summary_digest_max_chars` therefore bounds the repetition
+        // measurement and A4's window, while the stored tree is bounded by ceil(floors / everyTurns)
+        // lines of at most DIGEST_LINE_MAX_CHARS. A digest window that bounded the STORED tree as well is
+        // exactly what made coverage O(window); see coalesceDigestBatches for the measurement.
+        const allRows=digestRows(store0,turnsNow,{maxRows:1000,maxChars:200000});
         const repetition=repetitionScore(store0,turnsNow,window);
         const plan=s.compression_repetition_enabled===false
             ? { factor:1, group_size:1, line_chars:400, max_rows:s.summary_digest_max_rows, max_chars:s.summary_digest_max_chars }
@@ -138,13 +145,49 @@ export function reconcileFoldCoverage(ctxInput=getContext()){
             : detectBoundaries(store0,turnsNow,{beat:s.summary_level1_every_turns});
         const indexByPosition=new Map(window.map((row,position)=>[row.assistant_index,position]));
         const stops=new Set(boundaries.filter(entry=>entry.position>0).map(entry=>indexByPosition.get(entry.turn)).filter(value=>value!==undefined));
-        const grouped=groupDigestRows(window,{groupSize:plan.group_size,lineChars:plan.line_chars,boundaryPositions:stops});
+        // A batch that spans more than one floor supersedes A4: a batch row carries the same per-line cap
+        // applied as a share of the batch, so running A4 first would only compress the same text twice.
+        // With everyTurns === 1 the pipeline above is unchanged, floor for floor.
+        const l1Every=count(s.summary_level1_every_turns,1);
+        const grouped=l1Every>1?allRows:groupDigestRows(window,{groupSize:plan.group_size,lineChars:plan.line_chars,boundaryPositions:stops});
         const built=digestToLevel1(grouped);
-        // A model Level-1 row whose every turn the deterministic digest now covers is pure duplication:
-        // both stand in for the same turns at the same granularity, and both get injected. Dropping it
-        // removes a second copy of the same story from the prompt without losing a turn, because the
-        // digest names all of them. Rows that cover anything the digest does not are kept untouched.
-        const digestTurns=new Set(built.flatMap(row=>row.source_ids||[]));
+        // Seal every complete batch of floors into one row, then carry the sealed batches that are
+        // already stored. `window` holds only the newest rows that fit `summary_digest_max_chars`, so a
+        // sealed batch rolls out of it, and without the carry-over it would be rebuilt as a partial
+        // batch or not at all - and a floor whose stand-in is gone is a floor `unfoldFloorsNotCovered`
+        // has to restore as raw text. Sealing is what makes coverage O(chat) instead of O(window); the
+        // measurement behind it is in v55-digest.js.
+        const currentIndexes=new Set(turnsNow.map(turn=>Number(turn.assistant_index)).filter(Number.isInteger));
+        // Ordinals come from the COMPLETED TURN LIST, not from the lines: a floor that has no line yet
+        // still owns its ordinal, so pruning an extraction record can never renumber the batches above it.
+        const ordinalOf=new Map(turnsNow.map((turn,position)=>[Number(turn.assistant_index),position]));
+        const seals=coalesceDigestBatches(built,{everyTurns:l1Every,lineChars:DIGEST_LINE_MAX_CHARS,ordinalOf});
+        const rebuiltSealed=new Map();
+        const rebuiltOpen=[];
+        for(const row of seals){if(row.sealed)rebuiltSealed.set(row.batch,row);else rebuiltOpen.push(row);}
+        const storedSealed=new Map();
+        for(const row of live.level1){
+            if(row?.digest===true&&row.sealed===true&&Number.isInteger(row.batch))storedSealed.set(row.batch,row);
+        }
+        const carried=[];
+        for(const[key,row]of storedSealed){
+            if(rebuiltSealed.has(key))continue;
+            // Carried verbatim only while every floor it names still exists: a truncated or forked chat
+            // must not keep a stand-in for turns that are gone.
+            const indexes=digestRowFloorIndexes(row);
+            if(!indexes.length||indexes.some(index=>!currentIndexes.has(index)))continue;
+            carried.push(row);
+        }
+        const carriedKeys=new Set(carried.map(row=>row.batch));
+        const sealedFinal=[...rebuiltSealed.values(),...carried].sort((a,b)=>a.batch-b.batch);
+        // A stored sealed batch supersedes the partial rows rebuilt for the same batch.
+        const tail=rebuiltOpen.filter(row=>!carriedKeys.has(row.batch));
+        const builtFinal=[...sealedFinal,...tail];
+        // A model Level-1 row whose every turn a digest row now covers is pure duplication: both stand
+        // in for the same turns at the same granularity, and both get injected. Dropping it removes a
+        // second copy of the same story from the prompt without losing a turn, because the digest names
+        // all of them. Rows that cover anything the digest does not are kept untouched.
+        const digestTurns=new Set(builtFinal.flatMap(row=>row.source_ids||[]));
         let supersededModelRows=0;
         const kept=[];
         for(const row of live.level1){
@@ -157,13 +200,13 @@ export function reconcileFoldCoverage(ctxInput=getContext()){
             }
             kept.push(row);
         }
-        live.level1=[...kept,...built];
-        compression={repetition:repetition.score,text_reuse:repetition.text_reuse,slot_novelty:repetition.slot_novelty,factor:plan.factor,group_size:plan.group_size,lines_before:window.length,lines_after:built.length,boundaries:boundaries.length,boundary_stops:stops.size,superseded_model_rows:supersededModelRows};
-        const coveredIds=new Set(built.flatMap(row=>row.source_ids));
+        live.level1=[...kept,...builtFinal];
+        compression={repetition:repetition.score,text_reuse:repetition.text_reuse,slot_novelty:repetition.slot_novelty,factor:plan.factor,group_size:plan.group_size,lines_before:window.length,lines_after:builtFinal.length,boundaries:boundaries.length,boundary_stops:stops.size,superseded_model_rows:supersededModelRows,every_turns:l1Every,sealed_batches:sealedFinal.length,carried_batches:carried.length,tail_rows:tail.length};
+        const coveredIds=new Set(builtFinal.flatMap(row=>row.source_ids));
         const processed0=new Set(live.processed_turn_ids||[]);
         for(const id of coveredIds)processed0.add(id);
         live.processed_turn_ids=[...processed0];
-        digestLines=built.length;
+        digestLines=builtFinal.length;
     }
     // Coverage is read back from the tree rather than from the digest alone, so a model Level-1 counts
     // too. The window is bounded and a rebuild can drop lines, so a hidden floor can lose its stand-in;

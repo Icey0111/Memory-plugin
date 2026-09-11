@@ -15,8 +15,11 @@
 //   - no drift        -> every line is the extractor's reading of ONE original turn, never a summary
 //                        of another summary (plan invariant I2 / finding S3).
 //
-// It is also the honest coverage certificate for folding: a floor may be hidden exactly while its own
-// digest line still stands in for it, and the window is bounded, so the two stay in step.
+// It is also the honest coverage certificate for folding: a floor may be hidden exactly while a digest
+// line still stands in for it. That line used to be rebuilt from the bounded window on every pass, which
+// made coverage O(window) rather than O(chat) - the oldest floors lost their stand-in as the window
+// rolled forward and came back as raw text. `coalesceDigestBatches` below seals each complete batch of
+// floors into one row and the summary pass keeps it, which is what makes coverage O(chat).
 
 import { fnv1a32 } from './memory-core.js';
 
@@ -109,6 +112,113 @@ export function digestCoveredIndexes(level1Rows) {
             const match = /^turn_(\d+)_/.exec(String(id));
             if (match) out.add(Number(match[1]));
         }
+    }
+    return out;
+}
+
+/** The assistant indexes one row stands in for, read from its turn ids. */
+export function digestRowFloorIndexes(row) {
+    const out = [];
+    for (const id of Array.isArray(row?.source_ids) ? row.source_ids : []) {
+        const match = /^turn_(\d+)_/.exec(String(id));
+        if (match) out.push(Number(match[1]));
+    }
+    return out;
+}
+
+export const DIGEST_BATCH_VERSION = 1;
+
+/**
+ * Coalesce Level-1 rows into floor-aligned batches of `everyTurns`, so narrative coverage becomes
+ * append-only instead of window-bounded.
+ *
+ * Why this exists. `digestRows` returns only the newest rows that fit `summary_digest_max_chars`, and
+ * `reconcileFoldCoverage` rebuilt `level1` from that window on every pass, discarding every digest row
+ * it did not rebuild. Coverage was therefore O(window), not O(chat), and because a floor may only stay
+ * hidden while something stands in for it, `unfoldFloorsNotCovered` had to restore every older floor.
+ * Simulated with the live acceptance chat's own event summaries and the live caps (120 rows / 8,000
+ * characters, 164 characters per summary): the window saturates at about 45 floors, so 56 floors left 12
+ * floors raw, 120 left 75 raw, and 500 floors left **456 raw floors** - more text than the memory system
+ * removes. That is the failure this function exists to prevent.
+ *
+ * Alignment is on a floor's ORDINAL - its position in the whole extracted sequence - never on a position
+ * inside the window, because a position in a sliding window is not stable and no batch would ever be
+ * recognised twice. A batch holding all `everyTurns` floors is SEALED: it becomes exactly one row whose
+ * id is a hash of its floors, so a later pass reproduces the same row verbatim. A batch that is still
+ * filling keeps one row per floor, which is why folding still starts at the first extracted turn rather
+ * than at the tenth, and why a sealed row never changes once written: ordinals only ever append.
+ * `everyTurns = 1` seals every floor on its own, i.e. one permanent row per turn.
+ *
+ * Sizing. A sealed row is ONE line obeying the same `lineChars` cap as every other digest line, shared
+ * out oldest-first exactly as A4 shares a merged group: the cause survives and the restatement is what
+ * gets trimmed. So the stored tree costs about `ceil(floors / everyTurns)` lines instead of growing
+ * with the transcript - at 500 floors and the shipped default of ten that is 50 lines rather than the
+ * 8,000-character window's 45, and every floor keeps a stand-in.
+ */
+export function coalesceDigestBatches(rows, { everyTurns = 1, lineChars = DIGEST_LINE_MAX_CHARS, ordinalOf = null } = {}) {
+    const list = Array.isArray(rows) ? rows : [];
+    const size = positiveInt(everyTurns, 1, 1, 1000);
+    const lineCap = Math.max(80, Math.floor(Number(lineChars) || DIGEST_LINE_MAX_CHARS));
+    // The ordinal is a floor's position in the whole extracted sequence, supplied by the caller so that
+    // it does not move when the digest window slides. Without it, the floor index itself is the ordinal,
+    // which is what the unit tests use.
+    const positions = new Map();
+    if (ordinalOf instanceof Map) {
+        for (const [floor, position] of ordinalOf) positions.set(Number(floor), Number(position));
+    } else {
+        const seen = new Set();
+        for (const row of list) for (const index of digestRowFloorIndexes(row)) seen.add(index);
+        [...seen].sort((a, b) => a - b).forEach((floor, position) => positions.set(floor, position));
+    }
+    const byBatch = new Map();
+    for (const row of list) {
+        if (!row) continue;
+        const ordinals = digestRowFloorIndexes(row)
+            .filter(index => positions.has(index))
+            .map(index => positions.get(index));
+        if (!ordinals.length) continue;
+        const key = Math.floor(Math.min(...ordinals) / size);
+        if (!byBatch.has(key)) byBatch.set(key, []);
+        byBatch.get(key).push(row);
+    }
+    const out = [];
+    for (const key of [...byBatch.keys()].sort((a, b) => a - b)) {
+        const bucket = byBatch.get(key);
+        const held = new Set();
+        for (const row of bucket) {
+            for (const index of digestRowFloorIndexes(row)) if (positions.has(index)) held.add(positions.get(index));
+        }
+        // Sealed means the batch is FULL. A trailing partial batch keeps one row per floor until its
+        // floors arrive, which is both why folding still starts at the first extracted turn and why a
+        // sealed row never changes afterwards: floor ordinals only ever append.
+        const sealed = held.size >= size;
+        if (!sealed) {
+            // Still filling. One row per floor, tagged with the batch it belongs to, so a sealed row that
+            // already stands in for this batch can supersede these without losing a floor.
+            for (const row of bucket) out.push({ ...row, batch: key, sealed: false, floors: digestRowFloorIndexes(row).length });
+            continue;
+        }
+        const ids = bucket.flatMap(row => (Array.isArray(row.source_ids) ? row.source_ids.map(String) : []));
+        const floorIndexes = [];
+        for (const row of bucket) for (const index of digestRowFloorIndexes(row)) if (!floorIndexes.includes(index)) floorIndexes.push(index);
+        floorIndexes.sort((a, b) => a - b);
+        // One row for the whole batch, bounded by the same per-line cap every other digest line obeys,
+        // with the same oldest-first share rule A4 uses: the cause survives and the restatement is what
+        // gets trimmed. This is what keeps the stored tree at ceil(floors / everyTurns) * cap characters
+        // instead of growing with the transcript.
+        const share = Math.max(24, Math.floor((lineCap - (bucket.length - 1)) / bucket.length));
+        out.push({
+            id: 'summary_l1_batch_' + fnv1a32(floorIndexes.join(',')).toString(36),
+            level: 1,
+            source_ids: ids,
+            text: clean(bucket.map(row => clean(row.text, share)).filter(Boolean).join('；'), lineCap),
+            created_at: bucket.reduce((at, row) => Math.max(at, Number(row.created_at) || 0), 0),
+            digest: true,
+            merged: ids.length,
+            batch: key,
+            sealed: true,
+            floors: floorIndexes.length,
+        });
     }
     return out;
 }
