@@ -671,3 +671,72 @@ One incidental finding worth keeping: the deployed extension had been assumed st
 differed from the repository. They differ **only in line endings** (CRLF vs LF); the content is byte-identical
 after normalisation. The deployment was current, so this session's earlier live measurements are valid.
 
+---
+
+## 11. The deployment path is now scripted, and the earlier measurements are confirmed to have run on the shipped code
+
+### Problem / Requirement
+
+Entry 10 recorded that the change-chain fix was committed and unit-tested but **not verified live**, because
+copying it to the host's extension directory needed a sandbox escalation that never arrived. Two follow-on
+problems came out of that:
+
+1. Finding the host's extension directory at all took a filesystem-wide search. The repository is
+   `D:\\memory_plugin`; the host loads the extension from
+   `%USERPROFILE%\\scoop\\persist\\TauriTavern\\data\\extensions\\third-party\\Memory-plugin`. A page reload reloads
+   *that* copy. Editing the working tree and reloading therefore verifies nothing, **and fails silently** -
+   the probes simply keep reporting the old behaviour, which reads as "the fix did not work".
+2. A raw hash comparison of the two trees reported nine runtime files as different, which reads as "the
+   deployment is stale" and would have invalidated every live measurement taken this session. Seven of the
+   nine differed **only by line endings**.
+
+### Purpose of Change
+
+Make the deployment step explicit and one command, make staleness detectable instead of silent, and settle
+whether the measurements in entries 9 and 10 were taken against the shipped code or against something older.
+
+### How It Was Changed
+
+- [deploy-live.mjs](file:///D:/memory_plugin/deploy-live.mjs) - new. Resolves the live directory from
+  `--dir`, `$AETHERIA_LIVE_DIR`, or the two known host locations; compares every loadable file **ignoring
+  line endings**; prints identical / changed / missing; and copies only with `--apply`. A bare run never
+  writes, so it cannot need the escalation its `--apply` may.
+- No product code changed in this entry.
+
+### Result
+
+`node deploy-live.mjs` now reports, in one line each, exactly which files the host is running stale:
+
+    live directory : C:\\Users\\20436\\scoop\\persist\\TauriTavern\\data\\extensions\\third-party\\Memory-plugin
+    repo files     : 133
+    identical      : 110
+    changed        : 13  ARCHITECTURE.md, index.js, package.json, README.md, test-*.mjs (x8), v55-spine.js
+    missing live   : 10  deploy-live.mjs, test-*.mjs (x9)
+
+**The measurements stand.** Blob-hash comparison (`git hash-object --no-filters` against
+`git rev-parse <rev>:<path>`, which is immune to the CRLF question that made raw hashing misleading)
+settles it per file:
+
+| module | live vs `HEAD~1` |
+|---|---|
+| `index.js` | **equal** (differs from `HEAD` only by entry 10's fix) |
+| `v55-spine.js` | **equal** (same) |
+| `v55-certificate.js` | equal to both |
+| `memory-core.js` | equal to both |
+| `v55-consistency.js` | equal to both |
+| `v55-quality-metrics.js` | identical after line-ending normalisation |
+| `v55-tcausal.js` | identical after line-ending normalisation |
+
+So every runtime module the measurements touched was **byte-identical to the previous commit**, and the
+only two files this commit changes are the two the fix touches. The budget curve, the gate comparison, the
+entity audit and the reference-block composition all describe the code as shipped.
+
+The remaining drift is **documentation and test files only**, which the host never executes. It is recorded
+here rather than fixed because a full `--apply` would push `deploy-live.mjs` and nine offline tests into an
+extension directory that has no use for them; a runtime-only sync is the right default and is left as a
+follow-up rather than guessed at now.
+
+**Still not verified live.** The fix remains unobserved in the running app for the reason in entry 10.
+`node deploy-live.mjs --apply` is the single command that needs the approval.
+
+
