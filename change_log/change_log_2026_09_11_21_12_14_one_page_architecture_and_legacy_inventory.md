@@ -363,5 +363,67 @@ revisions yet, T-Causal 18/19, injected 3,534 tokens. One turn did not confirm e
 Per-turn cost is about 105 seconds, so 100 floors is roughly 1.5 hours including the reloads. The run
 continues; its result is not in this entry.
 
+---
+
+## Entry 8 - the 100-floor result, the measured root cause, and the first iteration
+
+- Date: 2026-09-12 00:10:00
+- Session: same conversation. The 100-floor run completed; the owner asked to iterate on the result.
+
+## Problem / Requirement
+
+The 100-floor run (`16_100floor_run_result.md`) showed the architecture is safe but not sufficient:
+commitment retention flat at 100% for the whole run, state coverage falling 100% to 18%, T-Causal falling
+100% to 13%, injected tokens rising 11x. Nothing was retired: 223 adds, 10 updates, 1 supersede, 7
+retirements in 100 floors.
+
+## Purpose of Change
+
+Find the mechanism rather than the symptom, fix the mechanism, and validate on a run comparable to the
+original so the two can be read side by side.
+
+## How It Was Changed
+
+**Diagnosis, from the live store, all deterministic:**
+
+| Reading | Value |
+|---|---|
+| `add` operations | 223 |
+| of those, creating a **brand-new slot** | **200** |
+| of those, reusing an existing slot | **0** |
+| distinct slots touched | 201 |
+| slots written **exactly once** | **195** |
+| memory text: median / mean / max | 79 / 81 / 183 chars |
+| slot prefixes | `Seraphina.belief` 65, `.state` 48, `.knowledge` 43, `.commitment` 12 |
+
+So the store does not grow because facts accumulate. It grows because **the extractor invents a new slot
+for every fact and never reuses one**. Two thirds of the volume is `Seraphina.belief.*` entries that are
+per-turn literary readings of the player's sentences ("she read 'us' as two people and a rattan chest"),
+not world state.
+
+A second reading corrected an earlier assumption of mine: the reference block is **not** mostly memories.
+It is 11,346 characters of hierarchical summary carrying only **6** `<memory>` rows. The injected rows are
+verbatim the stored texts (verified: `rowEqualsStored` true, 152 chars both sides), so the certificate is
+measuring the right thing; the state simply is not in the block.
+
+**The fix (prompt only, no new structure):**
+
+- [memory-extractor.js L218](file:///D:/memory_plugin/memory-extractor.js#L218) - the `【slot】` section becomes `【slot 复用 — 强制】`: the extractor must read the existing slots it is already given and use `update / supersede / close` on them, and must not create a parallel slot. It states the measurement (200 of 223 adds created a new slot; 190-entry pool; 18% coverage) so the instruction carries its own evidence.
+- [memory-extractor.js L218](file:///D:/memory_plugin/memory-extractor.js#L218) - a `【写入门槛】` test (durability in three days, consequence for later action, statability as a fact about the world), an explicit `【绝对不要写】` ban on wording analysis, sentence counting, rhetorical reading and meta-commentary about the conversation, and a bound of about six operations per turn.
+- [test-v55-extraction-discipline.mjs L1](file:///D:/memory_plugin/test-v55-extraction-discipline.mjs#L1) - asserts every one of those clauses, including that the existing slots reach the extractor, so the discipline cannot be quietly dropped again.
+
+## Result
+
+Test suite: **72/72 in 19.1 s**.
+
+Validation launched as `pwsh-21`: **25 user turns = 50 floors**, the same scenario prefix as the original
+run, on a fresh chat, reloading between batches. Floor 50 is directly comparable with the original run's
+floor 50, which read **state 48%, commitment 100%, causal 1/5, T-Causal 35%, 10,963 injected tokens**.
+
+If the extraction discipline works, the state pool should stop growing roughly five slots per turn, and
+state coverage at floor 50 should rise well above 48%. If it does not move, the prompt is not the lever
+and the next candidate is a deterministic consolidation pass. That result is not in this entry.
+
+
 
 
