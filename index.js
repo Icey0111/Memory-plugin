@@ -168,7 +168,14 @@ const DEFAULT_SETTINGS = Object.freeze({
     setting_query_seed_from_memories: true,
     // v5.5-dev Commit F: one context assembler, two extension-prompt blocks.
     reference_context_max_chars: 12000,
-    current_state_context_max_chars: 5000,
+    // Measured on a 50-floor live chat by ablation, not by argument (change_log Entry 10). The block was
+    // pinned at its 5,000-character cap while carrying only 17 of 31 live slot values, and the layered
+    // summary was spending budget for no measurable gain in state, causal or T-Causal coverage. Raising
+    // this cap to 20,000 moved state coverage 55% -> 90% and T-Causal 43% -> 65% while total injected
+    // tokens FELL from 8,897 to 7,213: state the model is simply given no longer has to be recalled.
+    // The cap is not a cost, because the block is bounded by the live memory set and stops growing on
+    // its own once every live value fits.
+    current_state_context_max_chars: 20000,
     context_reply_reserve_tokens: 1200,
     current_state_injection_depth: 1,
     // Iteration 08: quiet generations are cleared by default (including background extraction).
