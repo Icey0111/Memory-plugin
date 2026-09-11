@@ -38,6 +38,7 @@ Files are numbered so their reading order is explicit:
 | `07_functional_check.md` | What each memory stage actually does, measured, and the gaps that remain |
 | `08_concept_map.md` | The whole system as one concept picture: the four data kinds, stores, invariants |
 | `09_legacy_inventory.md` | Artifacts that survive from earlier designs, measured, with the command class used to find them |
+| `10_airp_memory_methodology.md` | Memory methodology derived from the roleplay problem, with the research that supports or contradicts it |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.
