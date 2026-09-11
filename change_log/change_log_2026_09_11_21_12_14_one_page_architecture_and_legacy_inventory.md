@@ -573,6 +573,77 @@ Validation of the change in a real run (`run-validate50b.ps1`, 25 user turns = 5
 scenario prefix, logging the in-run certificate this time) launched as `pwsh-22`. Its result is not in
 this entry.
 
+---
+
+## Entry 11 - the validation looked like a null result until the budget itself was measured
+
+- Date: 2026-09-12 01:20:00
+- Session: same conversation. The 50-floor validation of Entry 10's allocation change completed.
+
+## Problem / Requirement
+
+The sweep predicted state coverage 55% -> 90%. The real run's last turn read **53%**. That disagreement
+had to be explained rather than averaged, and the change had to be kept or reverted on evidence.
+
+## How It Was Changed
+
+Nothing in the plugin in this entry.
+
+## Result
+
+**The run itself** (25 user turns scheduled; 24 completed because one reply never arrived and the new
+pairing guard correctly dropped the unanswered user turn, giving 24 users and 24 replies instead of 25 and
+24):
+
+- All 5 batches: `healthy: true`, `save: ok`, no empty rows. The transcript-health guard worked.
+- End-of-run in-run certificate: state **18/34 (53%)**, commitment 12/12 (100%), causal 4/17, T-Causal
+  **15/40 (38%)**, 10,253 tokens.
+- Prior 50-floor run for comparison: state 17/31 (55%), causal 3/13, T-Causal 17/40 (43%), 8,897 tokens.
+- Within the run, coverage **oscillated between 44% and 100%** (turns 17, 18 and 21 all read 100%).
+
+So on the headline reading, the change bought nothing and cost more. That is what the run says, and it is
+recorded as a null result.
+
+**Why it was a null result, measured.** The plugin's own consistency record on the final chat:
+
+| reading | value |
+|---|---|
+| transcript | 13,753 chars / **10,470 tokens** |
+| `combined_cap_chars` | 32,000 |
+| `combined_used_chars` | 23,968 |
+| injected reference + current state | 11,719 + 12,249 |
+
+The memory budget is **not a fixed number that a setting controls**. It is whatever is left after the
+transcript, and the transcript grows every turn. A standalone budget probe returned an effective combined
+cap of **13,184** characters when invoked with the host's reported 8,192-token context, while the live
+generation recorded 32,000 - so the effective budget also depends on the context the interceptor is handed.
+Raising a configured ceiling therefore cannot help: something else decides how much room there is.
+
+**The decisive test, run on the real chat at floor 48**, holding the total character budget fixed (all
+three rows produced exactly 13,985 characters — the budget is fully consumed either way, so the only
+question is *what it is spent on*):
+
+| allocation (state cap / reference cap) | injected tokens | state coverage | causal | T-Causal |
+|---|---|---|---|---|
+| 5,000 / 12,000 (old) | 9,138 | **15/34 (44%)** | 2/17 | **12/40 (30%)** |
+| 20,000 / 12,000 (new) | **7,260** | **31/34 (91%)** | 3/17 | **25/40 (63%)** |
+| 20,000 / 4,000 | 7,260 | 31/34 (91%) | 3/17 | 25/40 (63%) |
+
+**At a fixed budget, spending it on state instead of recall and summary takes coverage from 44% to 91%,
+T-Causal from 30% to 63%, and total injected tokens down 21%** (9,138 -> 7,260). The allocation change is
+kept on this evidence.
+
+The two readings are consistent once the mechanism is named: the allocation is worth a great deal *at a
+given budget*, and the end-of-run reading is low because **the budget had been squeezed**, not because the
+allocation failed. The certificate measures the projection the plugin built; the projection's size is
+decided by a dynamic budget the plugin does not currently control or report.
+
+**What this makes the next lever.** Not the caps. The transcript is 10,470 tokens at floor 48 and grows
+without bound, and the memory budget is whatever remains. Reducing the transcript's share - floor folding
+and cold-original eviction, the machinery that the earlier functional audit found had *zero observable
+effect* - is what would stop the memory budget shrinking as a conversation gets long.
+
+
 
 
 
