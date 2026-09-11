@@ -397,3 +397,54 @@ model loop's `pending` comes from `processed_turn_ids`, which the digest fills f
 reach is still bounded by the summary budget: about the newest 90 floors, not all 500. And a floor's
 narrative detail is now ~39 characters instead of ~164 - the facts are unaffected because they live in the
 state block, but the story-so-far block is thinner per floor.
+
+## Seventh change: the memory thesis, converged and scoped to this plugin
+
+### Problem / Requirement
+
+The user asked for the memory discussion to be converged onto their original two-line formulation -
+*记忆是检索*, *总结给剧情推进提供基础* - after several rounds of literature review. They then corrected
+the scope: an earlier version of the convergence had been written into the `all-the-airp` project, and
+AIRP is **not** the target. It is a sibling research project, it is not a tavern scenario, and much of it
+is unrelated to memory.
+
+### Purpose of Change
+
+State the thesis precisely enough to build and falsify, scoped to **this plugin inside SillyTavern**, and
+let the scoping expose what is actually missing here rather than what is missing in AIRP.
+
+### How It Was Changed
+
+- [dev_docs/21_memory_thesis.md](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md) (new) - the converged thesis: five repaired claims with
+  evidence, what this plugin already is (a certified *reading* system), the tavern constraints that shape
+  the design, a stage-by-stage gap table, the three-layer design, the two defects the thesis exposes in
+  what already shipped, the warning that retrieved prose may be ignored, four cheap hypotheses, and the
+  not-claimed list.
+- [dev_docs/header.md L52](file:///D:/memory_plugin/dev_docs/header.md#L52) - registered in the index.
+- No code changed. The AIRP-side document was left in place with a scope note pointing here; it is that
+  project's record and is not edited by this one.
+
+### Result
+
+Three things came out of the convergence that were not visible before it.
+
+**1. The index is already half-extracted here.** Every memory carries `entities` and `source_message`;
+`entity_registry` exists; and a folded row **keeps its content** - folding sets `is_system` and a marker
+and touches nothing else. So `attention → entity → memory → source_message → floor → original text` is
+complete except for the last hop. Nothing turns a floor back into injected text. **That single missing hop
+is the difference between this plugin having state and having memory.** It also means the broken vector
+collection is an *enhancement* for unnamed relevance, not a prerequisite.
+
+**2. The tavern constraints point at a mechanism this plugin already has.** A missed retrieval is
+unrecoverable within the turn and costs a reply; every model call is billed to the user. So the gate must
+be deterministic and generous, and retrieval is **selective un-hiding for one turn** - the mechanism
+`unfoldFloorsNotCovered` already uses, doing something else.
+
+**3. The thesis convicts two things already shipped.** The sealed batch row compresses by **truncating
+prose** (~39 characters of each floor's summary) where the situation-model literature says it should
+**select structure** across five dimensions - all of which the extraction records already carry. And the
+fold certificate checks *every hidden floor has a stand-in*, when the thesis requires *every hidden floor
+is still retrievable and the path is complete* - which has never been checked, because nothing reads it.
+
+Nothing was measured in this entry. The four hypotheses and the LongMemEval acceptance table are stated in
+the document and are not yet run.
