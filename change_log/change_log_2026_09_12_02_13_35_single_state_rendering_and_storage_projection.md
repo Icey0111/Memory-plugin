@@ -493,3 +493,58 @@ The stop-doing list is the other half of the answer: no model judge holding the 
 merge, no model-written batch narrative, no ported retrieval pipeline, and no per-turn model call. The
 first four are the declined plan's expensive items; the fifth is a standing constraint because every call
 is billed to the user.
+
+## Ninth change: H1 and H2 verified - the prediction was wrong
+
+### Problem / Requirement
+
+The user asked for the verification to be run. H1 (an IDF gate finds planted long-range detail far better
+than a frequency gate) and H2 (a frequency gate is at least as good at identity, so the two are
+complementary) were the two hypotheses that decide what layer 1 of the retrieval gate is built on.
+
+### Purpose of Change
+
+Falsify or support them with a measurement that costs nothing, before any code is written against them.
+
+### How It Was Changed
+
+- [remove/.audit-v55/live-check/expr-gate.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-gate.js), [expr-gate2.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-gate2.js), [expr-gate3.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-gate3.js) - three
+  probes over the live acceptance chat via CDP; **zero model calls**.
+- [dev_docs/21_memory_thesis.md L174](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L174) - v2: the adjudication and the reframing.
+- [dev_docs/22_plan_after_compression.md L166](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L166) - v2: A2 re-scoped, A0 added.
+- No product code changed.
+
+### Result
+
+**H1 is refuted.** Over 19 attention events, the frequency gate matched or beat the IDF gate at every
+budget: at B=2, 0.632 vs 0.526; at B=4, 0.842 vs 0.579; at B=8, 0.842 vs 0.789; at B=16 both 0.947. The
+paired difference at B=8 was −0.053 with a 95% interval of [−0.332, +0.227], and IDF won 3 events of 19.
+The prediction was not merely unsupported; the sign is the wrong way.
+
+**A control passed, so the measurement is not vacuous.** Taking simply the most recent floors scores 0.474
+at B=8. Both gates beat it substantially, so entity-based retrieval carries real signal - it is the choice
+between the two *scores* that the data does not support.
+
+**H2 is undecidable at this chat length, for a structural reason.** The fraction of entity groups already
+present in the rendered state block is 0.40 / 0.60 / 0.85 / **1.00** as the block carries 10 / 25 / 50 / 76
+memories. At the live size, **everything is already in the prompt**, so neither gate has anything to add
+and "which is better" has no discriminating power.
+
+**The two results are one result, and it is the finding that matters.** Retrieval does not exist to find
+what the state block missed - at these lengths it misses nothing. **Retrieval is the overflow mechanism of a
+bounded state block**: it recovers what the budget had to drop, and its work begins between 50 and 76
+memories carried, which is exactly where the 12,000-character cap binds. The gate should therefore be aimed
+at the memories that fell outside the budget, not at "surprising entities" in general. That also explains
+the failed prediction: *long-range detail* meant **rare** detail, while what returns after a gap is
+disproportionately the **frequent** cast. Frequency answers *who will matter again*; IDF answers *which
+token is a distinctive key*. They were never competing for the same job, and the likely design keeps both -
+frequency for the gate, IDF for the key - with the roles swapped from what H1/H2 proposed.
+
+**Two defects found on the way.** The entity registry carries **89 raw names that collapse to 20 groups**
+(~4.5 names per thing), which makes canonicalisation a prerequisite rather than a detail. And IDF's top
+ranked terms in the live chat are 路引, 灰絮之症, 怀表, **eldoria**, **shadowfang** - the last two are
+English world-book names inside a Chinese transcript, so rarity alone rewards irrelevant imported
+vocabulary and IDF needs a relevance filter.
+
+The plan now carries **A0 - entity canonicalisation** as a prerequisite, with A2 re-scoped to the
+budget-overflow question, which needs a corpus where the state cap actually binds.

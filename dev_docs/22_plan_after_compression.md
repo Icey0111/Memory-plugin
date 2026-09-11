@@ -161,3 +161,31 @@ None of this requires the vector collection, a model judge, or a narrative merge
 Phases **W0, A1, A2, A3 and C1** are measurable or buildable with **zero additional model calls**.
 Phase **B** adds deterministic code and one bounded injection per turn. Phases **D** and **E** are the
 only ones with a real bill, and both are deferrable until the gate is shown to work.
+
+
+<!-- VERSION 2 -->
+## v2 - 2026-09-12 05:16:15 - A2 adjudicated: the gate's question changed
+
+H1 and H2 were run (zero model calls). The full numbers are in `21_memory_thesis.md` v2. Consequences for
+this plan:
+
+**A2 is re-scoped.** As written it asked which score finds long-range detail better. That question is
+**not decidable on a chat of this length**: the frequency gate was at least as good as the IDF gate at
+every budget, and the reason is structural — at the live block size **100% of entity groups are already in
+the prompt**, so neither gate has anything to add. A2 becomes: *when the state block is forced to drop
+memories, does a gate recover them better than taking the most recent floors?* That needs a corpus where
+the state cap binds.
+
+**A new prerequisite, A0 — entity canonicalisation.** 89 raw entity names collapse to 20 groups (~4.5 names
+per thing). No gate or index can be built on the registry as-is, and this is cheap, deterministic work.
+
+**The gate's target changes.** Not "surprising entities" but **the memories that fell outside the budget**.
+The gate is the overflow mechanism of a bounded state block, and that is also the first honest statement of
+what retrieval is *for* in this plugin.
+
+**C1 gains a constraint.** If IDF is ever used as a key, it needs a relevance filter: its top-ranked terms
+in the live chat are 路引, 灰絮之症, 怀表, **eldoria**, **shadowfang** — the last two are English world-book
+names in a Chinese transcript that have nothing to do with the plot.
+
+**Unchanged**: W0, A1, B1–B3, C1's situation-model row, and the stop-doing list. Nothing here reopens a
+model judge, a narrative merge, or a per-turn model call.

@@ -170,3 +170,85 @@ et al. 2010 · Whittlesey & Jacoby 2001 · Nader & Hardt 2009 · Chun & Johnson 
 arXiv 2405.14831) · Asai et al. 2023 (*Self-RAG*, arXiv 2310.11511) · Behrouz et al. 2024
 (*Titans*, arXiv 2501.00663) · Google Research 2025 (*Nested Learning*, arXiv 2512.24695) ·
 DeepSeek-AI 2025 (*DeepSeek-OCR*, arXiv 2510.18234)
+
+<!-- VERSION 2 -->
+## v2 - 2026-09-12 05:16:15 - H1 is refuted, H2 is undecidable here, and the gate's job was mis-stated
+
+### What was run
+
+**Zero model calls.** Live acceptance chat (55 rows, 28 assistant floors, 76 memories). Entity groups built
+from `entities` on every memory plus `entity_registry`, then canonicalised by collapsing names that
+contain one another. Two gates compared: **frequency** (total mentions across the transcript) and **IDF**
+(`log(rows / df)`).
+
+An **attention event** is a floor where an entity returns after a gap of at least 8 rows. The ground truth
+is that entity's own earlier floors, older than the gap — defined **without reference to either gate's
+score**. The metric is whether the gate's top-B floors contain a ground-truth floor.
+
+### Result 1 — H1 is refuted
+
+| budget B | frequency | IDF |
+|---|---|---|
+| 1 | 0.368 | 0.368 |
+| 2 | **0.632** | 0.526 |
+| 4 | **0.842** | 0.579 |
+| 8 | 0.842 | 0.789 |
+| 16 | 0.947 | 0.947 |
+
+n = 19 events. At B=8 the paired difference was −0.053 with a 95% interval of [−0.332, +0.227], crossing
+zero, and IDF won only 3 of 19 events. **The frequency gate is at least as good at every budget and clearly
+better at B=2 and B=4.** The prediction in v1 §10 — *"an IDF gate finds planted long-range detail far
+better than a frequency gate"* — is **not supported**.
+
+**A control that did pass**: at B=8, taking simply the *most recent* floors scores **0.474**. Both gates
+beat that, so entity-based retrieval carries real signal. It is the choice *between the two scores* that
+the data does not support.
+
+### Result 2 — H2 is undecidable here, for a structural reason
+
+Fraction of entity groups already present in the rendered state block, against how many memories the block
+carries:
+
+| memories carried | 10 | 25 | 50 | 76 (live) |
+|---|---|---|---|---|
+| entities already carried | 0.40 | 0.60 | 0.85 | **1.00** |
+
+**At the live block size every entity group is already in the prompt.** There is nothing for a retrieval
+gate to add, so "which gate is better" has no discriminating power. H2 is not refuted; it is unmeasurable
+until the state block is forced to drop things.
+
+### Result 3 — the gate's job was mis-stated, and this is the real finding
+
+Results 1 and 2 are the same result. Retrieval does not exist to find what the state block *missed* — at
+these lengths it misses nothing.
+
+> **Retrieval is the overflow mechanism of a bounded state block.** It exists to recover what the budget had
+> to drop, and its work begins where the carried fraction falls below 1 — which the sweep puts between 50
+> and 76 memories carried, i.e. exactly where the 12,000-character state cap binds.
+
+That reframes the gate: it should aim at **the memories that fell outside the budget**, not at "surprising
+entities" in general. It also explains the failed prediction: *long-range detail* in the original phrasing
+meant **rare** detail, while what actually returns after a gap is disproportionately the **frequent** cast.
+The two hypotheses were about different jobs and had been conflated:
+
+- **frequency** answers *who or what is going to matter again* (salience);
+- **IDF** answers *which token is a distinctive key* (matching).
+
+They are not competing scores for one gate. The likely design is **frequency for the gate, IDF for the
+key** — which preserves the spirit of H2 (two readouts from one distribution) with the roles **swapped**
+from what v1 proposed.
+
+### Result 4 — an A1 defect and an IDF failure mode
+
+- **89 raw entity names collapse to 20 groups** — roughly 4.5 names per thing. Any index built on the
+  registry as-is is noisy, and canonicalisation is a *prerequisite* for the gate, not a detail.
+- **IDF promotes imported setting vocabulary.** Its top five are 路引, 灰絮之症, 怀表, **eldoria**,
+  **shadowfang** — the last two are English world-book names inside an otherwise Chinese transcript.
+  Rarity alone rewards any rare token, including irrelevant imported ones, so a relevance filter is needed
+  before IDF can be trusted.
+
+### What this changes
+
+H1 is dropped as stated. A2 is re-scoped to the budget-overflow question, which cannot be measured until a
+corpus exists where the state block is saturated. Entity canonicalisation is promoted to a prerequisite.
+See `22_plan_after_compression.md` v2.
