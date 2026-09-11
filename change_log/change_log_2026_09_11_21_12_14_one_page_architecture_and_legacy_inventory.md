@@ -266,3 +266,54 @@ before the first extraction.
 The 100-floor run (50 user turns, fresh chat, ~300-400 characters asked per reply) was launched as a
 background job at 22:09. Its result is not in this entry.
 
+---
+
+## Entry 6 - the first 100-floor run produced blank turns; four defects, found from a screenshot
+
+- Date: 2026-09-11 22:36:00
+- Session: same conversation. The owner sent a screenshot of the running chat showing character turns rendered as empty bubbles containing only a collapsed "thinking" indicator.
+
+## Problem / Requirement
+
+The background run launched in Entry 5 was producing **empty character messages**. The chat file confirmed
+it: across 46 rows, roughly half the character turns had `mes` length **0**. The suite was green, the smoke
+test had reported 498/423/505 characters, and the run still produced nothing visible.
+
+## Purpose of Change
+
+Stop the run, find the real cause rather than the symptom, and make the runner's health checkable at the
+transcript level, because the certificate measures the store and could not see this.
+
+## How It Was Changed
+
+Four distinct defects, all in the untracked live harness:
+
+1. **`openai_max_tokens = 700`**: a reasoning model bills its hidden reasoning against the same budget, so
+   the allowance was spent before any visible text. Raised to 1600.
+2. **The empty character row was kept**: the run's recovery generated a replacement, but the empty row
+   stayed in the transcript, so the UI showed a blank turn. The runner now removes a trailing empty
+   character row.
+3. **The prune did not save**: it edited `ctx().chat` in memory only, and the next `reloadCurrentChat()`
+   restored the row from the file. Measured consequence: empty rows reappeared and two user turns ended up
+   **adjacent**. The prune now calls `saveChat()`.
+4. **A short but non-empty reply triggered a fresh `generate()`**, which creates a *second* message instead
+   of extending the first. The recovery now branches: empty means remove and re-ask, short means
+   `generate('continue')`, which appends in place and adds no row.
+
+Harness files: `expr-airp100-run.template.js` (all four fixes), `gen-airp100floor-turns.mjs`,
+`run-airp100floor.ps1`.
+
+## Result
+
+After the fixes, a four-turn verification on a fresh chat produced exactly **one** character reply per user
+turn, at 464 / 445 / 496 / 421 characters, with no empty rows anywhere in the transcript. The run was
+relaunched at 22:36 as `pwsh-19`.
+
+**The important failure here is the measurement, not the model.** The Entry 5 smoke test "passed" at
+498/423/505 characters because it measured message length, and the transcript it measured contained empty
+rows that the number did not surface. A green test suite, a plausible metric, and a passing smoke test all
+agreed while the product was visibly broken; a screenshot from the owner found it in seconds. The
+certificate cannot cover this because it rules on the store, not on the transcript. The post-run analysis
+must therefore assert transcript health directly: exactly one character row per user row, none empty.
+
+
