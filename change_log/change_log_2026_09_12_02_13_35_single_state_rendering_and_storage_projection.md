@@ -267,3 +267,47 @@ concatenates per-turn event summaries and cannot make text shorter - so it can r
 cannot widen the history the injected window covers. Doing that means restoring the N-batch model summary
 with the digest demoted to the fold-coverage fallback, which is a larger change than this entry and is left
 for the next one.
+## Fourth change: the plan document, and a correction to a claim made in this session
+
+- Date: 2026-09-12 03:18:49
+
+### Problem / Requirement
+
+The user asked for a document recording what to do next, derived from the research into the reference
+implementation (`AlbusKen/shujuku`, ACU SP·数据库 9.2.5) and from this session's measurements.
+
+### Purpose of Change
+
+Turn the comparison into a sequenced, certifiable plan, and record one claim from this session that turned
+out to be wrong before it reached code.
+
+### How It Was Changed
+
+- [dev_docs/19_next_steps.md L1-L40](file:///D:/memory_plugin/dev_docs/19_next_steps.md#L1-L40) (new) - the plan: basis with measured numbers, the diagnosis that **the
+  certificate judges the state and ignores the narrative**, our four core semantics as the constraint on any
+  borrowing, a take/reject table, six work items (N0..N5) each with an invariant and a verification, the
+  sequencing, four open decisions, and the non-goals.
+- [dev_docs/header.md L48-L51](file:///D:/memory_plugin/dev_docs/header.md#L48-L51) - registered in the index.
+
+### Result
+
+The plan's sharpest finding is not a feature gap: **nothing in the certificate's six checks reads the summary
+tree.** `state` reads slot-bearing memories, `commitment`/`causal` read the spine, `epistemic` reads `known_by`,
+`cost` counts tokens. That is why 23 narrative nodes where 3 were expected, a model summariser that has never
+run (`modelRows: 0`), a consolidation layer that has never merged (`l2: 0`, `l3: 0`) and a projection that would
+show only the newest ~20 turns at 500 floors all went unnoticed: the narrative layer has no contract, so it
+cannot be asked questions.
+
+**The correction.** An earlier message in this session proposed replacing the fold's row markers with a
+projection over the transcript. That is not available to us: SillyTavern assembles the prompt from `ctx.chat`,
+and the only lever an extension has over a chat row is the one the host's own hide button uses - marking it.
+The reference project can project because its rows never enter the chat; it owns their export. The borrowable
+lesson is therefore narrower: keep the hidden set authoritative and verify that a rebuild from row markers is
+exact, rather than trusting markers as the primary record. This is recorded in the document so it is not
+rediscovered later.
+
+The plan also states the arithmetic that stops N2 from being mistaken for a complete fix: staging alone leaves
+500 turns as 34 stages at ~700 characters, which is ~23,800 characters against a 3,520-character budget. Only
+the hierarchy (N3) brings that back to ~3,500 characters. N2 makes the units; N3 is what pays.
+
+No code changed in this entry.
