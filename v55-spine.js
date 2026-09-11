@@ -176,6 +176,9 @@ export function appendSpine(store, records, context = {}) {
             memory: memoryId,
             target: targetId,
             replaced: clean(record.superseded_by, 80) || null,
+            // The value this node replaced. `update` rewrites a record in place, so the previous value
+            // has no other carrier anywhere in the store.
+            previous: clean(record.prev_text, 240) || null,
             first,
         };
         spine.nodes.push(node);
@@ -230,6 +233,20 @@ export function factHistory(store, slot) {
     const key = clean(slot, 160);
     if (!key) return [];
     const memories = store?.memories && typeof store.memories === 'object' ? store.memories : {};
+    const spine = openSpine(store, false);
+    // Values an in-place `update` overwrote. They are not memory records any more, but they are the only
+    // surviving statement of what the slot held before, and "how did it get like this" is unanswerable
+    // without them.
+    const previous = new Map();
+    if (spine) {
+        for (const node of spine.nodes) {
+            if (node.slot !== key || !node.previous) continue;
+            const owner = node.memory || node.target || null;
+            const list = previous.get(owner) || [];
+            list.push({ seq: node.seq, text: node.previous });
+            previous.set(owner, list);
+        }
+    }
     return Object.values(memories)
         .filter(memory => memory && memory.slot === key)
         .sort((a, b) => Number(a.created_seq || 0) - Number(b.created_seq || 0))
@@ -240,6 +257,7 @@ export function factHistory(store, slot) {
             supersedes: memory.supersedes || null,
             superseded_by: memory.superseded_by || null,
             at: memory.recorded_at ?? null,
+            previous: (previous.get(memory.id) || []).sort((a, b) => a.seq - b.seq).map(entry => entry.text),
         }));
 }
 
@@ -268,8 +286,9 @@ export function spinePromptBlock(store, { maxChars = 600, maxRows = 10 } = {}) {
     const bySlot = new Map();
     for (const node of spine.nodes) {
         if (!node.slot) continue;
-        const entry = bySlot.get(node.slot) || { slot: node.slot, changes: 0, latest: null };
+        const entry = bySlot.get(node.slot) || { slot: node.slot, changes: 0, latest: null, previous: [] };
         entry.changes += 1;
+        if (node.previous) entry.previous.push(node.previous);
         entry.latest = node;
         bySlot.set(node.slot, entry);
     }
@@ -288,7 +307,20 @@ export function spinePromptBlock(store, { maxChars = 600, maxRows = 10 } = {}) {
     const lines = [header];
     let used = header.length + 2;
     for (const row of rows.slice(0, Math.max(1, Number(maxRows) || 10))) {
-        const line = '- [' + (row.current.kind || 'state') + '] ' + row.entry.slot + ' (已变更 ' + row.entry.changes + ' 次) 当前: ' + clean(row.current.text, 160);
+        // The replaced values, not just the fact that a change happened. "已变更 2 次" alone cannot answer
+        // "how did it get like this". Two carriers, because the store has two ways to replace a value:
+        // a retired memory on the same slot (what an `add` over an occupied slot leaves behind) and the
+        // `previous` text the spine keeps (what an in-place `update` would otherwise erase). Ordered so
+        // the chain reads oldest -> newest, then bounded to three endpoints and 220 characters.
+        const retired = Object.values(memories)
+            .filter(memory => memory && memory.slot === row.entry.slot && memory.id !== row.current.id && memory.text)
+            .sort((a, b) => Number(a.created_seq || 0) - Number(b.created_seq || 0))
+            .map(memory => memory.text);
+        const replaced = [...retired, ...row.entry.previous]
+            .slice(-3).map(value => clean(value, 90)).join(' -> ').slice(0, 220);
+        const line = '- [' + (row.current.kind || 'state') + '] ' + row.entry.slot + ' (已变更 ' + row.entry.changes + ' 次)'
+            + (replaced ? ' 曾: ' + replaced + ' ->' : '')
+            + ' 当前: ' + clean(row.current.text, 160);
         if (used + line.length + 1 > budget && lines.length > 1) break;
         lines.push(line);
         used += line.length + 1;

@@ -76,18 +76,29 @@ export function digestRows(store, turns, { maxRows = DIGEST_DEFAULT_MAX_ROWS, ma
     return kept;
 }
 
-/** Digest rows rendered as Level-1 summary rows, so every existing consumer keeps working unchanged. */
+/**
+ * Digest rows rendered as Level-1 summary rows, so every existing consumer keeps working unchanged.
+ *
+ * Accepts either one row (\`source_id\`) or a group produced by A4's \`groupDigestRows\` (\`source_ids\`).
+ * A group names every turn it stands in for, which is what keeps the fold coverage certificate true
+ * while the rendered text gets shorter.
+ */
 export function digestToLevel1(rows) {
-    return (Array.isArray(rows) ? rows : []).map(row => ({
-        id: 'summary_l1_' + fnv1a32(row.source_id + '|' + row.text).toString(36),
-        level: 1,
-        source_ids: [String(row.source_id)],
-        text: row.text,
-        created_at: row.at || 0,
-        // Marks the row as machine-assembled: it is replaced wholesale on every pass, and a model
-        // summary with the same source ids is a different, legitimate kind of row.
-        digest: true,
-    }));
+    return (Array.isArray(rows) ? rows : []).map(row => {
+        const ids = Array.isArray(row.source_ids) && row.source_ids.length ? row.source_ids.map(String) : [String(row.source_id)];
+        return {
+            id: 'summary_l1_' + fnv1a32(ids.join(',') + '|' + row.text).toString(36),
+            level: 1,
+            source_ids: ids,
+            text: row.text,
+            created_at: row.at || 0,
+            // Marks the row as machine-assembled: it is replaced wholesale on every pass, and a model
+            // summary with the same source ids is a different, legitimate kind of row.
+            digest: true,
+            // How many turns this one line stands in for. 1 means A4 found no repetition worth merging.
+            merged: ids.length,
+        };
+    });
 }
 
 /** The covered assistant indexes, i.e. exactly the floors whose stand-in is still in the window. */

@@ -228,3 +228,55 @@ provenance   { memory_id, channel:'saw'|'heard'|'told'|'inferred', source_messag
 - AIRP：提供**架构原则**（派生投影、证据链、隔离语义、禁止 summary→summary）。本项目不实现它的平台能力。
 - ai_model_training：提供**认知压缩原则**（只存差异、schema+deviation、provenance）与**研究方法论**（预注册门槛、批次一致性、失败即结论）。本项目不采用它的任何训练手段。
 - 两个项目都不能替代 T-Causal 验收：**它们的原则只有在我们自己的数据上复现，才算数。**
+
+---
+
+## 9. A 级落地记录（2026-09-11，T-Causal 先行）
+
+本轮把 A 级从"载体先落地、判据全缺席"推到"判据先行、A 项按判据落地"。范围严格限定在记忆系统本身。
+
+### 9.1 先做判据：T-Causal 问答集
+
+- 新增 [v55-tcausal.js](../v55-tcausal.js)：三类问题（why / who_first / who_unknown）加一类否定检查（no_stale）。
+- 新增 [tcausal-cases.json](../tcausal-cases.json)：**手写**问答集，8 条，覆盖三类问题；用一段可复现的 slot 变更脚本（不可逆承诺、被推翻的推断、变过两次的地点、有限知情者）建库。
+- 关键设计：**两类语料**。`current`（现行记忆）回答"现在是什么"，`history`（含退役记录与 spine 里被覆盖的旧值）回答"为什么变成这样"。`forbids` 一律只对 `current` 判定——被推翻的值可以出现在变更链里，但绝不能作为现状被回答。
+- 接进 [index.js](../index.js) 的 `getQualityReport`：只跑**从本聊天 spine 自动生成**的用例；手写集属于离线回归，因为它的期望绑定在固定场景上。
+
+### 9.2 A2 场景边界（新实现）
+
+- 新增 [v55-boundary.js](../v55-boundary.js)。三档：硬（地点槽或参与者集合变化）、软（不可逆变更或 world_delta）、兜底（楼层节拍）。
+- 输出 `boundaryStats.beat_share`：**有多少边界是靠兜底档兜住的**，这是"检测器到底买到了什么"的诚实数字。
+- 开关 `boundary_detection_enabled`，关掉即回到纯节拍——即计划要求的降级路径。
+
+### 9.3 A4 重复度驱动压缩（新实现）
+
+- 新增 [v55-compression.js](../v55-compression.js)。`repetitionScore` = 文本复用（bigram Jaccard）× 0.6 + 槽位新颖度不足 × 0.4；`compressionPlan` 把它映射成 `factor` 与 `group_size`。
+- **关键设计修正**：缩小 digest **窗口**不是压缩。窗口是折叠覆盖证书，删行会还原原文楼层、让提示词变大。所以压缩做成**合并**：多回合并成一条摘要行，`source_ids` 保留全部 turn id，覆盖不变而文本变短。
+- 合并只在"真的更短"时执行（短行拼接只会加分隔符），并且**不跨边界合并**——A2 喂给 A4。
+- 低于死区（0.2）的重复视为无重复。实测：四句互不相关的中文仍有 0.17 的共享词噪声。
+
+### 9.4 A6 按可重构性遗忘（新实现）
+
+- 新增 [v55-forget.js](../v55-forget.js)。按 kind 定可重构等级（commitment 0 → event 4），`critical` 与不可逆变更永不淘汰。
+- `pruneColdTurns` 从 `order.shift()`（纯到达顺序）改为按可重构性淘汰；只剩受保护条目时**故意超预算**并报 `over_budget`。
+- **踩到 §8.1 同一个坑**：最初把"首次发生"也算作不可重构，结果几乎全部条目都被钉住。"首现"按 slot 计算而 slot 近乎唯一，所以它降级为**同等级内的排序权重**，与 §8.1 对 S5 的处理一致。
+- 开关 `cold_eviction_by_reconstructability`，关掉即回到 FIFO。
+
+### 9.5 A8 第四个指标（补齐）
+
+- `injectionComposition(text)` / `injectionSectionCost(text, id)`：把注入块按具名分段拆开，给出每段的字符、token 与占比。`injectionBreakdown` 增加 `fullText` 参数以暴露该视图。
+- 现有 `injection_coverage` 回答"多少记忆进了提示词"，本指标回答"每一层花了多少 token"，两者不是一回事。
+
+### 9.6 A5：先测量，只做无信息损失的削减
+
+- 实测（19h32 那轮）：插件块 9,928/15,393 字符（64.5%），其中六个 `<summary>` 正文仅 241 字符。
+- 只做了一处削减：`formatHistoryRow` **不再输出空属性**（`epistemic=""`、`known_by=""` 等）。这是纯开销，删掉不损失任何信息。配比本身仍未调，留给 P4。
+
+### 9.7 顺带修掉两个真实缺陷（由 T-Causal 用例逼出来）
+
+1. **`update` 原地覆写导致旧值无处可查。** 计划 S2 要求"任意 slot 可枚举完整历史"，但 `update` 直接改写记录文本，spine 节点只有槽位名。实测抽取器用 `update` 56 次、`supersede` 20 次，所以这是主路径。现在 `update` 把被覆盖的文本记进 spine（`previous`），变更链渲染成 `曾: A -> B -> 当前: C`。
+2. **`supersede` 只给 `target_slot` 时，替换记录 `slot` 为空。** 旧的已释放槽位，新的没有槽位，**slot 映射直接失去当前值**，变更链对该槽位什么都渲染不出来，下一轮抽取看到状态是未知的。现在替换记录继承目标槽位。
+
+### 9.8 A3 仍未实现（合规）
+
+计划要求 A3 默认关闭，本轮未启用，保持关闭。

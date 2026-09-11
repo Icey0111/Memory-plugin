@@ -19,6 +19,7 @@
 // project was warned about, so it is allowed to be a supplement and nothing more.
 
 import { computeDialoguePairFingerprint, isDialogueRow, lexicalSearchMemories, normalizeStore } from './memory-core.js';
+import { planColdForgetting } from './v55-forget.js';
 
 export const EVIDENCE_VERSION = '5.5-ev1';
 export const LOOKUP_MARKER = '【查阅记忆】';
@@ -49,18 +50,36 @@ function coldCost(row) {
     return String(row?.user_text || '').length + String(row?.assistant_text || '').length + 64;
 }
 
-export function pruneColdTurns(store, maxChars = DEFAULT_COLD_MAX_CHARS) {
+/**
+ * Trim the cold store to a character budget under the A6 rule: evict what can be rebuilt, never what
+ * cannot. Eviction used to be `order.shift()` - pure arrival order - which deleted the opening floors
+ * first, and the opening floors are where first occurrences and the first commitments live. A protected
+ * entry is never selected: if only protected entries remain, the cap is exceeded on purpose and
+ * `over_budget` says so, because a commitment lost to save characters cannot be recovered.
+ */
+export function pruneColdTurns(store, maxChars = DEFAULT_COLD_MAX_CHARS, { byReconstructability = true } = {}) {
     const cold = coldTurnsOf(store);
     const cap = Math.max(1000, Number(maxChars) || DEFAULT_COLD_MAX_CHARS);
-    let removed = 0;
-    while (cold.chars > cap && cold.order.length > 1) {
-        const key = cold.order.shift();
-        const row = cold.turns[key];
-        if (row) cold.chars = Math.max(0, cold.chars - coldCost(row));
-        delete cold.turns[key];
-        removed += 1;
+    if (byReconstructability === false) {
+        // The previous behaviour, kept switchable: pure arrival order up to the cap.
+        let removed = 0;
+        while (cold.chars > cap && cold.order.length > 1) {
+            const key = cold.order.shift();
+            const row = cold.turns[key];
+            if (row) cold.chars = Math.max(0, cold.chars - coldCost(row));
+            delete cold.turns[key];
+            removed += 1;
+        }
+        return { removed, chars: cold.chars, turns: cold.order.length, pinned: 0, over_budget: false };
     }
-    return { removed, chars: cold.chars, turns: cold.order.length };
+    const plan = planColdForgetting(store, { maxChars: cap, cost: coldCost });
+    for (const key of plan.drop_keys) delete cold.turns[key];
+    if (plan.drop_keys.length) {
+        const dropped = new Set(plan.drop_keys);
+        cold.order = cold.order.filter(key => !dropped.has(key));
+    }
+    cold.chars = cold.order.reduce((sum, key) => sum + (cold.turns[key] ? coldCost(cold.turns[key]) : 0), 0);
+    return { removed: plan.drop_keys.length, chars: cold.chars, turns: cold.order.length, pinned: plan.pinned, over_budget: plan.over_budget };
 }
 
 export function recordColdTurn(store, turn, { maxChars = DEFAULT_COLD_MAX_CHARS } = {}) {

@@ -485,6 +485,12 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
 
         if (op.op === 'update') {
             const oldSlot = target.slot;
+            // The value this update is about to overwrite. `update` rewrites the record in place, so
+            // without this the previous value exists nowhere at all - the spine node names the slot but
+            // not what it held - and the plan's S2 acceptance ("any slot enumerates its full history")
+            // silently held only for `supersede`. Measured on the extractor's own output, `update` is
+            // used 56 times against `supersede`'s 20, so this is the common path, not the corner.
+            const previousText = typeof target.text === 'string' ? target.text : null;
             const editable = ['kind', 'slot', 'text', 'status', 'importance', 'epistemic', 'indexable'];
             for (const key of editable) {
                 if (op[key] !== undefined) target[key] = key === 'slot' ? (String(op[key]).trim() || null) : op[key];
@@ -516,6 +522,7 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             spineRecord.target_id = target.id;
             spineRecord.kind = target.kind;
             spineRecord.slot = target.slot;
+            if (previousText && previousText !== target.text) spineRecord.prev_text = previousText;
             spineRecords.push(spineRecord);
             return;
         }
@@ -567,10 +574,17 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             removeSlotIfOwned(store, target);
             changedIds.add(target.id);
             if (op.kind && op.text) {
+                // A supersede that names a target_slot but omits `slot` is replacing that slot's value, so
+                // the replacement has to inherit the slot. Without this the new record is created with
+                // `slot: null`, the old one has already released the slot, and the slot map ends up with
+                // NO current value at all - so the change chain renders nothing for a slot that visibly
+                // changed, and the next turn's extraction sees the state as unknown. Measured: the
+                // extractor writes `supersede` + `target_slot` and no `slot` as its normal shape.
+                const inheritedSlot = typeof op.slot === 'string' && op.slot.trim() ? op.slot : (target.slot || null);
                 const addLike = {
                     op: 'add',
                     kind: op.kind,
-                    slot: op.slot,
+                    slot: inheritedSlot,
                     text: op.text,
                     entities: op.entities,
                     topics: op.topics,

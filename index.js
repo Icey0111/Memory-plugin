@@ -39,7 +39,8 @@ import {
 
 // A8: the quality side of the measurement story. v55-metrics.js meters cost; this meters whether
 // memory stayed good. Pure module, no host globals, so it is fully offline-testable.
-import { qualityReport as computeQualityReport } from './v55-quality-metrics.js';
+import { injectionComposition, qualityReport as computeQualityReport } from './v55-quality-metrics.js';
+import { runTcausal, formatTcausalReport } from './v55-tcausal.js';
 
 import {
     buildBaselineRecords,
@@ -181,6 +182,12 @@ const DEFAULT_SETTINGS = Object.freeze({
     spine_injection_enabled: true,
     spine_injection_max_chars: 600,
     spine_injection_max_rows: 8,
+    // Plan A2/A4/A6. All three are on by default and all three degrade to the previous behaviour when
+    // switched off, which is the plan's own degradation rule for the A list ("a failed detector is never
+    // worse than the floor beat").
+    boundary_detection_enabled: true,
+    compression_repetition_enabled: true,
+    cold_eviction_by_reconstructability: true,
     // Iteration 14 (drift fix): the current-state block renders EVERY active memory, not only the
     // mandatory set, so it was already a baseline wider than S4 claimed. That was implicit, which
     // made the "irreversible-only" experiment impossible to run. Now it is a named setting and the
@@ -1176,7 +1183,7 @@ ${pair.assistantText}`,
     // stays correct with the switch off. It exists so 【查阅记忆】 can still show original wording
     // after the host text changed — which is why it is a copy of the transcript and not a fact store.
     if (settings.cold_turn_snapshot_enabled === false) {
-        pruneColdTurns(store, settings.cold_turn_max_chars);
+        pruneColdTurns(store, settings.cold_turn_max_chars, { byReconstructability: settings.cold_eviction_by_reconstructability !== false });
     } else {
         recordColdTurn(store, {
             source_key: pair.key,
@@ -3387,7 +3394,7 @@ export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit
     const mandatory = settings.inject_current_state
         ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
         : [];
-    return computeQualityReport({
+    const report = computeQualityReport({
         store,
         rendered: renderedBlock !== null ? String(renderedBlock) : String(published?.current_state_block || ''),
         injectedText: effectiveInjected,
@@ -3400,6 +3407,25 @@ export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit
         everyFloors,
         probeLimit,
     });
+    // A8's fourth number: the per-section cost of the block that was actually published. Taken apart
+    // here rather than re-derived by hand, so the number is reproducible after the run.
+    report.injection_composition = injectionComposition(effectiveInjected);
+    // T-Causal (plan section 1 / section 6): the acceptance instrument the A-list is gated on. Only the
+    // cases generated from this chat's own spine are scored here - the authored fixture in
+    // tcausal-cases.json belongs to the offline regression test, because its expectations are about a
+    // fixed scenario and would read as misses on any live chat.
+    report.tcausal = {
+        canonical: runTcausal(store, { generated: probeLimit, scope: 'canonical' }),
+        injected: runTcausal(store, {
+            generated: probeLimit,
+            scope: 'injected',
+            injectedText: effectiveInjected,
+            renderedBlock: effectiveInjected,
+            available: supplied || published !== null,
+        }),
+    };
+    report.tcausal_text = formatTcausalReport(report.tcausal.canonical);
+    return report;
 }
 
 export function __testQualityReport(ctx, options = {}) {

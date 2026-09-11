@@ -60,7 +60,7 @@ export function mandatoryRetention(renderedBlock, mandatoryRows, { available = n
 }
 
 /** 2. Injection accounting: what each layer costs the prompt. */
-export function injectionBreakdown({ referenceBlock = '', currentStateBlock = '', spineBlock = '' } = {}) {
+export function injectionBreakdown({ referenceBlock = '', currentStateBlock = '', spineBlock = '', fullText = '' } = {}) {
     const reference = estimateTokens(String(referenceBlock || ''));
     const currentState = estimateTokens(String(currentStateBlock || ''));
     const spine = estimateTokens(String(spineBlock || ''));
@@ -70,6 +70,9 @@ export function injectionBreakdown({ referenceBlock = '', currentStateBlock = ''
         spine_tokens: spine,
         injected_tokens: reference + currentState,
         combined_tokens: reference + currentState + spine,
+        // The fourth A8 number: with the whole assembled block in hand, the per-section cost is
+        // available too, which is what turns "the memory channel is expensive" into a named line item.
+        composition: fullText ? injectionComposition(fullText) : null,
     };
 }
 
@@ -183,6 +186,80 @@ export function scoreCausalProbes(store, probes, { scope = 'canonical', injected
     const total = list.length;
     const hit = total - misses.length;
     return { total, hit, rate: total ? hit / total : 1, misses, measured: true };
+}
+
+/**
+ * A8's fourth number, "injection increment": what each layer of the assembled block actually costs in
+ * the prompt, and therefore what adding or removing it would change.
+ *
+ * The plan asks for the net prompt-token delta a new layer brings. Measured directly on a real request
+ * (chat Seraphina - 2026-09-11@19h32m15s946ms): the plugin's four blocks were 9,928 of the 15,393
+ * prompt characters, and the six \`<summary>\` texts inside them were 241 characters. The cost of the
+ * memory channel is dominated by how it is rendered, not by what it remembers, and a number nobody can
+ * take apart cannot be optimised - so the sections are named here instead of being guessed at.
+ */
+export const INJECTION_SECTIONS = Object.freeze([
+    { id: 'reference_head', marker: '[PLUGIN REFERENCE DATA' },
+    { id: 'layered_summary', marker: '[AETHERIA 分层剧情摘要' },
+    { id: 'historical_memory', marker: '[HISTORICAL MEMORY' },
+    { id: 'spine', marker: '[记忆变更链' },
+    { id: 'current_state', marker: '[PLUGIN CURRENT STATE' },
+    { id: 'scene_summary', marker: '[AETHERIA 场景摘要' },
+]);
+
+/**
+ * Split one assembled block into its named sections. Unlike injectionBreakdown(), which needs the
+ * caller to have kept the layers apart, this works on a captured prompt as a whole - which is the only
+ * form the number is ever available in after the fact.
+ */
+export function injectionComposition(text) {
+    const body = String(text ?? '');
+    if (!body) return { total_chars: 0, total_tokens: 0, sections: [], measured: false };
+    const found = [];
+    for (const section of INJECTION_SECTIONS) {
+        const at = body.indexOf(section.marker);
+        if (at >= 0) found.push({ id: section.id, at });
+    }
+    found.sort((a, b) => a.at - b.at);
+    const sections = [];
+    for (let i = 0; i < found.length; i += 1) {
+        const end = i + 1 < found.length ? found[i + 1].at : body.length;
+        const chunk = body.slice(found[i].at, end);
+        sections.push({ id: found[i].id, chars: chunk.length, tokens: estimateTokens(chunk) });
+    }
+    const claimed = sections.reduce((sum, section) => sum + section.chars, 0);
+    const unlabelled = body.length - claimed;
+    const totalTokens = estimateTokens(body);
+    const known = sections.reduce((sum, section) => sum + section.tokens, 0);
+    return {
+        total_chars: body.length,
+        total_tokens: totalTokens,
+        prefix_chars: found.length ? found[0].at : body.length,
+        unlabelled_chars: Math.max(0, unlabelled),
+        unlabelled_tokens: Math.max(0, totalTokens - known),
+        sections: sections.map(section => ({ ...section, share: body.length ? Number((section.chars / body.length).toFixed(4)) : 0 })),
+        measured: true,
+    };
+}
+
+/**
+ * The increment of one section: the token cost of the section as rendered, and what the block would
+ * cost without it. \`delta_tokens\` is the number the plan's A8 row asks for.
+ */
+export function injectionSectionCost(text, sectionId) {
+    const breakdown = injectionComposition(text);
+    if (!breakdown.measured) return { section: sectionId || null, delta_tokens: null, delta_chars: null, measured: false };
+    const section = breakdown.sections.find(entry => entry.id === sectionId) || null;
+    return {
+        section: sectionId || null,
+        found: Boolean(section),
+        with_tokens: breakdown.total_tokens,
+        without_tokens: section ? Math.max(0, breakdown.total_tokens - section.tokens) : breakdown.total_tokens,
+        delta_tokens: section ? section.tokens : 0,
+        delta_chars: section ? section.chars : 0,
+        share: section ? section.share : 0,
+        measured: true,
+    };
 }
 
 /** One call that answers all four A8 numbers for the current turn. */
