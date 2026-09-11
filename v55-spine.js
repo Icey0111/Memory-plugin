@@ -339,6 +339,44 @@ export function spinePromptBlock(store, { maxChars = 600, maxRows = 10 } = {}) {
     return lines.length > 1 ? lines.join('\n') : '';
 }
 
+/**
+ * The lowest current-state cap `context-assembler.buildCurrentStateBlock` will honour. Mirrors its
+ * `clampInteger` floor: a reservation that pushed the effective cap below this would be silently
+ * clamped back up, and the chain would overflow the block again exactly as it did before.
+ */
+export const SPINE_STATE_FLOOR = 800;
+
+/**
+ * Reserve the change chain's characters INSIDE the current-state cap instead of appending them after it.
+ *
+ * Appending made the chain the first casualty of any budget pressure. It renders at the tail of the
+ * current-state block, so once the assembler had already spent its whole cap, v55-consistency's
+ * `budgetPromptPair` trim removed the chain wholesale. Measured on the live 28-assistant-floor chat
+ * (change_log entry 10): the chain is 694 characters, and losing it drops the certificate's `causal`
+ * from 3/3 to 1/3 at a 6,000-character cap while `state`, `commitment`, `soundness` and `epistemic`
+ * all stay green. It is the only certificate dimension that fails before any state omission, and
+ * causation is one of the five dimensions a situation model has to preserve.
+ *
+ * The reservation is free whenever there is headroom: the returned cap equals the requested cap minus
+ * the chain, so the assembled block is unchanged until its natural size exceeds that difference.
+ *
+ * @returns {{ spineBlock: string, currentStateCap: number, reservedChars: number }}
+ */
+export function planSpineReservation(store, { stateCap = 0, maxChars = 600, maxRows = 10, floor = SPINE_STATE_FLOOR } = {}) {
+    const cap = Math.max(0, Number(stateCap) || 0);
+    const full = spinePromptBlock(store, { maxChars, maxRows });
+    if (!full) return { spineBlock: '', currentStateCap: cap, reservedChars: 0 };
+    const reserve = Math.min(full.length, Math.max(0, cap - Math.max(0, Number(floor) || 0)));
+    if (reserve <= 0) return { spineBlock: '', currentStateCap: cap, reservedChars: 0 };
+    let block = reserve >= full.length ? full : spinePromptBlock(store, { maxChars: reserve, maxRows });
+    // spinePromptBlock will not render below its own 120-character floor, so at a very small reservation
+    // it can hand back MORE than it was asked for. Taking that would push the state cap under the floor
+    // the assembler clamps at - the exact failure this reservation exists to prevent. Step aside.
+    if (block.length > reserve) block = '';
+    if (!block) return { spineBlock: '', currentStateCap: cap, reservedChars: 0 };
+    return { spineBlock: block, currentStateCap: Math.max(0, cap - block.length), reservedChars: block.length };
+}
+
 /** Diagnostics only: the traced chain for one slot, rendered for a developer panel. */
 export function spineTraceText(store, slot, { maxRows = 6 } = {}) {
     return spineTrace(store, { slot }).slice(-Math.max(1, maxRows)).map(node => {

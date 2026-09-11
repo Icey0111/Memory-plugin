@@ -53,7 +53,7 @@ import {
 } from './baseline-index.js';
 
 import { collectSemanticBaselineSources } from './baseline-host.js';
-import { spinePromptBlock, spineStats } from './v55-spine.js';
+import { planSpineReservation, spineStats } from './v55-spine.js';
 import { migrateSettingStore } from './setting-schema.js';
 import { listRevisionsForWorld, listWorlds } from './setting-store.js';
 import { commitImport, findDuplicateSources, previewImport } from './setting-importer.js';
@@ -2630,6 +2630,19 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
     // recall counters and the cooldown only ever move for a generation that really happened.
     const signature = recallSignature(ctx, interceptorChat);
     const recalledMemories = commitPrefetchedRecall(ctx, signature) ?? await recallMemories(ctx, interceptorChat);
+    // S1/S2: the change chain rides with the current-state block, and its characters are reserved INSIDE
+    // the current-state cap rather than appended after it. See planSpineReservation for the measurement
+    // that forced this: appending made the chain the first casualty of any budget pressure, and losing it
+    // is the only way the certificate's causal dimension fails before any state omission.
+    const stateCap = Math.max(0, Number(settings.current_state_context_max_chars) || 0);
+    const reservation = settings.spine_injection_enabled === false
+        ? { spineBlock: '', currentStateCap: stateCap, reservedChars: 0 }
+        : planSpineReservation(store, {
+            stateCap,
+            maxChars: settings.spine_injection_max_chars ?? 600,
+            maxRows: settings.spine_injection_max_rows ?? 8,
+        });
+    const spineBlock = reservation.spineBlock;
     const bundle = assembleGenerationContext({
         scope: settingResults?.snapshot?.scope || null,
         latestMessages: interceptorChat,
@@ -2640,23 +2653,17 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
         hostContextBudget: contextSize,
         replyReserve: settings.context_reply_reserve_tokens,
         maxReferenceChars: settings.reference_context_max_chars,
-        maxCurrentStateChars: settings.current_state_context_max_chars,
+        maxCurrentStateChars: reservation.currentStateCap,
         includeEvidence: settings.include_evidence,
         constantLimit: settings.setting_retrieval_constant_limit,
     });
-    // S1/S2: the change chain rides with the current-state block. It is appended after assembly so a
-    // tail trim removes it before it can remove the mandatory rows that were rendered first.
-    if (settings.spine_injection_enabled !== false && bundle.currentStateBlock !== undefined) {
-        const spineBlock = spinePromptBlock(store, {
-            maxChars: settings.spine_injection_max_chars ?? 600,
-            maxRows: settings.spine_injection_max_rows ?? 8,
-        });
-        if (spineBlock) {
-            bundle.currentStateBlock = bundle.currentStateBlock
-                ? bundle.currentStateBlock + '\n\n' + spineBlock
-                : spineBlock;
-            bundle.diagnostics.spineChars = spineBlock.length;
-        }
+    if (spineBlock && bundle.currentStateBlock !== undefined) {
+        bundle.currentStateBlock = bundle.currentStateBlock
+            ? bundle.currentStateBlock + '\n\n' + spineBlock
+            : spineBlock;
+        bundle.diagnostics.spineChars = spineBlock.length;
+        bundle.diagnostics.spine_reserved_chars = spineBlock.length;
+        bundle.diagnostics.current_state_cap_chars = stateCap;
     }
     lastGenerationContextDiagnostics = {
         ...bundle.diagnostics,

@@ -252,3 +252,149 @@ from what v1 proposed.
 H1 is dropped as stated. A2 is re-scoped to the budget-overflow question, which cannot be measured until a
 corpus exists where the state block is saturated. Entity canonicalisation is promoted to a prerequisite.
 See `22_plan_after_compression.md` v2.
+
+<!-- VERSION 3 -->
+## v3 - 2026-09-12 05:40:01 - v2's entity number was an artifact, A0 would make matching worse, and the gate does not beat recency
+
+Everything below is measured on the same live acceptance chat (55 rows, **53 of them folded**, 28 assistant
+floors, 76 memories, 73 active). **Zero model calls.** Probes:
+`remove/.audit-v55/live-check/expr-a1-entities.js`, `expr-a2-breakdown.js`, `expr-a2-gate.js`,
+`expr-a2-diag.js`, `expr-a2-compose.js`, `expr-a2-spine.js`.
+
+### Correction — v2 Result 4's entity count was a measurement artifact
+
+v2 reported "**89 raw entity names collapse to 20 groups**". That is wrong on both numbers and on the
+conclusion. The probe counted `entity_registry` **keys** as names (they are `ent_<hash>` identifiers), never
+read the rows' `canonical_name` or `aliases`, and grouped names by **substring containment**.
+
+| | v2 claimed | measured |
+|---|---|---|
+| raw names | 89 | **44** from `memory.entities`; **46** registry rows (a superset) |
+| "groups" | 20 | **25** containment clusters — but containment is not co-reference |
+| registry merging | implied | **46 of 46 rows are trivial**: `aliases.length <= 1` |
+
+`registerEntity` merges only on **exact normalised name equality**, so the registry has never canonicalised
+anything. That much of v2 stands, and it is the real defect.
+
+**What does not stand** is the fix v2 derived from it. The containment cluster that produced the "20" is:
+
+> 灰烬港贫民区井巷 · 灰烬港贫民区水井 · 灰烬港贫民区 · 灰烬港药铺 · 贫民区药铺 · 井水样瓶 · 井巷水井 ·
+> 药铺后巷 · 药铺掌柜 · 灰烬港 · 贫民区 · 井水 · 井台 · 井巷 · 药铺 · 井
+
+That is not one thing. It is a port city, its slum district, an alley, a well platform, the water, a sample
+bottle, a shop, and a shopkeeper — a **place–object–person hierarchy whose names happen to nest**. Collapsing
+them would merge a city with a water bottle. The same holds for 弥拉 / 弥拉的手札 / 师父手札 (a person and her
+notebook) and 钟楼 / 钟楼旅店 / 钟楼钥匙 (a tower, an inn, a key).
+
+### A0 as specified would make matching worse, not better
+
+Measured, not argued. Replacing every entity name with its containment-group head (the longest name in the
+group) — which is what v2's A0 amounts to — **reduces** the number of memories that entity-match the
+production query from **12 to 8** out of 500 scored rows. Collapsing to the longest surface form makes the
+key *rarer in the query*, so it matches less.
+
+> **The transform the index needs is the opposite of canonicalisation: expand each name to its head
+> morpheme, so a turn mentioning 井台 still reaches a memory tagged 井水样瓶. Identity stays strict;
+> matching gets permissive.**
+
+The registry's exact-match rule is *correct for identity* (holders, discriminators, `known_by`) and should
+not be relaxed. The two layers want opposite things and must stay separate.
+
+### A2, answered: the gate does not beat recency
+
+v2 re-scoped A2 to "when the state block drops memories, does a gate recover them better than taking the most
+recent floors?" The state cap is a **setting**, so the overflow regime can be induced on the existing chat
+instead of waiting for a 46-floor corpus. Ground truth is free and machine-generated: the certificate names
+the memories it requires (`state.omitted` ∪ `commitment.missing`), and the gate is ranked **only inside the
+dropped set**.
+
+v2's probe had a second defect worth recording: it built the query from non-`is_system` rows, which on this
+chat is **2 rows of 55**, because folding marks 53 rows `is_system`. `isDialogueRow` deliberately counts
+folded rows as dialogue; the probe did not. The corrected query is production's own
+`buildQueryVariants(chat, 3)` — focus 473 chars, context 872 chars.
+
+| state cap | dropped active | required | gate@3 | recency@3 | gate@8 | recency@8 |
+|---|---|---|---|---|---|---|
+| 4500 | 20 | 2 | 1 | 1 | 1 | 1 |
+| 3500 | 32 | 2 | 1 | 1 | 1 | 1 |
+| 2500 | 44 | 6 | 2 | 2 | 3 | **4** |
+| 1200 | 62 | 21 | 2 | 2 | **4** | 3 |
+
+**No advantage for the gate at any budget, and recency wins the one cell with enough positives to matter
+(cap 2500, B=8).** H1's refutation therefore generalises from "frequency vs IDF" to **"any lexical gate vs
+recency"** on this corpus.
+
+**And there is a structural reason, which is the useful part.** Only **12 of 500** scored memories receive
+an entity match on the production query. The query is built from recent dialogue, and the recency arm already
+prefers recent memories — so *relevant* and *recent* coincide **by construction**. A gate can only beat
+recency if its query carries something recency does not, and a window of recent turns does not.
+
+### New — where the budget actually breaks
+
+Sweeping `current_state_context_max_chars` and running the production assembler and certificate at each
+budget:
+
+| state cap | tokens | state | commitment | causal | tcausal | active dropped |
+|---|---|---|---|---|---|---|
+| 12000 (live) | 7735 | 12/12 | 23/23 | 3/3 | 14/16 | **0** |
+| 7000 | 7635 | 12/12 | 23/23 | 3/3 | 14/16 | 0 |
+| 6000 | 6888 | 12/12 | 23/23 | **1/3** | 12/16 | 11 |
+| 5500 | 6504 | 12/12 | 23/23 | 1/3 | 12/16 | 11 |
+| 4500 | 5763 | 10/12 | 23/23 | 1/3 | 10/16 | 20 |
+| 2500 | 4263 | 6/12 | 23/23 | **0/3** | 6/16 | 44 |
+| 1800 | 3761 | 6/12 | **17/23** | 0/3 | 6/16 | 53 |
+| 1200 | 3349 | 4/12 | **8/23** | 0/3 | 4/16 | 62 |
+
+Three facts the curve establishes:
+
+1. **The drop rule prioritises correctly.** Commitment holds at 23/23 down to a 2,500-character cap and only
+   breaks below 1,800 — **last**, which is exactly the promised ordering. `stale` and `leaks` are 0 at every
+   budget: soundness is budget-independent.
+2. **Causation fails first.** `causal` collapses from 3/3 to 1/3 at a 6,000-character cap **while state is
+   still perfect**. It is the only dimension that fails before any state omission.
+3. **The certificate under-reports loss by roughly 8×.** `state` is defined over **slot-bearing** memories:
+   12 of 73 active. At a 2,500-character cap **44 active memories are dropped and the certificate flags 6**.
+   `state 6/12` is not a statement about the store; it is a statement about a twelfth of it.
+
+### New — the change chain was the first casualty, for want of 694 characters
+
+The chain renders at **90.2%** of the state block, i.e. last. It was appended **after** the assembler had
+already spent the whole cap, so `budgetPromptPair` removed it wholesale the moment the budget bound:
+
+| state cap | chain present | chain chars | causal |
+|---|---|---|---|
+| 12000 / 8000 | yes | 694 | 3/3 |
+| 7000 | yes, truncated | 606 | 3/3 |
+| **6000** | **no** | 0 | **1/3** |
+
+**694 characters — about 450 tokens — is the entire difference between a broken and an intact causal
+record.** The chain's own configured budget is 4,000 characters and it never used more than 694 of them.
+The design intent ("a tail trim removes it before it can remove the mandatory rows") was a reasonable
+guess that the measurement contradicts: causation is one of C3's five dimensions, and its only carrier was
+being spent first to save rows the certificate does not check.
+
+**Fixed** — see `22_plan_after_compression.md` v3 and change_log entry 10.
+
+### New — where the reference block actually goes
+
+The reference block is a **hard 4,000 characters and is truncated** (it ends with
+`…[reference truncated by combined budget]`). Its composition:
+
+| part | chars | share |
+|---|---|---|
+| preamble / imported setting text | 457 | 11% |
+| **hierarchical narrative summary** | **2,409** | **60%** |
+| `<memory>` rows from recall | 1,130 | 28% — **5 rows fit** |
+
+Recall selects **6** memories (`last_recall_debug.selected`), and **5** reach the prompt. So the binding
+constraint on this chat is **not** the 12,000-character state cap — which has 4,912 characters of headroom —
+but the 4,000-character reference block, 60% of which is narrative. Any future retrieval design has to
+argue for its budget against that 2,409.
+
+### What this changes
+
+A0 is **redesigned** from canonicalisation to head-morpheme expansion. A2 is **answered** (null: no gate
+beats recency on this corpus) and its successor question is where the gate's query comes from, since a
+recent-dialogue query cannot by construction outrank recency. The certificate's coverage gap and the
+reference block's composition are both promoted from "unknown" to measured inputs.
+

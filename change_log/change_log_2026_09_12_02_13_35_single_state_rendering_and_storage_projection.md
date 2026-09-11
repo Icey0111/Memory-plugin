@@ -548,3 +548,126 @@ vocabulary and IDF needs a relevance filter.
 
 The plan now carries **A0 - entity canonicalisation** as a prerequisite, with A2 re-scoped to the
 budget-overflow question, which needs a corpus where the state cap actually binds.
+
+---
+
+## 10. Correcting entry 9's entity count, answering A2 null, and reserving the change chain's budget
+
+### Problem / Requirement
+
+Three things, in the order they were found.
+
+1. **Entry 9 in this file reports a measurement that is wrong.** It states *"89 raw entity names collapse to
+   20 groups (~4.5 names per thing)"* and draws a plan item from it. Re-running the audit properly gives
+   different numbers **and the opposite conclusion**, so the correction has to land before any code is
+   written against it.
+2. **A2 could not be left deferred.** It was re-scoped in entry 9 to "when the state block is forced to drop
+   memories, does a gate recover them better than taking the most recent floors?", with the note that it
+   needs a corpus where the cap binds. The state cap is a *setting* — `current_state_context_max_chars` —
+   so the overflow regime can be induced on the existing chat instead of waiting for a longer one.
+3. **Verifying the above surfaced an unmeasured defect.** The certificate's `causal` dimension was the only
+   one that failed *before* any state omission, and it was failing for want of 694 characters.
+
+### Purpose of Change
+
+- Replace a wrong number with a measured one, and replace the plan item derived from it with a transform
+  that is measured to help rather than measured to hurt.
+- Convert A2 from an open question into an answered one, even though the answer is null.
+- Stop the change chain from being the first thing a tightening budget removes. Causation is one of the five
+  situation-model dimensions the summary exists to preserve, and the chain is its only carrier.
+
+### How It Was Changed
+
+**Measurement (no product code, zero model calls)**
+
+- [remove/.audit-v55/live-check/expr-a1-entities.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a1-entities.js) - the corrected entity audit. Reads `memory.entities` and the
+  registry rows' `canonical_name`/`aliases`, excludes `ent_*` identifiers, and reports alias counts.
+- [expr-a2-breakdown.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a2-breakdown.js) - the budget sweep: the production assembler and certificate at ten
+  state caps from 20,000 to 1,200.
+- [expr-a2-gate.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a2-gate.js), [expr-a2-diag.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a2-diag.js), [expr-a2-compose.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a2-compose.js) - the gate-versus-recency
+  comparison, its diagnostic, and the reference-block composition measurement.
+- [expr-a2-spine.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a2-spine.js) - the change chain across budgets.
+- [expr-modsrc.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-modsrc.js) - confirms which module source the running host actually serves.
+
+**Product code**
+
+- [v55-spine.js L347-L388](file:///D:/memory_plugin/v55-spine.js#L347) - new `SPINE_STATE_FLOOR` and
+  `planSpineReservation`. The reservation is computed before assembly and the chain's characters are taken
+  out of the current-state cap, so the assembler absorbs the cut in its voluntary sections instead of the
+  tail trim eating the causal record. Three guards: the effective cap may never fall below the assembler's
+  own 800-character clamp floor; a reservation small enough that `spinePromptBlock`'s own 120-character
+  floor would return *more* than asked for is discarded rather than accepted; and a store with no chain
+  leaves the cap untouched.
+- [index.js L2630-L2666](file:///D:/memory_plugin/index.js#L2630) - `buildInjectedContextBundle` calls the
+  planner instead of appending the chain after assembly, and passes `reservation.currentStateCap` to the
+  assembler. [index.js L56](file:///D:/memory_plugin/index.js#L56) - the import.
+- [test-v55-spine-reservation.mjs](file:///D:/memory_plugin/test-v55-spine-reservation.mjs) - six groups of
+  assertions over the reservation contract, including the floor guard that the first version of the
+  implementation actually failed.
+- [package.json](file:///D:/memory_plugin/package.json) - the new test registered in the `check` chain.
+
+**Documentation**
+
+- [dev_docs/21_memory_thesis.md L256](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L256) - v3: the
+  correction, the A0 redesign, the A2 answer, the budget curve, the chain defect and the reference-block
+  composition.
+- [dev_docs/22_plan_after_compression.md L193](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L193) -
+  v3: A0 redesigned, A2 retired as answered, the shipped fix, and two new items (D4 certificate coverage,
+  D5 reference-block split).
+
+### Result
+
+**The entity number in entry 9 is withdrawn.** There are **44** names on memories and **46** registry rows,
+not 89 — the probe counted `entity_registry` **keys** (`ent_<hash>` identifiers) as names. And the "20
+groups" came from grouping by **substring containment**, which is not co-reference: the largest "group"
+contains a port city, its slum district, an alley, a well platform, the water, a sample bottle, a shop and a
+shopkeeper. **A0 as entry 9 specified it would have merged a city with a water bottle.** Measured, it drops
+entity matches on the production query from **12 to 8** out of 500 rows — it makes matching *worse*. What
+survives from entry 9 is the narrow claim: **46 of 46 registry rows are trivial** (`aliases.length <= 1`),
+so the registry has never canonicalised anything. Identity should stay strict; matching should expand to head
+morphemes, which is the opposite transform.
+
+**A2 is answered, and the answer is null.** With the state cap as an induced overflow condition and the
+certificate's own `state.omitted` ∪ `commitment.missing` as machine-generated ground truth, **the lexical
+gate does not beat recency at any budget** (caps 4500/3500/2500/1200 at B=1,2,3,5,8). Recency wins the one
+cell with enough positives to matter (cap 2500, B=8: recency 4, gate 3). The structural reason is the
+actionable result: **only 12 of 500 scored memories receive an entity match on the production query**, and
+because the query is built from recent dialogue, *relevant* and *recent* coincide **by construction**. The
+successor question is not which score to use but **where the gate's query comes from**.
+
+**A defect was found and fixed.** The change chain renders at 90.2% of the current-state block and was
+appended after the assembler had already spent the cap, so it was the first thing a tightening budget
+removed:
+
+| state cap | chain chars | causal |
+|---|---|---|
+| 12000 / 8000 | 694 | 3/3 |
+| 7000 | 606 (truncated) | 3/3 |
+| **6000** | **0** | **1/3** |
+
+694 characters — about 450 tokens — is the whole difference between a broken and an intact causal record,
+and the chain's own configured budget is 4,000. It is the **only** certificate dimension that fails before
+any state omission, while `state`, `commitment`, `soundness` and `epistemic` stay green. Fixed by
+reserving its characters inside the cap. The reservation is free while there is headroom, so an unconstrained
+turn is unchanged.
+
+**Two further measurements, recorded because they bound future work.** The drop rule prioritises correctly —
+commitment holds 23/23 down to a 2,500-character cap and breaks only below 1,800, and `stale`/`leaks` are 0
+at every budget. But the certificate's `state` dimension is defined over **slot-bearing memories: 12 of 73
+active**. At a 2,500-character cap, **44 active memories are dropped and the certificate flags 6**. Separately,
+the binding budget on this chat is not the 12,000-character state cap (4,912 characters of headroom) but the
+**4,000-character reference block, 60% of which is the narrative summary** — recall selects 6 memories and 5
+reach the prompt.
+
+**Verification.** Offline: `npm run check` clean, **79/79 test files pass in 19.9s** (was 78/78; the new
+reservation test is the increment). **Live verification is NOT complete.** The host loads the plugin from
+`C:\\Users\\20436\\scoop\\persist\\TauriTavern\\data\\extensions\\third-party\\Memory-plugin`, outside the session
+workspace, and copying the two changed files there requires a sandbox escalation that did not receive an
+approval (two attempts, both timed out). The live sweep therefore still shows the pre-fix behaviour —
+`causal 1/3` at a 6,000-character cap. The fix is committed and unit-tested but **has not been observed
+working in the real app**.
+
+One incidental finding worth keeping: the deployed extension had been assumed stale because seven core files
+differed from the repository. They differ **only in line endings** (CRLF vs LF); the content is byte-identical
+after normalisation. The deployment was current, so this session's earlier live measurements are valid.
+
