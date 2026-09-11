@@ -424,6 +424,64 @@ If the extraction discipline works, the state pool should stop growing roughly f
 state coverage at floor 50 should rise well above 48%. If it does not move, the prompt is not the lever
 and the next candidate is a deterministic consolidation pass. That result is not in this entry.
 
+---
+
+## Entry 9 - the 50-floor validation: partial success, one clause that did nothing, one measurement bug of mine
+
+- Date: 2026-09-12 00:35:00
+- Session: same conversation. The 25-user-turn (50-floor) validation of Entry 8's extraction discipline completed.
+
+## Problem / Requirement
+
+Entry 8 changed only the extraction prompt and predicted that the state pool would stop growing about five
+slots per turn. The validation was to confirm or refute that.
+
+## How It Was Changed
+
+Nothing in the plugin. Two harness defects the validation exposed were fixed:
+
+- `expr-airp100-run.template.js` - a turn whose reply never arrived left a **user row with no reply**, which
+  breaks the user/assistant pairing extraction depends on. The unanswered user turn is now dropped and the
+  step records `droppedUserTurn`.
+- `expr-batch.js` - the post-batch probe read the host's extension prompts, which can be empty between
+  generations, and reported **0% coverage**. It now falls back to the persisted `v55_inner_bundle` and
+  reports which source it used.
+
+## Result
+
+| reading | baseline (100-floor run) | now (25 user turns) |
+|---|---|---|
+| new slots per extraction | **5.0** (201 slots / 40 extractions) | **1.3** (32 / ~25) |
+| slot reuse | 0 | **0** |
+| `belief` share of memories | 31% | 10-18% |
+| kind mix | belief 65 dominant | knowledge 19, commitment 14, belief 13, intention 11, state 9 |
+| memories at 25 user turns | ~190 live slot values by turn 50 | 74 memories, **31** with a slot |
+| injected characters | 10,963 tokens at floor 50 | 12,007 chars (~8k tokens) at floor 50 |
+
+**What worked.** The state pool grew about **four times slower**, and the per-turn commentary flood is
+gone: the store is now dominated by durable facts (knowledge, commitment, intention) instead of the
+character's reading of individual sentences. That was the `【绝对不要写】` clause, and it worked.
+
+**What did nothing.** `addReuseSlot` is still **0**. But the reading is probably not "the clause failed":
+once the commentary entries stop being written, the remaining adds really are distinct new facts, so
+`add` is the correct operation and there is nothing to reuse. The reuse clause is a no-op rather than a
+failure, and it is not worth another iteration on its own.
+
+**What the validation exposed about my own measurement.** Coverage read 0% on the last batch, and that was
+my probe, not the memory: it read the host's prompt slots at a moment when they were empty because the
+final turn had no reply. The store-shape numbers above are unaffected. Coverage must be taken from inside
+the run, which the next validation will do.
+
+**Still unsolved.** Injection grew from 7,359 to 12,007 characters over 25 turns, so the underlying
+condition from Entry 8 has not changed: **a bounded budget against a set that only accumulates.** The
+discipline made the set grow four times more slowly, which delays the collapse rather than preventing it.
+
+That moves the lever. Extraction discipline is no longer the interesting question; the remaining one is
+**which of the accumulated facts enter the budget, and whether any can be retired without losing a
+question**. That is a selection and consolidation problem, decided by the certificate rather than by a
+prompt.
+
+
 
 
 
