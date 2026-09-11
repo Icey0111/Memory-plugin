@@ -156,4 +156,30 @@ const hiddenRows = (ctx) => ctx.chat.filter(row => row && row.extra && row.extra
     assert.equal(again.unfolded, 0, 'a second call is a no-op, so it is safe on every chat change');
 }
 
+// --- D. a model Level-1 row fully covered by the digest is dropped, not injected twice -------------
+{
+    const ctx = makeCtx({ turns: 6, extracted: [1, 3, 5], folded: [] });
+    const store = ctx.chatMetadata[KEY];
+    globalThis.SillyTavern = { getContext: () => ctx };
+    const runtime = await import('./v55-summary-runtime.js?coverage-d');
+    // Turn ids come from the real collector: the digest keys off them, so a hand-written id would make
+    // this test pass or fail for the wrong reason.
+    const realTurns = runtime.collectCompletedDialogueTurns(ctx.chat);
+    const coveredIds = realTurns.filter(turn => [1, 3, 5].includes(turn.assistant_index)).map(turn => turn.id);
+    const outsideId = realTurns.find(turn => turn.assistant_index === 7).id;
+    assert.equal(coveredIds.length, 3, 'the fixture exposes three extracted turns');
+    // One model row covering the three turns the digest will cover, and one covering a turn it will not.
+    store.hierarchical_summaries.level1 = [
+        { id: 'model_covered', level: 1, source_ids: coveredIds, text: '模型写的一级摘要' },
+        { id: 'model_outside', level: 1, source_ids: [outsideId], text: '覆盖窗口之外的一条' },
+    ];
+    delete store.floor_folds;
+    const res = runtime.reconcileFoldCoverage(ctx);
+    assert.equal(res.digest_lines, 3, 'the digest covers the three extracted turns');
+    assert.equal(res.compression.superseded_model_rows, 1, 'the fully covered model row is dropped');
+    const ids = store.hierarchical_summaries.level1.map(row => row.id);
+    assert.equal(ids.includes('model_covered'), false, 'and it is gone from the tree');
+    assert.equal(ids.includes('model_outside'), true, 'while a row covering a turn the digest does not cover stays');
+}
+
 console.log('PASS v5.5 fold coverage: raw text is never hidden without a stand-in, audit or no audit');

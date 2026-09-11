@@ -138,8 +138,25 @@ export function reconcileFoldCoverage(ctxInput=getContext()){
         const stops=new Set(boundaries.filter(entry=>entry.position>0).map(entry=>indexByPosition.get(entry.turn)).filter(value=>value!==undefined));
         const grouped=groupDigestRows(window,{groupSize:plan.group_size,lineChars:plan.line_chars,boundaryPositions:stops});
         const built=digestToLevel1(grouped);
-        compression={repetition:repetition.score,text_reuse:repetition.text_reuse,slot_novelty:repetition.slot_novelty,factor:plan.factor,group_size:plan.group_size,lines_before:window.length,lines_after:built.length,boundaries:boundaries.length,boundary_stops:stops.size};
-        live.level1=[...live.level1.filter(row=>!row?.digest),...built];
+        // A model Level-1 row whose every turn the deterministic digest now covers is pure duplication:
+        // both stand in for the same turns at the same granularity, and both get injected. Dropping it
+        // removes a second copy of the same story from the prompt without losing a turn, because the
+        // digest names all of them. Rows that cover anything the digest does not are kept untouched.
+        const digestTurns=new Set(built.flatMap(row=>row.source_ids||[]));
+        let supersededModelRows=0;
+        const kept=[];
+        for(const row of live.level1){
+            if(row?.digest){continue;}
+            const ids=Array.isArray(row?.source_ids)?row.source_ids:[];
+            if(ids.length&&ids.every(id=>digestTurns.has(id))){
+                // A row that covers turns outside this digest window is not redundant and stays.
+                supersededModelRows+=1;
+                continue;
+            }
+            kept.push(row);
+        }
+        live.level1=[...kept,...built];
+        compression={repetition:repetition.score,text_reuse:repetition.text_reuse,slot_novelty:repetition.slot_novelty,factor:plan.factor,group_size:plan.group_size,lines_before:window.length,lines_after:built.length,boundaries:boundaries.length,boundary_stops:stops.size,superseded_model_rows:supersededModelRows};
         const coveredIds=new Set(built.flatMap(row=>row.source_ids));
         const processed0=new Set(live.processed_turn_ids||[]);
         for(const id of coveredIds)processed0.add(id);
