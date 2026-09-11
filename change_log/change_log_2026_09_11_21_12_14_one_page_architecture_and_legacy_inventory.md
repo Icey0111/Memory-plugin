@@ -481,6 +481,99 @@ That moves the lever. Extraction discipline is no longer the interesting questio
 question**. That is a selection and consolidation problem, decided by the certificate rather than by a
 prompt.
 
+---
+
+## Entry 10 - measuring the budget without a model call, and the allocation it found
+
+- Date: 2026-09-12 01:05:00
+- Session: same conversation, continuing the iteration.
+
+## Problem / Requirement
+
+Entry 9 concluded the remaining lever was selection: a bounded budget against a set that only
+accumulates. Choosing a selection policy by argument would have repeated the two mistakes already made
+this session, so the first task was to make the question **measurable in seconds instead of an hour**.
+
+## Purpose of Change
+
+Turn injection-policy questions into a fast, repeatable measurement, find where the budget actually goes,
+and spend it where it earns answerability.
+
+## How It Was Changed
+
+**A measurement method, not a change.** The injected blocks are only observable during a generation, which
+is why the post-hoc probes returned zero. But the plugin's own interceptor can be invoked directly:
+`globalThis.aetheriaUnifiedMemoryV54Interceptor(chat, contextSize, false, 'normal')` populates the host
+prompt slots **without calling a model**. That turns a 40-minute run into a 0.4-second measurement and
+makes ablation possible.
+
+**Where the budget went** (50-floor chat, composition from the plugin's own `injectionComposition`):
+
+| section | chars | tokens | share |
+|---|---|---|---|
+| layered summary | 7,675 | 5,820 | **54.9%** |
+| current state | 5,000 | 2,610 | 35.8% |
+| historical memory | 851 | 357 | 6.1% |
+| reference head | 459 | 113 | 3.3% |
+
+The current-state block was pinned at **exactly** its 5,000-character ceiling, and the summary was
+spending 5,820 tokens.
+
+**Ablation of the summary** - identical in every respect except the switch:
+
+| | summary ON | summary OFF |
+|---|---|---|
+| injected tokens | 8,897 | **6,610** |
+| state coverage | 17/31 | **17/31** |
+| commitment | 19/19 | **19/19** |
+| causal | 3/13 | **3/13** |
+| T-Causal | 17/40 | **17/40** |
+| violations | 0 | 0 |
+
+**The layered summary contributed nothing to any measured question while costing 2,287 tokens.**
+
+**Allocation sweep** (summary cap × current-state ceiling):
+
+| summary | state ceiling | tokens | state | causal | T-Causal |
+|---|---|---|---|---|---|
+| 9,000 | 5,000 (old) | 8,897 | 17/31 | 3/13 | 17/40 |
+| 0 | 16,000 | 7,654 | 21/31 | 3/13 | 22/40 |
+| 0 | **20,000** | **7,213** | **28/31** | 3/13 | **26/40** |
+| 2,000 | 20,000 | 7,264 | 28/31 | 3/13 | 26/40 |
+| 4,000 | 20,000 | 7,399 | 28/31 | 3/13 | 26/40 |
+
+- [index.js L171](file:///D:/memory_plugin/index.js#L171) - `current_state_context_max_chars` default **5,000 -> 20,000**, with the measurement as its justification.
+- [test-v55-injection-allocation.mjs L1](file:///D:/memory_plugin/test-v55-injection-allocation.mjs#L1) - asserts the behaviour rather than the constant: a 20,000 ceiling must admit the live set, a small ceiling must still bind, the declared 20,000 maximum must still hold, and a mandatory irreversible row must survive the smallest ceiling.
+
+## Result
+
+Test suite: **73/73 in 19.4 s**.
+
+Measured on the 50-floor chat, changing only the allocation:
+
+| | before | after |
+|---|---|---|
+| state coverage | 17/31 (55%) | **28/31 (90%)** |
+| T-Causal | 17/40 (43%) | **26/40 (65%)** |
+| commitment | 19/19 | 19/19 |
+| causal | 3/13 | 3/13 |
+| **injected tokens** | 8,897 | **7,213 (-19%)** |
+
+**Coverage rose 35 points and cost fell 19%.** The mechanism is visible in the sweep: as the ceiling
+rises the reference block shrinks (8,984 -> 1,317 characters), because state the model is simply given no
+longer has to be recalled. That is the sufficiency principle from `15_innovation_path.md` showing up as a
+measurement rather than as a thesis.
+
+Two things this does not fix, recorded so they are not mistaken for solved: **causal coverage stayed at
+3/13** (the replaced endpoints are still not rendered, a separate gap), and the summary is left enabled at
+a small size rather than removed, because the certificate cannot measure whether it helps the *prose* -
+only that it does not help these questions.
+
+Validation of the change in a real run (`run-validate50b.ps1`, 25 user turns = 50 floors, the same
+scenario prefix, logging the in-run certificate this time) launched as `pwsh-22`. Its result is not in
+this entry.
+
+
 
 
 
