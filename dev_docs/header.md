@@ -39,6 +39,9 @@ Files are numbered so their reading order is explicit:
 | `08_concept_map.md` | The whole system as one concept picture: the four data kinds, stores, invariants |
 | `09_legacy_inventory.md` | Artifacts that survive from earlier designs, measured, with the command class used to find them |
 | `10_airp_memory_methodology.md` | Memory methodology derived from the roleplay problem, with the research that supports or contradicts it |
+| `11_human_memory_analogy_evidence.md` | Evidence review of human-memory analogies for agent memory, including the dissent |
+| `12_long_context_evidence.md` | Long-context benchmarks and what they do not measure |
+| `13_agent_memory_systems_evidence.md` | How production and research agent-memory systems store, retrieve and supersede |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.
