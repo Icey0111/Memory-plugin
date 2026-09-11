@@ -43,6 +43,7 @@ Files are numbered so their reading order is explicit:
 | `12_long_context_evidence.md` | Long-context benchmarks and what they do not measure |
 | `13_agent_memory_systems_evidence.md` | How production and research agent-memory systems store, retrieve and supersede |
 | `14_roleplay_memory_evidence.md` | What roleplay front-ends actually implement, roleplay benchmarks, and the metrics nobody has measured |
+| `15_innovation_path.md` | The decision: what is blank, what to own, what not to build, and the staged path |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.
