@@ -316,4 +316,52 @@ agreed while the product was visibly broken; a screenshot from the owner found i
 certificate cannot cover this because it rules on the store, not on the transcript. The post-run analysis
 must therefore assert transcript health directly: exactly one character row per user row, none empty.
 
+---
+
+## Entry 7 - chat saving failed mid-run; a per-batch health check added
+
+- Date: 2026-09-11 22:56:00
+- Session: same conversation. The owner sent a second screenshot showing "无法保存聊天 / 请检查服务器连接" toasts.
+
+## Problem / Requirement
+
+The relaunched run (Entry 6) stopped persisting the chat. The chat file on disk froze at 22:41:31 with 12
+rows while generation continued. Measured directly: `saveChat()` rejected with
+`{"error":"Failed to save chat","details":"[object Object]"}` over HTTP 500, and the host logged
+`Unhandled rejection: Error at saveChatUnsafe (script.js:8544)`. The JSONL on disk was valid (12 lines, 0
+unparseable), so the file was not the problem.
+
+## Purpose of Change
+
+Stop losing turns, find whether the cause was the run or the host, and add the transcript-level check that
+Entry 6 admitted was missing.
+
+## How It Was Changed
+
+- Diagnosis: after a **page reload**, the same `saveChat()` returned **ok**. So the failure was in-page
+  state accumulated by the runner's save/reload churn, not a corrupt chat and not the memory architecture.
+- `run-airp100floor.ps1` - the page is now reloaded between batches and the chat reopened by name. This
+  also exercises the derived store the way a real refresh does.
+- `expr-health.js` - a transcript-level assertion run after **every** batch: user turns, filled replies,
+  empty assistant rows, and a live `saveChat()` probe. `healthy` is true only when every user turn has
+  exactly one non-empty reply. This is the check whose absence let Entry 5 pass while the product was broken.
+- `expr-airp100-run.template.js` - supports reopening an existing chat and dropped a redundant reload
+  inside the recovery ladder; the batch log now records a compact projection instead of the provider's
+  multi-thousand-character reasoning blobs.
+
+## Result
+
+Batch 0 of the relaunched run (`pwsh-20`), fresh chat: 5 user turns, 5 replies, **0 empty assistant rows**,
+`save: "ok"`, `healthy: true`, last reply 473 characters. The chat is
+`Seraphina - 2026-09-11@22h56m08s521ms`.
+
+First certificate reading, with no interpretation added yet: state coverage 17/18, stale 1, commitment
+3/3, epistemic leak unmeasurable (holder sets still not emitted), causal 0/0 because no slot has two
+revisions yet, T-Causal 18/19, injected 3,534 tokens. One turn did not confirm extraction inside the
+90-second window.
+
+Per-turn cost is about 105 seconds, so 100 floors is roughly 1.5 hours including the reloads. The run
+continues; its result is not in this entry.
+
+
 
