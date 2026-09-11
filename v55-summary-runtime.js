@@ -181,9 +181,11 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     // Deterministic, model-free half of the pass. It has to run BEFORE the quiet guard below: the guard
     // fires while an extraction is in flight (measured live: 18+ seconds after a chat load), and it used
     // to return first, so the digest was never rebuilt and the coverage certificate never checked.
-    try{const rec=reconcileFoldCoverage(ctx);digestLines=rec.digest_lines||0;unfolded=rec.unfolded||0;}
-    catch(e){first.last_error=String(e?.message||e);}
-    if(s.__hierarchical_summary_in_progress||s.__quiet_extraction_in_progress)return{skipped:'quiet-in-progress',digest_lines:digestLines,unfolded};
+    let compression=null;
+    let reconcileError=null;
+    try{const rec=reconcileFoldCoverage(ctx);digestLines=rec.digest_lines||0;unfolded=rec.unfolded||0;compression=rec.compression||null;}
+    catch(e){reconcileError=String(e?.message||e);first.last_error=reconcileError;}
+    if(s.__hierarchical_summary_in_progress||s.__quiet_extraction_in_progress)return{skipped:'quiet-in-progress',digest_lines:digestLines,unfolded,compression,reconcile_error:reconcileError};
     // Every mutation re-reads the tree out of chat metadata instead of holding the reference it read
     // before the model call. A Canonical replay replaces the whole store object, and a summary tree
     // captured across that await receives every subsequent batch while the store that actually reaches
@@ -236,7 +238,9 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     let fold=null;
     try{fold=foldSummarizedFloors(ctx);}catch(e){finalTree.last_error=String(e?.message||e);}
     render(ctx);
-    return{created,digest_lines:digestLines,unfolded,level1:finalTree.level1.length,level2:finalTree.level2.length,level3:finalTree.level3.length,fold};
+    // `reconcile_error` matters: the model half clears `last_error` at the end, so without reporting it
+    // here a swallowed failure in the deterministic half is invisible in a run report.
+    return{created,digest_lines:digestLines,unfolded,compression,reconcile_error:reconcileError,level1:finalTree.level1.length,level2:finalTree.level2.length,level3:finalTree.level3.length,fold};
 }
 // A folded floor is gone from the raw prompt, so the summary tree is the only thing still carrying it.
 // The previous shape injected three or five newest items per level and dropped every item a higher

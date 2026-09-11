@@ -80,6 +80,12 @@ const novelRows = novel.map((entry, position) => ({ assistant_index: entry.assis
 const novelPlan = compressionPlan(repetitionScore(store, novel, novelRows));
 assert.equal(novelPlan.group_size, 1, 'a window with no repetition must not be merged at all');
 assert.equal(novelPlan.factor, 1, 'and it keeps its full budget');
+// The group size of 1 is the DEFAULT path for a non-repetitive window, and it used to throw a TDZ
+// ReferenceError that the summary pass swallowed - silently disabling the deterministic digest on a
+// live chat while every offline test passed. It is asserted directly now.
+const passthrough = groupDigestRows(novelRows, { groupSize: 1, lineChars: 400 });
+assert.equal(passthrough.length, novelRows.length, 'group size 1 must return every row unchanged');
+assert.deepEqual(passthrough.map(group => group.source_ids), novelRows.map(row => [row.source_id]));
 const summary = compressionStats(store, repeated, rows);
 assert.ok(summary.lines_after < summary.lines_before);
 assert.ok(summary.ratio < 1, 'the reported ratio must show the saving');

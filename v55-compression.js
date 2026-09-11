@@ -143,12 +143,17 @@ export function groupDigestRows(rows, {
     const size = Math.max(1, Math.min(HARD_MAX_GROUP, Math.floor(Number(groupSize) || 1)));
     const cap = Math.max(80, Math.floor(Number(lineChars) || DEFAULT_LINE_CHARS));
     const stops = boundaryPositions instanceof Set ? boundaryPositions : new Set(boundaryPositions || []);
+    // Declared before the early return: `const` is hoisted but not initialised, so a `size === 1` call
+    // used to throw "Cannot access 'single' before initialization". That path is the DEFAULT one - a
+    // window with no repetition - and the throw was swallowed by the summary pass, which then fell back
+    // to a model summary. The whole deterministic digest silently stopped working on a live chat while
+    // every offline test passed, because no test called this with a group size of 1.
+    const single = row => ({ rows: [row], source_ids: [String(row.source_id)], assistant_index: row.assistant_index, text: clean(row.text, cap), at: row.at || 0 });
     if (size === 1) {
         return list.map(single);
     }
     const out = [];
     let bucket = [];
-    const single = row => ({ rows: [row], source_ids: [String(row.source_id)], assistant_index: row.assistant_index, text: clean(row.text, cap), at: row.at || 0 });
     const flush = () => {
         if (!bucket.length) return;
         if (bucket.length === 1) { out.push(single(bucket[0])); bucket = []; return; }
