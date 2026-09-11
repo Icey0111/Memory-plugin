@@ -213,3 +213,57 @@ left in the 154,949 bytes:
 | `hierarchical_summaries` | 17,222 | the only narrative carrier for folded floors - the raw prompt holds 402 tokens of transcript |
 | `entity_registry` | 7,101 | losing it fragments entity identity for every later mention |
 | the rest | ~4,800 | baseline, slots, source fingerprints |
+## Third change: folding was behind the model-call guard, so summarized floors stayed in the prompt
+
+- Date: 2026-09-12 03:08:00
+
+### Problem / Requirement
+
+The user described the workflow the system is supposed to have: summarize a configured batch of N floors,
+hide exactly those floors, then repeat incrementally as new batches complete. Checking that claim against
+the running system found that the second half of the loop - hiding the summarized floors - was not
+happening at all.
+
+### Purpose of Change
+
+Make "summarize, then hide the corresponding floors" actually execute, before touching anything about how
+the summaries themselves are produced.
+
+### How It Was Changed
+
+`processSummaryHierarchy` runs the deterministic digest first, then returns early when an extraction is in
+flight (`__quiet_extraction_in_progress`), and only then calls `foldSummarizedFloors`. The digest was moved
+out of that guard for exactly this reason once before - its own header records that the guard is how
+`9 hidden floors (12,320 characters) kept no stand-in in the prompt` - but the fold was left behind it.
+Folding is per-turn and idempotent, so it moves out too; the call after the model passes stays, so rows the
+model creates are folded in the same run.
+
+- [v55-summary-runtime.js L205-L216](file:///D:/memory_plugin/v55-summary-runtime.js#L205-L216) - `foldSummarizedFloors` now runs next to `reconcileFoldCoverage`, before the guard.
+
+### Result
+
+Live acceptance chat, measured before and after one call on the same page:
+
+| | before | after |
+|---|---|---|
+| raw floors left in the prompt | 11 floors / 22 rows / 4,540 tokens | **1 floor / 2 rows / 400 tokens** |
+| fold audit | `runs: 0`, `hidden: 0` | `runs: 1`, `hidden: 53` |
+| audit self-healed | - | `audit_repaired: 33` (the markers were on the rows; the audit record was lost) |
+
+So the raw-text component of every prompt was 4,540 tokens instead of 400 - 4,140 tokens per turn that the
+summary tree already stood in for. The plugin's own two channels are unchanged (8,044 tokens), and the
+certificate is unchanged (state 12/12, stale 0, commitment 23/23, causal 3/3, T-Causal 14/16, violations 0).
+
+Suite: 77/77.
+
+### What this did NOT change, and why that is the next question
+
+The first half of the loop is still not what the user described. `summary_level1_every_turns = 10` is not a
+batch size: 23 of 23 Level-1 rows are per-turn digest rows (`modelRows: 0`), 18 covering one turn and 5
+covering two. The deterministic digest builds one row per extracted turn AND marks every one of those turns
+processed, so the model loop's guard `pending.length < l1` is always true and the model summarizer has never
+run. One node per N floors needs a model call over the N floors' raw text, because the digest merely
+concatenates per-turn event summaries and cannot make text shorter - so it can reduce the node count but
+cannot widen the history the injected window covers. Doing that means restoring the N-batch model summary
+with the digest demoted to the fold-coverage fallback, which is a larger change than this entry and is left
+for the next one.

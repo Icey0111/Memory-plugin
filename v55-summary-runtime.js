@@ -204,7 +204,16 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     let reconcileError=null;
     try{const rec=reconcileFoldCoverage(ctx);digestLines=rec.digest_lines||0;unfolded=rec.unfolded||0;compression=rec.compression||null;}
     catch(e){reconcileError=String(e?.message||e);first.last_error=reconcileError;}
-    if(s.__hierarchical_summary_in_progress||s.__quiet_extraction_in_progress)return{skipped:'quiet-in-progress',digest_lines:digestLines,unfolded,compression,reconcile_error:reconcileError};
+    // Folding is the other zero-model-call step, and it used to sit behind the quiet guard together with
+    // the model calls. Measured live on the acceptance chat: with an extraction in flight the guard returns
+    // early, so floors the tree already covered were never hidden - the prompt kept 11 raw floors (22 rows,
+    // 4,540 tokens) while the summary tree stood in for all 28 turns, and the fold audit read runs:0
+    // hidden:0. The digest was moved out of this guard for exactly this reason; folding is per-turn and
+    // idempotent, so it moves out too. The call after the model passes stays, so rows those passes create
+    // are folded in the same run.
+    let earlyFold=null;
+    try{earlyFold=foldSummarizedFloors(ctx);}catch(e){first.last_error=String(e?.message||e);}
+    if(s.__hierarchical_summary_in_progress||s.__quiet_extraction_in_progress)return{skipped:'quiet-in-progress',digest_lines:digestLines,unfolded,compression,fold:earlyFold,reconcile_error:reconcileError};
     // Every mutation re-reads the tree out of chat metadata instead of holding the reference it read
     // before the model call. A Canonical replay replaces the whole store object, and a summary tree
     // captured across that await receives every subsequent batch while the store that actually reaches
