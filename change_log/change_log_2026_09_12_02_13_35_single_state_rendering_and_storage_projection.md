@@ -311,3 +311,39 @@ The plan also states the arithmetic that stops N2 from being mistaken for a comp
 the hierarchy (N3) brings that back to ~3,500 characters. N2 makes the units; N3 is what pays.
 
 No code changed in this entry.
+
+## Fifth change: the plan was declined, and the decline was recorded
+
+### Problem / Requirement
+
+The user declined the v1 plan outright: *"还是算了，我怕现有的架构又越走越偏导致全都白做了"* - the risk of
+drifting away from an architecture that already works is judged higher than the coverage the narrative layer
+would buy.
+
+### Purpose of Change
+
+Stop. Do not start N2 or N3. Record the decision and its reasoning in the plan document itself, so that a
+later session cannot mistake an unapproved proposal for an approved one and resume it by accident.
+
+### How It Was Changed
+
+- [dev_docs/19_next_steps.md L202-L232](file:///D:/memory_plugin/dev_docs/19_next_steps.md#L202-L232) - a v2 status section, appended
+  rather than edited into v1: the plan is **not approved and will not be started**; the reason stated by the
+  user; the evidence that the refusal is coherent (everything already shipped this session is *subtraction*,
+  whereas N2/N3 would be the first items in this project's history to *add* a layer); a repair-versus-architecture
+  table splitting N0/N1/N4/N5-bug from N2/N3; and a note that D1-D4 are moot while v1 is declined.
+- [dev_docs/header.md L50](file:///D:/memory_plugin/dev_docs/header.md#L50) - the index row now carries the declined status.
+- No code changed. Working tree clean, `npm run check` **77/77 in 19.9s**, `HEAD == origin/v5.5-dev-iteration13`.
+
+### Result
+
+The project stops at a verified point rather than a hopeful one. What is banked is unaffected by the decision:
+store 218,279 -> 154,949 bytes, per-memory injection overhead 76 -> 24 characters, the fold fix (11 floors /
+4,540 tokens -> 1 floor / 400 tokens), one state rendering instead of two, and a certificate that reads
+state 12/12, stale 0, commitment 23/23, causal 3/3, T-Causal 14/16, violations 0.
+
+Two known defects are left in place deliberately and are named in the document so they are not rediscovered
+as surprises: `summary_fold_keep_recent_floors = 1` disagrees with `protect_recent_messages = 8` (a second
+default that disagrees with the first), and the memory vector collection is stale
+(`请求空间 es1:14fzu5i 与已建索引 (missing) 不一致`), so dense recall is off and only lexical plus temporal run.
+Neither is architecture, and neither blocks anything already shipped.

@@ -198,3 +198,35 @@ the problem, not its size.
 - No guarantee that depends on a model obeying an instruction; every new invariant above is checkable by
   string and identifier comparison over the store and the projection.
 - No change to the certificate's existing six checks' meaning. New checks are added alongside them.
+
+<!-- VERSION 2 -->
+## v2 - 2026-09-12 03:43:07 - status: declined, and why that is a defensible call
+
+**The plan in v1 is not approved and will not be started.** The stated reason is the one that matters: the
+narrative layer is the first item in this project's history that would *add* a layer rather than remove one,
+and the risk of drifting away from an architecture that already works is judged higher than the coverage it
+would buy.
+
+That judgement is consistent with the evidence rather than in tension with it:
+
+- Everything shipped in this session is subtraction — one state rendering instead of two, no write-only
+  fields, no empty storage wrapper, a fold guard that now fires while an extraction is in flight, a recall
+  cooldown that could not actually expire. The store fell 218,279 -> 154,949 bytes and the injected overhead
+  per memory fell 76 -> 24 characters, with every certificate check unchanged.
+- v1's N2 and N3 are the opposite: a new stage layer, a new setting whose direct consequence is holding up to
+  N turns of raw text in the prompt, and one model call per N turns. That is architecture, and refusing it is
+  a coherent position.
+
+If this is ever reopened, the split that matters is **repair versus architecture**:
+
+| item | is it architecture? |
+|---|---|
+| N0 — make `summary_fold_keep_recent_floors` follow `protect_recent_messages` | no: deleting a second default that disagrees with the first |
+| N1 — derive the hidden set from the row markers and verify it | no: a check, not a layer |
+| N4 — resolve a turn id to its stage | no, but pointless without N2 |
+| N5-bug — the stale vector collection | no: a fault, and dense recall is already off |
+| N2, N3 | **yes — declined** |
+
+Nothing already banked depends on any of them. The tree is clean, the suite is 77/77 in ~20 s, and this
+document exists so the analysis survives even though the work does not happen. D1–D4 are moot while v1 is
+declined.
