@@ -119,3 +119,36 @@ column and it was declined on that basis. That sorting was too broad. The batchi
 of a setting that already existed, already shipped, and did nothing - and without it the fold's own safety
 rule guarantees the prompt re-grows without bound. What remains architectural is the model-written
 narrative and the L2/L3 merge, which is `19`'s N3 and stays declined.
+
+<!-- VERSION 2 -->
+## v2 - 2026-09-12 04:15:37 - the N-floor unit is not a long-chat feature
+
+v1 justified this change with a 500-floor scenario. That framing conflates two different things, and the
+conflation is worth removing, because it is what made the original plan read as architecture when it was
+a unit choice.
+
+**N is a unit size. 500 is a stream length. They are not related.**
+
+What N does, at any chat length, and nothing more:
+
+| | |
+|---|---|
+| one call sees | N complete floors of source text, instead of one |
+| model calls | floors / N |
+| Level-1 units | floors / N — which is also the stored rows and the storage |
+
+What N does **not** do:
+
+- It is a **divisor, not a bound.** 500 floors at N = 10 is 50 units; at N = 20 it is 25. Still linear in
+  the length of the chat. N never makes the count constant.
+- It does not reduce how much text is summarized in total. It changes the block size.
+- It does not decide whether a long chat can still show its opening. That is a question about the
+  INJECTION budget, answered by merging units (the plan's N3) or by retrieving them — never by N.
+
+The measurement in v1 is real: coverage collapsed once the digest window rolled past about 45 floors. But
+that is the **persistence** half of this change, not the N half. N's only contribution there is that 500
+persisted rows become 50. **Persistence fixes the cliff; N decides how many rows survive it.** Neither
+makes the narrative reach floor 1, and this document should not be read as claiming it does.
+
+The honest headline is therefore **"a full batch of N floors becomes one permanent row"**; v1's headline,
+"coverage is O(chat) not O(window)", is the second-order consequence of persisting them.
