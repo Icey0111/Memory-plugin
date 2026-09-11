@@ -70,23 +70,32 @@ export function unfoldFloorsNotCovered(ctxInput = getContext(), coveredAssistant
     const ctx = ctxInput;
     const store = storeOf(ctx);
     const rows = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    if (!store || !rows.length) return { restored: 0 };
+    // Read-only: the audit is a derived key, and a diagnostics read must not recreate it.
     const folds = foldsOf(store, false);
-    if (!store || !folds) return { restored: 0 };
     const covered = coveredAssistantIndexes instanceof Set ? coveredAssistantIndexes : new Set(coveredAssistantIndexes || []);
     let restored = 0;
-    for (const key of Object.keys(folds.hidden)) {
-        const index = Number(key);
-        const entry = folds.hidden[key];
-        if (Number.isFinite(Number(entry?.turn_assistant_index)) && covered.has(Number(entry.turn_assistant_index))) continue;
+    // Driven by the ROW MARKERS, never by the audit. The audit lives in the external derived store and
+    // can legitimately be absent - a chat whose derived record predates the key, a lost backend, a read
+    // that ran before hydration - while every folded row still carries `aetheria_v55_folded`. Iterating
+    // the audit meant this, the one path that stops raw text from being hidden with nothing standing in
+    // for it, did nothing in exactly that case. Measured live: a 25-row chat kept 9 floors (12,320
+    // characters) hidden at zero coverage while this function returned {restored: 0}, because
+    // floor_folds had not been hydrated for that chat.
+    for (let index = 0; index < rows.length; index += 1) {
         const row = rows[index];
-        if (!row || !isFoldedRow(row)) { delete folds.hidden[key]; continue; }
-        if (row.extra && typeof row.extra === 'object') delete row.extra[FOLD_EXTRA_KEY];
+        if (!isFoldedRow(row)) continue;
+        const marker = row.extra?.[FOLD_EXTRA_KEY];
+        const marked = Number(marker?.turn_assistant_index);
+        const assistantIndex = Number.isFinite(marked) ? marked : (row.is_user === true ? null : index);
+        if (assistantIndex !== null && covered.has(assistantIndex)) continue;
+        delete row.extra[FOLD_EXTRA_KEY];
         row.is_system = false;
         syncDom(index, false);
-        delete folds.hidden[key];
+        if (folds) delete folds.hidden[String(index)];
         restored += 1;
     }
-    if (restored) folds.last_run_at = Date.now();
+    if (restored && folds) folds.last_run_at = Date.now();
     return { restored };
 }
 

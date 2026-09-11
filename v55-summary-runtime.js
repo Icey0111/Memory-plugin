@@ -97,10 +97,50 @@ async function callModel(ctx,level,rows){const s=settings(ctx);if(!s||s.enabled=
 // 3395-4915 chars of reasoning).
 const result=await ctx.generateQuietPrompt({quietPrompt:p,responseLength:max});const out=clean(typeof result==='string'?result:result?.content,30000);if(!out)throw new Error('当前主 API 返回空总结。');if(looksLikeProviderError(out))throw new Error(`主 API 返回错误而不是摘要：${out.slice(0,140)}`);recordModelCall(ctx,{kind:'summary',promptChars:String(p||'').length,completionChars:out.length,promptText:String(p||''),completionText:out});return out;}finally{delete s.__hierarchical_summary_in_progress;delete s.__quiet_extraction_in_progress;refreshSummaryPrompt(ctx);}}
 function push(t,level,source_ids,text,meta={}){const id=`summary_l${level}_${hash(`${source_ids.join('|')}|${text}`).toString(36)}`;const row={id,level,source_ids:[...source_ids],text:clean(text,30000),created_at:Date.now(),...(meta&&typeof meta==='object'?meta:{})};t[`level${level}`].push(row);return row;}
+/**
+ * The model-free half of the summary pass, and it is exported on purpose.
+ *
+ * It rebuilds the deterministic Level-1 digest from the extractor's per-turn event_summary and then
+ * makes the fold coverage certificate true again. Both steps cost zero model calls, so there is no
+ * reason for either to sit behind a model-pass guard - and sitting behind one is exactly how raw text
+ * was lost: measured live on chat "Seraphina - 2026-09-11@13h37m08s517ms", a chat load landed while an
+ * extraction held the lock, processSummaryHierarchy returned {skipped:'quiet-in-progress'} for 18+
+ * seconds, and 9 hidden floors (12,320 characters) kept no stand-in in the prompt.
+ *
+ * Called from the summary pass, from CHAT_CHANGED, and once the derived store hydrates, so opening a
+ * chat is enough to repair it.
+ */
+export function reconcileFoldCoverage(ctxInput=getContext()){
+    const ctx=ctxInput,s=settings(ctx);
+    if(!ctx||!s||s.enabled===false||!s.hierarchical_summary_enabled)return{skipped:'disabled',digest_lines:0,unfolded:0};
+    const live=tree(ctx);
+    if(!live)return{skipped:'no-store',digest_lines:0,unfolded:0};
+    if(live.dirty)return{skipped:'history-dirty',digest_lines:0,unfolded:0};
+    let digestLines=0;
+    if(s.summary_digest_enabled!==false){
+        const turnsNow=collectCompletedDialogueTurns(ctx.chat||[]);
+        const built=digestToLevel1(digestRows(storeOf(ctx),turnsNow,{maxRows:s.summary_digest_max_rows,maxChars:s.summary_digest_max_chars}));
+        live.level1=[...live.level1.filter(row=>!row?.digest),...built];
+        const coveredIds=new Set(built.flatMap(row=>row.source_ids));
+        const processed0=new Set(live.processed_turn_ids||[]);
+        for(const id of coveredIds)processed0.add(id);
+        live.processed_turn_ids=[...processed0];
+        digestLines=built.length;
+    }
+    // Coverage is read back from the tree rather than from the digest alone, so a model Level-1 counts
+    // too. The window is bounded and a rebuild can drop lines, so a hidden floor can lose its stand-in;
+    // a hidden floor with no stand-in is exactly the failure this project forbids.
+    const unfolded=unfoldFloorsNotCovered(ctx,digestCoveredIndexes(live.level1)).restored;
+    if(unfolded){
+        // The restored rows and the pruned audit both have to reach disk, or the next load re-hides them.
+        try{persistChatStore(ctx);}catch(e){live.last_error=String(e?.message||e);}
+        try{ctx.saveChat?.();}catch(e){/* the host owns chat persistence */}
+    }
+    return{digest_lines:digestLines,unfolded};
+}
 export async function processSummaryHierarchy(ctxInput=getContext()){
     const ctx=ctxInput,s=settings(ctx);
     if(!ctx||!s||s.enabled===false||!s.hierarchical_summary_enabled)return{skipped:'disabled'};
-    if(s.__hierarchical_summary_in_progress||s.__quiet_extraction_in_progress)return{skipped:'quiet-in-progress'};
     const first=tree(ctx);
     if(!first)return{skipped:'no-store'};
     if(first.dirty)return{skipped:'history-dirty'};
@@ -118,22 +158,13 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     // that is a summary of another summary (S3 / invariant I2).
     const digestOn=s.summary_digest_enabled!==false;
     let digestLines=0;
-    if(digestOn){
-        const live0=tree(ctx);
-        if(live0){
-            const turnsNow=collectCompletedDialogueTurns(ctx.chat||[]);
-            const built=digestToLevel1(digestRows(storeOf(ctx),turnsNow,{maxRows:s.summary_digest_max_rows,maxChars:s.summary_digest_max_chars}));
-            live0.level1=[...live0.level1.filter(row=>!row?.digest),...built];
-            const coveredIds=new Set(built.flatMap(row=>row.source_ids));
-            const processed0=new Set(live0.processed_turn_ids||[]);
-            for(const id of coveredIds)processed0.add(id);
-            live0.processed_turn_ids=[...processed0];
-            digestLines=built.length;
-            // The window is bounded, so a floor can roll out of it. A hidden floor with no stand-in is
-            // exactly the failure this project forbids: bring the raw text back first.
-            try{unfoldFloorsNotCovered(ctx,digestCoveredIndexes(built));}catch(e){live0.last_error=String(e?.message||e);}
-        }
-    }
+    let unfolded=0;
+    // Deterministic, model-free half of the pass. It has to run BEFORE the quiet guard below: the guard
+    // fires while an extraction is in flight (measured live: 18+ seconds after a chat load), and it used
+    // to return first, so the digest was never rebuilt and the coverage certificate never checked.
+    try{const rec=reconcileFoldCoverage(ctx);digestLines=rec.digest_lines||0;unfolded=rec.unfolded||0;}
+    catch(e){first.last_error=String(e?.message||e);}
+    if(s.__hierarchical_summary_in_progress||s.__quiet_extraction_in_progress)return{skipped:'quiet-in-progress',digest_lines:digestLines,unfolded};
     // Every mutation re-reads the tree out of chat metadata instead of holding the reference it read
     // before the model call. A Canonical replay replaces the whole store object, and a summary tree
     // captured across that await receives every subsequent batch while the store that actually reaches
@@ -186,7 +217,7 @@ export async function processSummaryHierarchy(ctxInput=getContext()){
     let fold=null;
     try{fold=foldSummarizedFloors(ctx);}catch(e){finalTree.last_error=String(e?.message||e);}
     render(ctx);
-    return{created,digest_lines:digestLines,level1:finalTree.level1.length,level2:finalTree.level2.length,level3:finalTree.level3.length,fold};
+    return{created,digest_lines:digestLines,unfolded,level1:finalTree.level1.length,level2:finalTree.level2.length,level3:finalTree.level3.length,fold};
 }
 // A folded floor is gone from the raw prompt, so the summary tree is the only thing still carrying it.
 // The previous shape injected three or five newest items per level and dropped every item a higher
@@ -242,4 +273,8 @@ function dirty(){
     if(s.enabled!==false&&s.hierarchical_summary_enabled)schedule(350);
 }
 export { foldSummarizedFloors, unfoldAllFloors, floorFoldStatus } from './v55-floor-fold.js';
-export function installV55HierarchicalSummary(){const ctx=getContext();if(!ctx)return false;settings(ctx);tree(ctx);refreshSummaryPrompt(ctx);mount(ctx);if(!installed){const ev=ctx.eventTypes||{},on=(e,h)=>e&&ctx.eventSource?.on?.(e,h),after=()=>{const c=getContext(),s=settings(c);if(s?.enabled!==false&&s?.hierarchical_summary_enabled)schedule(350);};on(ev.MESSAGE_RECEIVED,after);on(ev.CHARACTER_MESSAGE_RENDERED,after);on(ev.CHAT_CHANGED,()=>setTimeout(()=>{const c=getContext();settings(c);tree(c);refreshSummaryPrompt(c);mount(c);},80));for(const e of[ev.MESSAGE_SWIPED,ev.MESSAGE_EDITED,ev.MESSAGE_UPDATED,ev.MESSAGE_DELETED])on(e,dirty);installed=true;}for(const d of[120,450,1000,1800])setTimeout(()=>mount(getContext()),d);return true;}
+export function installV55HierarchicalSummary(){const ctx=getContext();if(!ctx)return false;settings(ctx);tree(ctx);refreshSummaryPrompt(ctx);mount(ctx);if(!installed){const ev=ctx.eventTypes||{},on=(e,h)=>e&&ctx.eventSource?.on?.(e,h),after=()=>{const c=getContext(),s=settings(c);if(s?.enabled!==false&&s?.hierarchical_summary_enabled)schedule(350);};on(ev.MESSAGE_RECEIVED,after);on(ev.CHARACTER_MESSAGE_RENDERED,after);on(ev.CHAT_CHANGED,()=>setTimeout(()=>{const c=getContext();settings(c);tree(c);refreshSummaryPrompt(c);mount(c);
+        // Opening a chat is enough to repair fold coverage: this is model-free, so it is safe here even
+        // though a full summary pass is not.
+        try{reconcileFoldCoverage(c);}catch(e){const t=tree(c);if(t)t.last_error=String(e?.message||e);}
+    },80));for(const e of[ev.MESSAGE_SWIPED,ev.MESSAGE_EDITED,ev.MESSAGE_UPDATED,ev.MESSAGE_DELETED])on(e,dirty);installed=true;}for(const d of[120,450,1000,1800])setTimeout(()=>mount(getContext()),d);return true;}
