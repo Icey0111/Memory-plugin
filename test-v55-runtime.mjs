@@ -43,7 +43,16 @@ const canonical = buildCanonicalState({ memories: {
 } });
 assert.match(canonical, /New room/);
 assert.doesNotMatch(canonical, /Old room/);
-assert.match(canonical, /known_by=ent_a/);
+// Rows used to carry "entities=ent_a known_by=ent_a". Those are opaque registry hashes - a reader cannot
+// map them to a name - and on a 50-floor chat 62 rows spent 2,842 characters / 709 tokens on them for no
+// answerability, so they are gone. The regression to guard against is their RETURN, not their absence.
+assert.doesNotMatch(canonical, /entities=/, 'opaque entity ids must not be rendered');
+assert.doesNotMatch(canonical, /known_by=/, 'opaque holder ids must not be rendered');
+// What must survive is that a row still says which fact it is about, because that is what the change chain
+// and the causal questions key on. Holder information has to come back as NAMES when the epistemic channel
+// is built (dev_docs/10 section 4, P9) - dropping ids is not the same as dropping the requirement.
+assert.match(canonical, /\[state:scene\.location\]/);
+assert.match(canonical, /\[knowledge:knowledge\.secret\]/);
 
 assert.equal(computeCombinedPromptBudget({ contextSize: 4000, replyReserve: 1000, maxReferenceChars: 10000, maxCurrentStateChars: 5000 }), 6000);
 const bounded = budgetPromptPair('R'.repeat(10000), 'S'.repeat(3000), {

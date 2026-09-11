@@ -318,6 +318,12 @@ function classifyCurrentMemories(activeMemories) {
 
 function buildCurrentStateBlock({ activeState, activeMemories, maxCurrentStateChars, mandatoryIds = null }) {
     const cap = clampInteger(maxCurrentStateChars, 5000, 800, 20_000);
+    // NOT capped below its share. The obvious saving here is wrong, and it was measured before it was kept:
+    // this summary is the canonical state rendered as "- [kind:slot] text" for EVERY active memory, so it is
+    // the state carrier, not a restatement of the rows below it. Capping it to 1,200 characters cut the
+    // injection 29% and dropped state coverage from 10/10 to 8/10, because the rows carry only the mandatory
+    // baseline plus the grouped subset. The real duplication is that the state is rendered twice; removing
+    // it means making the rows the complete carrier first, which is a design change, not a budget trim.
     const summary = cleanText(activeState, Math.max(400, Math.floor(cap * 0.45)));
     const all = Array.isArray(activeMemories) ? activeMemories : [];
     // S4: rows in the mandatory baseline are rendered FIRST, so the tail budget trim below can never

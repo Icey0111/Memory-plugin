@@ -9,7 +9,7 @@ const first = migrateMemoryBudgets(old);
 assert.equal(first.migrated, true, 'an install on the old budgets must be migrated');
 assert.equal(old.spine_injection_max_chars, 4000);
 assert.equal(old.spine_injection_max_rows, 24);
-assert.equal(old.reference_context_max_chars, 8000);
+assert.equal(old.reference_context_max_chars, 4000, 'the migration must run every step up to the current version');
 assert.equal(old.current_state_context_max_chars, 20000, 'a budget the migration does not own must be untouched');
 assert.equal(old.memory_budget_version, MEMORY_BUDGET_VERSION);
 

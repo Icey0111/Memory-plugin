@@ -852,6 +852,93 @@ render.
 End-to-end validation launched as `pwsh-23`: 25 user turns = 50 floors, the same scenario, new budgets
 forced, transcript health asserted after every batch. Its result is not in this entry.
 
+---
+
+## Entry 15 - what the memory system actually costs, and the two cuts that were free
+
+- Date: 2026-09-12 04:00:00
+- Session: same conversation. The owner asked what the memory system costs in tokens and said plainly that
+  it must be cheap or it is a liability in itself.
+
+## Problem / Requirement
+
+Measure the real cost, then cut it without losing what the system is for.
+
+## Measurements
+
+**Per generation, on the 50-floor chat** (interceptor protocol):
+
+| item | chars | tokens | share |
+|---|---|---|---|
+| state summary (canonical state, every active memory as `- [kind:slot] text`) | 8,260 | 4,701 | 35% |
+| layered plot summary | 7,541 | 6,060 | 46% |
+| current-state grouped rows | 3,565 | 2,396 | 18% |
+| reference head | 459 | 113 | 1% |
+| **total** | 19,826 | **13,269** | |
+
+**Stored, for the same chat**: 153,992 characters / **59,236 tokens**.
+
+| stored part | chars | tokens | share |
+|---|---|---|---|
+| extraction log (26 operation records) | 59,583 | 25,907 | 44% |
+| memory records as JSON (72 memories) | 68,171 | 21,335 | 36% |
+| spine | 18,606 | 5,456 | 9% |
+| layered summaries | 7,803 | 4,428 | 7% |
+| entity registry | 6,265 | 1,711 | 3% |
+| baseline, vector, slots, settings | 2,274 | 650 | 1% |
+
+**The actual memory text is 4,391 characters / 3,824 tokens.** The JSON that carries it is 21,335 tokens -
+a **15.5x wrapper**. Against a 10,150-token transcript, the memory system stores 584% of the source and
+injects 131% of it every turn.
+
+## The two cuts that were free, and the one that was not
+
+**Free: opaque registry ids.** Rows rendered `entities=ent_1h6kygz,...` and `known_by=...`. Those are
+hashes a reader cannot map to anything. 62 rows spent 2,842 characters / **709 tokens** on them.
+- [v55-runtime.js L280](file:///D:/memory_plugin/v55-runtime.js#L280) - `canonicalLine` no longer renders them. When the epistemic channel is built it must render holder **names**.
+- [test-v55-runtime.mjs L46](file:///D:/memory_plugin/test-v55-runtime.mjs#L46) - a test asserted `known_by=ent_a`. Rather than delete the assertion, it now asserts the ids are gone **and** that a row still names the fact it is about, with the reason recorded.
+
+**Free: reference block 8,000 -> 4,000.** On this chat 8,000 / 4,000 / 2,000 all produced **state 10/10,
+commitment 22/22, causal 3/3, T-Causal 12/14, zero violations**, while tokens fell 12,576 -> 9,513 ->
+7,541. 2,000 is not the default because on a denser chat the same trim cost 3 T-Causal points; 4,000 is
+free on the sparse chat and still funded on the dense one.
+
+**Not free, and reverted: capping the state summary.** The obvious saving was to cap the 8,260-character
+prose summary to 1,200, which cut the injection 29% (13,269 -> 9,468). It also dropped state coverage
+**10/10 -> 8/10**, because that summary is not a restatement of the rows below it: it is the canonical
+state rendered for **every** active memory, so it is the state carrier, and the rows hold only the
+mandatory baseline plus the grouped subset. Reverted, with the reason written into the code so it is not
+tried again. **The real duplication is that state is rendered twice**; removing it means making the rows
+the complete carrier first, which is a design change rather than a budget trim.
+
+**Identified and not taken: the layered summary.** Two independent ablations found it contributes nothing
+to any measured question (state, causal, T-Causal all unchanged) while costing 345 to 1,932 tokens. It is
+left on because its enabled flag and context cap live in `v55-summary-runtime.js` defaults rather than in
+the plugin settings, so changing its default is a settings-path question, not a one-line trim - and
+because the certificate cannot see what it does for the prose.
+
+## Result
+
+Test suite: **75/75 in 19.7 s**.
+
+**Verified live after a page reload, with no manual override** - the migration did the work:
+
+    memory_budget_version: 3, reference: 4000, current_state: 20000, spine: 4000/24
+    certificate v1 tokens=9506 state=10/10 (100%) stale=0 commitment=22/22 (100%) causal=3/3 tcausal=12/14 violations=0
+
+| | before this entry | after |
+|---|---|---|
+| injected tokens | 13,269 | **9,513 (-28%)** |
+| state / commitment / causal / T-Causal | 10/10, 22/22, 3/3, 12/14 | **identical** |
+| opaque id tokens | 709 | 0 |
+
+Against the session start (10,963 tokens, state 48%, T-Causal 35%) the system is now **cheaper and carries
+100% of the state instead of 48%**.
+
+**Still on the table, in size order**: the extraction log at 25,907 stored tokens (kept because it is the
+replay source), the 15.5x JSON wrapper around 3,824 tokens of memory text, and the twice-rendered state.
+
+
 
 
 

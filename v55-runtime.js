@@ -280,13 +280,11 @@ export function stampRuntimeIdentity(ctx) {
 function canonicalLine(memory) {
     const slot = clean(memory?.slot);
     const label = [clean(memory?.kind) || 'state', slot].filter(Boolean).join(':');
-    const entityIds = unique(memory?.entity_ids);
-    const knownByIds = unique(memory?.known_by_ids);
-    const attrs = [
-        entityIds.length ? `entities=${entityIds.join(',')}` : '',
-        knownByIds.length ? `known_by=${knownByIds.join(',')}` : '',
-    ].filter(Boolean).join(' ');
-    return `- [${label}${attrs ? ` ${attrs}` : ''}] ${clean(memory?.text)}`;
+    // The entity and holder attributes were opaque registry hashes ("ent_1h6kygz"), which a reader cannot
+    // map to anything. Measured on a 50-floor chat: 62 rows carried 2,842 characters / 709 tokens of them,
+    // 5% of the entire injection, for no answerability. Dropped. When the epistemic channel is built it
+    // must render holder NAMES, not these ids.
+    return `- [${label}] ${clean(memory?.text)}`;
 }
 
 export function buildCanonicalState(storeInput, maxChars = 12_000) {

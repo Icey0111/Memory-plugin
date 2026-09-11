@@ -167,10 +167,13 @@ const DEFAULT_SETTINGS = Object.freeze({
     setting_baseline_veto_enabled: true,
     setting_query_seed_from_memories: true,
     // v5.5-dev Commit F: one context assembler, two extension-prompt blocks.
-    // Measured frontier (change_log Entry 14): the reference block is flat below 4,000 characters - 4,000
-    // and 2,000 produce identical certificates - so its last characters buy nothing. 8,000 keeps it well
-    // above the knee while paying for the change chain below.
-    reference_context_max_chars: 8000,
+    // Measured (change_log Entry 15). The reference block is flat below 4,000 characters: on a 50-floor
+    // chat, 8,000 / 4,000 / 2,000 all produced state 10/10, commitment 22/22, causal 3/3 and T-Causal 12/14,
+    // while the injection fell from 12,576 to 9,513 to 7,541 tokens. 2,000 is not taken as the default
+    // because on a denser chat the same trim cost 3 T-Causal points - the recall channel is worth something
+    // exactly when a conversation has more going on. 4,000 is the point that is free on the sparse chat and
+    // still funded on the dense one.
+    reference_context_max_chars: 4000,
     // Measured on a 50-floor live chat by ablation, not by argument (change_log Entry 10). The block was
     // pinned at its 5,000-character cap while carrying only 17 of 31 live slot values, and the layered
     // summary was spending budget for no measurable gain in state, causal or T-Causal coverage. Raising
@@ -307,12 +310,15 @@ function notify(type, message, title = '艾瑟瑞亚统一记忆') {
  * explicitly. The migration rewrites only the budget keys, and only once: after it runs the version is
  * stamped, so a value the user edits afterwards is kept.
  */
-export const MEMORY_BUDGET_VERSION = 2;
+export const MEMORY_BUDGET_VERSION = 3;
 export const MEMORY_BUDGET_MIGRATIONS = Object.freeze({
     2: Object.freeze({
         spine_injection_max_chars: 4000,
         spine_injection_max_rows: 24,
         reference_context_max_chars: 8000,
+    }),
+    3: Object.freeze({
+        reference_context_max_chars: 4000,
     }),
 });
 
@@ -345,7 +351,6 @@ function getSettings(ctx) {
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
         if (current[key] === undefined) current[key] = value;
     }
-    if (migrateMemoryBudgets(current).migrated) ctx.saveSettingsDebounced?.();
     return current;
 }
 
@@ -3501,6 +3506,13 @@ export function __testQualityReport(ctx, options = {}) {
 export function init() {
     const ctx = getContext();
     if (!ctx) return;
+    // Measured budget corrections reach existing installs only if something carries them over, because
+    // getSettings supplies missing keys and nothing else. Done here, once, at activation: doing it inside
+    // getSettings meant a settings write from a pure read path, which broke the host test that counts
+    // exactly how many times the setting library is persisted.
+    try {
+        if (migrateMemoryBudgets(getSettings(ctx)).migrated) ctx.saveSettingsDebounced?.();
+    } catch { /* a failed migration must never block activation */ }
     const ready = () => setTimeout(() => void startup(), 0);
     // If activation happens before APP_READY this is the clean path; timeout fallback handles already-ready sessions.
     ctx.eventSource.on(ctx.eventTypes.APP_READY, ready);
