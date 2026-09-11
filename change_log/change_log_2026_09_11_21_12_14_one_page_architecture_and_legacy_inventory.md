@@ -211,3 +211,58 @@ backend is still hydrated, and the spine still reaches the prompt.
 The reload step itself reports `ok: false` with `Execution context was destroyed`. That is the
 expected artifact of `location.reload()` destroying the execution context mid-evaluation, not a
 failure: the fresh page and the successful character re-open confirm the reload happened.
+
+---
+
+## Entry 5 - the innovation decision, the length certificate, and the 100-floor run
+
+- Date: 2026-09-11 22:10:00
+- Session: same conversation. The owner asked for a decision on the innovation path, then to build the instrument in one pass and run a real 100-floor conversation against it without ever testing memory in-dialogue.
+
+## Problem / Requirement
+
+The research left one blank that matters: no benchmark measures whether a memory architecture causes
+continuity failure, because the only available measuring device is a model judge and model judges are
+demonstrably unreliable. The owner also corrected a unit error: 100 floors means 50 user turns plus 50
+character replies, not 100 user turns.
+
+## Purpose of Change
+
+Own the ruling rather than the structure: build a judge-free instrument, then use it to decide which
+structures are worth their cost. Then run a natural 100-floor conversation where nothing in the dialogue
+tests memory, so that whatever survives at the end survived on its own.
+
+## How It Was Changed
+
+- [dev_docs/15_innovation_path.md L1](file:///D:/memory_plugin/dev_docs/15_innovation_path.md#L1) - the decision: what is blank, the thesis (memory is a projection of a complete log consumed by a frozen model, so its only value is soundness and sufficiency at a payable cost), what not to build, and the staged path.
+- [v55-certificate.js L1](file:///D:/memory_plugin/v55-certificate.js#L1) - the instrument. Six checks per projection, all by string and identifier comparison with no model call: state coverage, soundness, commitment retention, epistemic leak, causal coverage and token cost.
+- [test-v55-certificate.mjs L1](file:///D:/memory_plugin/test-v55-certificate.mjs#L1) - two projections over one store, one faithful and one broken in four named ways, plus a determinism assertion.
+- [index.js L3378](file:///D:/memory_plugin/index.js#L3378) - the certificate is published in the quality report, computed from the same effective injected text T-Causal uses, so it is a live metric rather than a file nothing calls.
+- Live harness (untracked, `remove/.audit-v55/live-check/`): `gen-airp100floor-turns.mjs` (50 user turns = 100 floors, a ten-act story, no turn asks the character to recall anything), `expr-airp100-run.template.js`, `gen-airp100-run.mjs`, `run-airp100floor.ps1`.
+
+## Result
+
+Test suite: **71/71 in 19.2 s**, the new certificate test included.
+
+**Two real defects were found by the live smoke test, and neither was visible offline.** Both would have
+silently corrupted the whole run:
+
+1. The first template dropped the `reloadCurrentChat()` call the proven runner makes after pushing the
+   user turn. The host's view of the conversation stayed stale and generation returned a **3-character
+   reply** on turns 2 and 3. Restoring the reload fixed it.
+2. On a brand-new chat the first `generate()` returned an **empty reply** before the greeting existed.
+   The runner now requests and discards the greeting first, and the recovery ladder tries a fresh
+   generation before falling back to `continue`.
+
+After both fixes, the three-turn smoke test produced 498 / 423 / 505 characters (408 / 343 / 401 tokens)
+with extraction completing on every turn, and the certificate reported real variation rather than a
+constant - for example state coverage 9/13, causal coverage 2/2, commitment 2/4.
+
+Two properties of the certificate were already visible in the smoke data and are findings, not bugs:
+epistemic checks are **0** because `known_by` is still emitted for 0.0% of memories, so the instrument
+cannot yet rule on the leak question; and turn-1 state coverage reads 0/5 because no memory exists
+before the first extraction.
+
+The 100-floor run (50 user turns, fresh chat, ~300-400 characters asked per reply) was launched as a
+background job at 22:09. Its result is not in this entry.
+

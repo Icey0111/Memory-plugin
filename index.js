@@ -40,7 +40,8 @@ import {
 // A8: the quality side of the measurement story. v55-metrics.js meters cost; this meters whether
 // memory stayed good. Pure module, no host globals, so it is fully offline-testable.
 import { injectionComposition, qualityReport as computeQualityReport } from './v55-quality-metrics.js';
-import { runTcausal, formatTcausalReport } from './v55-tcausal.js';
+import { runTcausal, formatTcausalReport, buildTcausalCases } from './v55-tcausal.js';
+import { lengthCertificate, formatCertificate } from './v55-certificate.js';
 
 import {
     buildBaselineRecords,
@@ -3425,6 +3426,15 @@ export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit
         }),
     };
     report.tcausal_text = formatTcausalReport(report.tcausal.canonical);
+    // The length certificate: the judge-free ruling on this exact projection. It reads the same
+    // effective injected text as T-Causal, so the two cannot disagree about what the model was shown,
+    // and it calls no model, so the same store and projection always give the same certificate.
+    report.certificate = lengthCertificate(store, {
+        projection: effectiveInjected,
+        actor: String(ctx.name2 || '') || null,
+        cases: buildTcausalCases(store, { limit: probeLimit }),
+    });
+    report.certificate_text = formatCertificate(report.certificate);
     return report;
 }
 
