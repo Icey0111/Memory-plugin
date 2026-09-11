@@ -781,6 +781,78 @@ Two things remain true and are not claimed as fixed: **causal coverage is still 
 injection is 33% more expensive, with the measured frontier (Entry 12) offering a deliberate way to trade
 that back.
 
+---
+
+## Entry 14 - the causal hole closed, and the budget correction made to reach existing installs
+
+- Date: 2026-09-12 02:40:00
+- Session: same conversation, completing the remaining two items in one pass.
+
+## Problem / Requirement
+
+Entry 13 left two things: **causal coverage 6/17 (35%)**, the largest remaining hole, and an injection 33%
+more expensive than the pre-iteration baseline.
+
+## How It Was Changed
+
+**Diagnosis with the trustworthy protocol** (call the interceptor, read the two named keys):
+
+- The change chain **is** injected and its marker **is** in the projection.
+- `spinePromptBlock` produced only **587 characters**, rendering **7 of 19** replaced values, against 17
+  slots that had actually changed.
+- `spine_injection_max_chars` was **600** by default. The only carrier of "why is it like this now" had the
+  **smallest budget in the system**, while the reference block had 12,000 and the state block 20,000.
+
+**Sweep** (spine budget x reference budget), trustworthy protocol, on the 50-floor chat:
+
+| spine cap | reference cap | spine chars rendered | tokens | state | causal | T-Causal |
+|---|---|---|---|---|---|---|
+| 600 (old) | 12,000 | 587 | 14,600 | 34/34 | 6/17 (35%) | 30/40 (75%) |
+| 1,200 | 12,000 | 995 | 14,865 | 34/34 | 8/17 (47%) | 32/40 (80%) |
+| 2,400 | 12,000 | 2,277 | 15,714 | 34/34 | 10/17 (59%) | 35/40 (88%) |
+| 4,000 | 12,000 | 3,609 | 16,589 | 34/34 | **13/17 (76%)** | **39/40 (98%)** |
+| 4,000 | 8,000 | 3,609 | **14,079** | 33/34 | 13/17 (76%) | 37/40 (93%) |
+
+The last row is the choice: **better than the old configuration on every axis and cheaper than it**, paying
+for the chain out of the reference block, which Entry 12 had already measured as flat below 4,000
+characters.
+
+- [index.js L191](file:///D:/memory_plugin/index.js#L191) - `spine_injection_max_chars` **600 -> 4000**, `spine_injection_max_rows` **8 -> 24**.
+- [index.js L170](file:///D:/memory_plugin/index.js#L170) - `reference_context_max_chars` **12000 -> 8000**.
+- [test-v55-causal-budget.mjs L1](file:///D:/memory_plugin/test-v55-causal-budget.mjs#L1) - asserts the chain carries the replaced values, that the budget scales it, that the changed slot is named, and that an unchanged slot is not listed.
+
+**A gap that would have made all of this invisible.** `getSettings` only fills keys that are **absent**, so
+a corrected default reaches new installs and reaches existing ones **never**. Every measured correction in
+this session would have applied only on a fresh installation.
+
+- [index.js L298](file:///D:/memory_plugin/index.js#L298) - `MEMORY_BUDGET_VERSION`, `MEMORY_BUDGET_MIGRATIONS` and `migrateMemoryBudgets`: one rewrite of the three budget keys, once, stamped so a later user edit is respected.
+- [test-v55-budget-migration.mjs L1](file:///D:/memory_plugin/test-v55-budget-migration.mjs#L1) - an old install is corrected once; a second run does nothing; a budget the migration does not own is untouched; a user edit after migration survives.
+
+## Result
+
+Test suite: **75/75 in 19.7 s**.
+
+**Verified live on the 50-floor chat**, same moment, old allocation then new:
+
+| | old | new |
+|---|---|---|
+| injected characters | 24,289 | 23,335 |
+| injected tokens | 14,605 | **14,079 (-4%)** |
+| state coverage | 34/34 (100%) | 33/34 (97%) |
+| soundness violations (stale rendered live) | 2 | **0** |
+| commitment | 12/12 | 12/12 |
+| **causal coverage** | **6/17 (35%)** | **13/17 (76%)** |
+| **T-Causal** | **30/40 (75%)** | **37/40 (93%)** |
+| T-Causal violations | 0 | 0 |
+
+Causal coverage **doubled**, T-Causal rose 18 points, stale rendering went to zero, and the total is
+cheaper. The one cost is a single state value (34 -> 33), within the noise of which memories happen to
+render.
+
+End-to-end validation launched as `pwsh-23`: 25 user turns = 50 floors, the same scenario, new budgets
+forced, transcript health asserted after every batch. Its result is not in this entry.
+
+
 
 
 

@@ -167,7 +167,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     setting_baseline_veto_enabled: true,
     setting_query_seed_from_memories: true,
     // v5.5-dev Commit F: one context assembler, two extension-prompt blocks.
-    reference_context_max_chars: 12000,
+    // Measured frontier (change_log Entry 14): the reference block is flat below 4,000 characters - 4,000
+    // and 2,000 produce identical certificates - so its last characters buy nothing. 8,000 keeps it well
+    // above the knee while paying for the change chain below.
+    reference_context_max_chars: 8000,
     // Measured on a 50-floor live chat by ablation, not by argument (change_log Entry 10). The block was
     // pinned at its 5,000-character cap while carrying only 17 of 31 live slot values, and the layered
     // summary was spending budget for no measurable gain in state, causal or T-Causal coverage. Raising
@@ -188,8 +191,17 @@ const DEFAULT_SETTINGS = Object.freeze({
     mandatory_baseline_limit: 24,
     // Iteration 14 S1/S2: the change chain. Slots whose value was replaced, and what replaced it.
     spine_injection_enabled: true,
-    spine_injection_max_chars: 600,
-    spine_injection_max_rows: 8,
+    // Measured (change_log Entry 14): at 600 characters the change chain rendered 7 of 19 replaced
+    // values, and causal coverage sat at 6/17 (35%) - the largest remaining hole. The chain is the only
+    // carrier of "why is it like this now", and it was the smallest budget in the system. At 4,000
+    // characters causal coverage is 13/17 (76%) and T-Causal 37/40 (93%), and the total injection is
+    // still cheaper than before, because the reference block was trimmed to pay for it.
+    spine_injection_max_chars: 4000,
+    spine_injection_max_rows: 24,
+    // The budgets above were corrected by measurement, not by taste. An install that already saved the old
+    // values would never see the new ones, because getSettings only fills keys that are missing - so the
+    // correction carries a version and a one-time migration.
+    memory_budget_version: 2,
     // Plan A2/A4/A6. All three are on by default and all three degrade to the previous behaviour when
     // switched off, which is the plan's own degradation rule for the A list ("a failed detector is never
     // worse than the floor beat").
@@ -287,6 +299,41 @@ function notify(type, message, title = '艾瑟瑞亚统一记忆') {
     else console[type === 'error' ? 'error' : 'log'](`[${title}] ${message}`);
 }
 
+/**
+ * One-time correction of the injection budgets.
+ *
+ * A changed default reaches new installs for free and reaches existing ones never, because the merge in
+ * getSettings only supplies keys that are absent. Measured corrections therefore have to be carried over
+ * explicitly. The migration rewrites only the budget keys, and only once: after it runs the version is
+ * stamped, so a value the user edits afterwards is kept.
+ */
+export const MEMORY_BUDGET_VERSION = 2;
+export const MEMORY_BUDGET_MIGRATIONS = Object.freeze({
+    2: Object.freeze({
+        spine_injection_max_chars: 4000,
+        spine_injection_max_rows: 24,
+        reference_context_max_chars: 8000,
+    }),
+});
+
+export function migrateMemoryBudgets(settings, { version = MEMORY_BUDGET_VERSION } = {}) {
+    if (!settings || typeof settings !== 'object') return { migrated: false, applied: [] };
+    const from = Number(settings.memory_budget_version) || 1;
+    const target = Math.max(1, Number(version) || MEMORY_BUDGET_VERSION);
+    if (from >= target) return { migrated: false, from, applied: [] };
+    const applied = [];
+    for (let step = from + 1; step <= target; step += 1) {
+        const patch = MEMORY_BUDGET_MIGRATIONS[step];
+        if (!patch) continue;
+        for (const [key, value] of Object.entries(patch)) {
+            settings[key] = value;
+            applied.push(key);
+        }
+    }
+    settings.memory_budget_version = target;
+    return { migrated: true, from, to: target, applied };
+}
+
 function getSettings(ctx) {
     if (!ctx.extensionSettings[SETTINGS_KEY] || typeof ctx.extensionSettings[SETTINGS_KEY] !== 'object') {
         const legacy = LEGACY_SETTINGS_KEYS.map(key => ctx.extensionSettings[key]).find(value => value && typeof value === 'object');
@@ -298,6 +345,7 @@ function getSettings(ctx) {
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
         if (current[key] === undefined) current[key] = value;
     }
+    if (migrateMemoryBudgets(current).migrated) ctx.saveSettingsDebounced?.();
     return current;
 }
 
