@@ -20,7 +20,7 @@ import {
 import { sanitizeStoreForActor } from './v55-privacy.js';
 import { getMandatoryMemories, isDialogueRow } from './memory-core.js';
 import { persistChatStore } from './v55-derived-store.js';
-import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth } from './v55-summary-runtime.js';
+import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth, SUMMARY_PROMPT_KEY } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
 import { formatEvidenceBlock, resolveMemoryLookupRequests } from './v55-evidence.js';
 // A8 computed where the injected text actually exists. The published bundle is deleted a few lines
@@ -32,7 +32,6 @@ const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const REFERENCE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_reference';
 const CURRENT_STATE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_current_state';
-const SUMMARY_PROMPT_KEY = 'aetheria_unified_memory_v5_5_hierarchical_summary';
 const IN_CHAT = 1;
 const SYSTEM_ROLE = 0;
 

@@ -226,3 +226,77 @@ confusion anyway:
 - Three modules each wrap the same host interceptor in turn
   (`installV55Runtime`, `installV55Finalizer`, `installV55Consistency`), so reading
   any one of them does not tell you what the prompt finally contains.
+
+
+<!-- VERSION 3 -->
+## v3 - 2026-09-11 21:35:00 - resolve the spine question, unify two key declarations, and reduce remove/
+
+### 1. The spine question is settled by measurement, in favour of the derived store
+
+v2 recorded a contradiction. `v55-spine.js` said the spine is not a derived store key,
+`v55-derived-store.js` said it is, and `MEMORY_PLAN_2026.md` recorded a live measurement in which
+registering it made `store.spine` undefined for runtime readers.
+
+Measured against the running app, before any change, on the chat
+"Seraphina - 2026-09-11@20h22m03s183ms", with the external derived backend hydrated
+(`tauritavern-extension-store`) and `spine` present in `DERIVED_KEYS`:
+
+| Reading | Value |
+|---|---|
+| `store.spine` is an own property of the live store | true |
+| spine nodes / ledger entries | 50 / 10 |
+| `spinePromptBlock(store)` output | 476 characters |
+| spine present in the derived record's key list | true |
+| `DERIVED_KEYS.length` | 16 |
+
+So the spine is both readable by runtime readers and persisted as a derived key. The failure the
+plan recorded belonged to the earlier ownership guard, which deleted derived keys off the live store
+object; that guard was replaced by a serialisation-time projection
+(`installDerivedSerializationFilter`), so the two are compatible.
+
+Resolution: the derived-store registration stays, and the stale comment in `v55-spine.js` was
+rewritten to state the measured behaviour and to record the plan's open item as closed in favour of
+the registration.
+
+### 2. Two key names now have one source of truth
+
+| Was | Now |
+|---|---|
+| the `'spine'` literal in `DERIVED_KEYS`, plus `SPINE_KEY = 'spine'` in `v55-spine.js` | `DERIVED_KEYS` imports `SPINE_KEY` |
+| `SUMMARY_PROMPT_KEY` in `v55-consistency.js`, plus `SUMMARY_KEY` in `v55-summary-runtime.js` | one `export const SUMMARY_PROMPT_KEY` in `v55-summary-runtime.js`, imported by `v55-consistency.js` |
+
+Both directions follow an import edge that already existed, so no module edge was added and no cycle
+became possible: `v55-spine.js` imports nothing at all, and `v55-consistency.js` already imported
+from `v55-summary-runtime.js`.
+
+Measured after the change: the summary key literal occurs exactly once in the source tree,
+`SUMMARY_KEY` occurs zero times, and `SPINE_KEY` has one declaration.
+
+One `'spine'` literal remains, in `v55-quality-metrics.js`, where it is an injection-section id
+(`{ id: 'spine', marker: '[记忆变更链' }`) rather than a store key. Left alone: different namespace.
+
+### 3. `remove/` reduced from 64.0 MB to 9.6 MB
+
+`remove/` is untracked (`/remove/` is in `.gitignore`), so nothing here affects the repository.
+
+| Removed | Files | Recoverable because |
+|---|---|---|
+| `.ref-lwb` | 1,737 | a clone of `https://github.com/RT15548/LittleWhiteBox.git` at `a6f9f6c` |
+| loose top-level files | 76 | a stale full copy of the plugin; the current revision is the repository itself |
+| `v5.5-dev-iteration08` | 74 | a previous iteration snapshot |
+| `source-adapters` | 2 | duplicates of the tracked `source-adapters/` |
+
+Kept: `.audit-v55` (1,058 files), because the live-host audit harness lives there and it is the only
+way to verify against the running app; the three `remove_*/` entries, which are the audit trail this
+folder exists for; and `header.md`, the folder's mandatory conventions file.
+
+One file could not be removed: `remove/CENTRALIZED_MEMORY_PROPOSAL.md`. Its ACL grants
+`BUILTIN\Users` read-and-execute only and gives modify rights to a different sandbox account
+(`ICEY0111\CodexSandboxUsers`), so deletion is denied even after clearing attributes, and
+`cmd /c del /f` is denied too. Left in place rather than escalated for one stale design note.
+
+### 4. Verification
+
+`node run-tests.mjs`: 70/70 in 19.1 s, before and after every change above. The code edits are
+behaviour-preserving by construction: each replaces a literal with a constant holding the identical
+string.

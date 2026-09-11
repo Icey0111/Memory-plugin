@@ -17,6 +17,7 @@
 //      reachable the keys simply stay in the chat file, which is the previous behaviour.
 
 import { normalizeStore } from './memory-core.js';
+import { SPINE_KEY } from './v55-spine.js';
 import { setExternallyOwnedKeys, setStoreSerializationFilter, writeMergedChatStore } from './v55-store-integrity.js';
 
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -51,10 +52,11 @@ export const DERIVED_KEYS = Object.freeze([
     'current_state_authority',
     'last_active_state_diagnostic',
     'v55_inner_bundle',
-    // Iteration 14 S1/S2: the deterministic memory spine. It belongs here (it is an index over
-    // operations that are themselves replayable) and can be, now that the ownership guard no longer
-    // deletes externally-owned keys from the object runtime readers see.
-    'spine',
+    // Iteration 14 S1/S2: the deterministic memory spine, referenced through SPINE_KEY so the name
+    // has exactly one source of truth. It belongs here (it is an index over operations that are
+    // themselves replayable) and can be, now that the ownership guard no longer deletes
+    // externally-owned keys from the object runtime readers see.
+    SPINE_KEY,
 ]);
 
 const DERIVED_SET = new Set(DERIVED_KEYS);

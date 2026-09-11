@@ -11,13 +11,24 @@
 export const SPINE_VERSION = 1;
 export const SPINE_KEY = 'spine';
 
-// The spine is authoritative-but-BOUNDED state, not a derived store key. It cannot be derived:
-// as soon as an external derived record exists, the metadata guard removes every DERIVED_KEY from the
-// store object that runtime readers see, so a derived spine would be silently invisible to the
-// mandatory-baseline and provenance paths that depend on it. Keeping it authoritative also means it
-// can never be lost to an unreachable backend. The cost is bounded here instead: a recent window of
-// nodes is kept and older ones are dropped, while the durable per-slot history lives in the memories
-// themselves (factHistory reads those, not this window).
+// The spine is authoritative-but-BOUNDED state. It IS registered in DERIVED_KEYS, which keeps it out
+// of the chat file while it remains a readable property on the live store object that
+// mandatory-baseline, provenance and the prompt builder read.
+//
+// An earlier revision of the ownership guard stripped derived keys off the store object runtime
+// readers see, which made a derived spine silently invisible. That revision is gone: the guard now
+// projects the keys out at serialisation time instead of deleting them
+// (installDerivedSerializationFilter in v55-derived-store.js), so the two are compatible.
+//
+// Measured on the live chat "Seraphina - 2026-09-11@20h22m03s183ms" with the external derived backend
+// (tauritavern-extension-store) hydrated and SPINE_KEY present in DERIVED_KEYS: store.spine was an own
+// property of the live store, carrying 50 nodes and 10 ledger entries, and spinePromptBlock produced
+// 476 characters. The unresolved item in MEMORY_PLAN_2026.md is therefore closed in favour of the
+// derived-store registration.
+//
+// The cost is bounded here rather than by an eviction policy: a recent window of nodes is kept and
+// older ones dropped, while the durable per-slot history lives in the memories themselves
+// (factHistory reads those, not this window).
 const MAX_NODES = 300;
 const MAX_LEDGER = 120;
 const MAX_INDEX = 24;

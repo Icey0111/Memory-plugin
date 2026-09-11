@@ -108,3 +108,62 @@ changed on a guess.
 
 No code change survives this pass: `v55-derived-store.js` is byte-identical to
 `e1f6e98`.
+
+---
+
+## Entry 3 - resolve the spine question, unify two key declarations, reduce remove/
+
+- Date: 2026-09-11 21:35:00
+- Session: same conversation, third request - "继续清理剩下的两个部分" (continue cleaning the remaining two parts).
+
+## Problem / Requirement
+
+Entry 2 left two items. First, two key names each had two declarations: `'spine'` appeared in
+`DERIVED_KEYS` and again as `SPINE_KEY`, with the two files' comments contradicting each other, and
+the summary prompt key was declared separately in `v55-consistency.js` and
+`v55-summary-runtime.js`. Second, the untracked `remove/` area held 64.0 MB, mostly a third-party
+reference checkout and stale snapshots of the plugin.
+
+## Purpose of Change
+
+Give each key name exactly one source of truth, settle the spine contradiction with a measurement
+against the running app instead of an opinion, and reduce the scratch area without touching the
+audit trail or the live-test harness.
+
+## How It Was Changed
+
+- [v55-derived-store.js L20](file:///D:/memory_plugin/v55-derived-store.js#L20) and [L59](file:///D:/memory_plugin/v55-derived-store.js#L59) - imports `SPINE_KEY` from `v55-spine.js` and uses it as the `DERIVED_KEYS` entry instead of repeating the literal.
+- [v55-spine.js L14-L31](file:///D:/memory_plugin/v55-spine.js#L14-L31) - the stale claim that the spine is "not a derived store key" replaced by the measured behaviour, quoting the live reading, and recording the plan's open item as closed.
+- [v55-summary-runtime.js L15-L17](file:///D:/memory_plugin/v55-summary-runtime.js#L15-L17) and [L286](file:///D:/memory_plugin/v55-summary-runtime.js#L286) - one exported `SUMMARY_PROMPT_KEY`.
+- [v55-consistency.js L23](file:///D:/memory_plugin/v55-consistency.js#L23) - imports that constant; [L35](file:///D:/memory_plugin/v55-consistency.js#L35) - its duplicate declaration removed.
+- `remove/` - `.ref-lwb`, 76 loose top-level files, `v5.5-dev-iteration08` and `source-adapters` deleted. `.audit-v55`, the three `remove_*/` entries and `header.md` kept.
+- [dev_docs/09_legacy_inventory.md L231](file:///D:/memory_plugin/dev_docs/09_legacy_inventory.md#L231) - appended v3.
+
+## Result
+
+`node run-tests.mjs`: 70/70 in 19.1 s, unchanged. The code edits are behaviour-preserving by
+construction - each replaces a literal with a constant holding the identical string - and both
+directions reuse an import edge that already existed, so no new module edge and no cycle is possible.
+
+The spine question is now settled with evidence rather than argument. Probed against the running app
+before the change, on chat "Seraphina - 2026-09-11@20h22m03s183ms" with the derived backend hydrated
+and `spine` in `DERIVED_KEYS`: `store.spine` was an own property of the live store carrying 50 nodes
+and 10 ledger entries, `spinePromptBlock` produced 476 characters, and the spine was present in the
+derived record's key list. The derived-store registration is therefore correct and the
+`v55-spine.js` comment was the stale half; the plan's recorded failure belonged to the earlier
+strip-based ownership guard, since replaced by a serialisation-time projection.
+
+Measured after the change: the summary key literal occurs exactly once in the source tree,
+`SUMMARY_KEY` occurs zero times, `SPINE_KEY` has one declaration, and the only remaining `'spine'`
+literal is an injection-section id in `v55-quality-metrics.js`.
+
+`remove/`: 2,969 files and 64.0 MB became 1,081 files and 9.6 MB; the whole workspace is 11.1 MB.
+
+One file could not be deleted: `remove/CENTRALIZED_MEMORY_PROPOSAL.md`. Its ACL grants
+`BUILTIN\Users` read-and-execute only, with modify rights held by a different sandbox account
+(`ICEY0111\CodexSandboxUsers`), so deletion is denied even after clearing attributes and
+`cmd /c del /f` is denied too. Left in place and reported rather than escalated for one stale note.
+
+Not yet done: the change was verified by the test suite and by a live probe taken before the edit.
+Re-running the probe against the edited code requires reloading the extension in the live app, which
+is the next step rather than a completed one.
