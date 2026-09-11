@@ -35,6 +35,7 @@ Files are numbered so their reading order is explicit:
 | `04_roadmap.md`      | Milestones, phases, open questions, risks |
 | `05_worktree.md`     | The project directory tree and the responsibility of each part |
 | `06_architecture_drift.md` | Where the codebase stops being a memory system, and what was done about it |
+| `07_functional_check.md` | What each memory stage actually does, measured, and the gaps that remain |
 
 When adding a new document, use the next numeric prefix and register it in the
 table above so this index stays complete.
