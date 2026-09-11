@@ -57,3 +57,77 @@ Both causes and the fix are in
    rejects would drop a whole operation, so this is worth keeping an eye on.
 5. **Extraction retries 67% of the time**, at ~11.2k chars per prompt. This is the dominant background
    cost and it is the same ladder that already had to be widened once.
+
+---
+
+## Revision 2 — 2026-09-11 20:10 (validation results, and the epistemic defect)
+
+### Token band, natural single generation, 10 floors
+
+Chat `Seraphina - 2026-09-11@19h32m15s946ms`, new chat, directive "请写一段 790 到 950 字的长回复",
+one `generate()` per reply, no `continue` anywhere in the run.
+
+| turn | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| reply tokens | 1017 | 973 | 986 | 996 | 868 | 902 | 864 | 827 | 903 | 696 |
+| produced characters | 1203 | 1197 | 1199 | 1237 | 1084 | 1111 | 1079 | 1024 | 1124 | 864 |
+
+min 696 / p25 864 / median 903 / p75 986 / max 1017; **8 of 10 inside 700-1000**, one 4 tokens below and
+one 17 tokens above. Measured cost is 0.845 tokens per produced character.
+
+Calibration ladder, all single-generation: ask 600-750 chars -> 646-859 tokens (median 679); ask
+790-950 chars -> 696-1017 (median 903). The first ask was too low; the second is centred.
+
+### Memory integrity on the same run
+
+| measurement | value |
+| --- | --- |
+| fold coverage certificate | 13 hidden rows, 8 covered floors, 8 digest lines, **0 uncovered rows** |
+| key retention, per turn | 0/0 2/2 2/2 3/3 3/3 4/4 5/5 5/5 6/6 — worst 1.00 |
+| `causal_recall` | 39/39 = 1.00 |
+| injected reference / current-state chars | 0 -> 5,419 / 0 -> 4,304 over the run |
+| injection coverage, per turn | 1.00 1.00 1.00 0.60 0.93 0.75 0.81 0.75 |
+| canonical compression at 20 floors | 2,527 memory tokens vs 9,134 raw = 27.7% |
+| extraction | 8 of 10 turns; 48 memories, 50 spine nodes |
+
+### What the prompt actually pays for
+
+Precise breakdown of the last generation of that run (total prompt 15,393 characters):
+
+| block | chars | share of prompt |
+| --- | --- | --- |
+| `[PLUGIN REFERENCE DATA]` preamble | 459 | 3.0% |
+| `[AETHERIA 分层剧情摘要]` layered summary | 3,247 | 21.1% |
+| `[HISTORICAL MEMORY]` (memories, scenes, setting) | 3,917 | 25.4% |
+| `[PLUGIN CURRENT STATE]` | 2,305 | 15.0% |
+| **plugin memory total** | **9,928** | **64.5%** |
+
+Inside `[HISTORICAL MEMORY]` the actual `<summary>` text of the six memories is **241 characters**; the
+two scene blocks are 1,591 and the XML wrappers, evidence excerpts and instruction preamble make up the
+remaining 2,085. In other words the rendered memory channel is about **40x the canonical memory text it
+carries**, and the layered summary block alone (3,247) is larger than everything else combined. That is
+where the next round of "省" has to come from: not from compressing memory further, but from rendering
+less of it.
+
+### Second defect found and fixed
+
+Every non-`intention` memory was published as `epistemic="fact"`, because the model never emits
+`epistemic` and the default was constant. Captured live:
+
+    <memory id="m_4_3_2vq8m" kind="belief" ... epistemic="fact"><summary>塞拉菲娜推断灰咳不是普通疾病…</summary></memory>
+
+An inference was asserted to the model as a fact — the one upgrade the extraction rules forbid. Fixed by
+deriving the label from the record instead of defaulting it; see
+[change_log_2026_09_11_20_05_00_fix_epistemic_is_not_a_constant.md](../change_log/change_log_2026_09_11_20_05_00_fix_epistemic_is_not_a_constant.md).
+
+### Remaining open items, updated
+
+1. The structured baseline gate is still inert (`setting_binding.world_id` null, `relevantSettingContext`
+   0 in 82/82 planned records, 0 baseline rejections in 211 extractions).
+2. Memory is still mostly additive (82.7% `add`), and the two-fold repair proves the supersede mechanism
+   works, so the gap is extractor behaviour, not the store.
+3. `level2`/`level3` stay 0 at this scale: an L2 needs `l2*l1` = 30 digest lines, which a 10-floor chat
+   cannot reach. Not a defect, a threshold.
+4. The final-turn consistency snapshot came back `null` in both validation runs even though 9 of 10
+   per-turn snapshots were recorded. Diagnostic gap, unresolved.
+5. Extraction still retries 67% of the time at ~11.2k characters per prompt.
