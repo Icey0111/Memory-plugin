@@ -643,6 +643,80 @@ without bound, and the memory budget is whatever remains. Reducing the transcrip
 and cold-original eviction, the machinery that the earlier functional audit found had *zero observable
 effect* - is what would stop the memory budget shrinking as a conversation gets long.
 
+---
+
+## Entry 12 - the transcript conclusion in Entry 11 was wrong; folding works, and the cost/quality frontier measured
+
+- Date: 2026-09-12 01:45:00
+- Session: same conversation, continuing the iteration.
+
+## Problem / Requirement
+
+Entry 11 concluded that the memory budget shrinks because the transcript grows, and named floor folding as
+the next lever. That conclusion had to be checked before acting on it.
+
+## Result
+
+### 1. Entry 11 was wrong: folding works, and the transcript is not the constraint
+
+Measured on the same chat:
+
+| reading | value |
+|---|---|
+| chat rows | 49 |
+| rows folded | **47** |
+| rows in the prompt | **2** |
+| characters in the prompt transcript | **520** |
+| tokens in the prompt transcript | **402** |
+| folded characters | 13,233 of 13,753 |
+
+`floorFoldStatus` reports `enabled: true, keep_recent: 1, hidden_messages: 47, prompt_messages: 2`. The
+10,470-token figure in Entry 11 was the **whole chat file**, including the 47 rows folding had already
+removed from the prompt. The transcript contributes 402 tokens, not 10,470, so it is not squeezing the
+memory budget. **Floor folding is not dead machinery; it is doing its job.**
+
+What actually sets the budget (from `v55-runtime.js`):
+
+    combined = min( reference_cap + current_state_cap , (contextSize - replyReserve) * 2 )
+
+and `budgetPromptPair` already gives current state priority over reference and truncates reference into
+whatever remains. That part of the design is correct.
+
+### 2. The frontier, measured at the context size a real generation uses
+
+| reference cap | tokens | state | causal | T-Causal | stale |
+|---|---|---|---|---|---|
+| 12,000 (current) | 14,619 | **33/34 (97%)** | 6/17 | **29/40 (73%)** | 2 |
+| 8,000 | 12,073 | 31/34 (91%) | 4/17 | 26/40 (65%) | 0 |
+| 6,000 | 10,549 | 31/34 (91%) | 3/17 | 25/40 (63%) | 0 |
+| 4,000 | 9,155 | 31/34 (91%) | 3/17 | 25/40 (63%) | 0 |
+| 2,000 | **7,526** | 31/34 (91%) | 3/17 | 25/40 (63%) | 0 |
+
+The reference block is **flat below 4,000 characters**: 4,000 and 2,000 produce identical readings, so the
+last 2,000 characters are pure waste. Against the current default, trimming reference to 2,000 would save
+**7,093 tokens (48%)** and cost 2 points of state coverage, 3 of causal and 4 of T-Causal.
+
+**Not changed.** That trade is a product decision, not a measurement, and the certificate cannot see what
+the reference block does for the *prose* - recalled memories and scene detail are also what makes a reply
+feel continuous. The frontier is recorded so the trade can be made deliberately rather than guessed.
+
+### 3. A measurement I do not trust yet
+
+The in-run certificate and the post-run reconstruction **disagree on the same chat**: the run's final turn
+read state 18/34 (53%), and calling the same interceptor with the same settings minutes later reads
+**33/34 (97%)**.
+
+Leading explanation, not yet proven: the in-run certificate is taken after the extraction call completes,
+and the extraction is itself a `generateRaw` call that runs the interceptor against a small budget and
+**overwrites the host prompt slots**. If so, the in-run certificate was measuring the projection built for
+the quiet extraction, not the one the roleplay generation used.
+
+Until that is settled, the post-run reconstruction is the number to quote for the roleplay path, and every
+in-run certificate in this session should be treated as suspect. This is recorded because it is exactly the
+class of error that produced the blank-turn and zero-coverage mistakes earlier: **a measurement that
+agrees with itself while measuring the wrong moment.**
+
+
 
 
 
