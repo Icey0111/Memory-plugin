@@ -456,4 +456,44 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(clipped.diagnostics.knowledge_entries, 2, 'but the entries are still recorded');
 }
 
+// --- 15. ten rewrites: continuity survives, and the resident cost does not drift ------------------
+// The end-to-end question the roadmap asked for: after many regenerations, is the thing the story
+// depends on still there? The summarizer here is deliberately lossy in prose - it keeps one sentence -
+// and faithful only to the two structured sections, which is exactly the drift the anchors exist to
+// survive. A model that also drops the sections is covered by section 12.
+{
+    const ANCHOR = '- 承诺 | 林舟答应苏晚不把钥匙的事说出去';
+    const BOUNDARY = '- 苏晚 | 不知道 | 钥匙来自林舟';
+    let pass = 0;
+    const host = makeHost(12, { summarize: async () => {
+        pass += 1;
+        return '局面：第' + pass + '次重写之后的场景。\n【锚点】\n' + ANCHOR + '\n【已解决】\n无'
+            + '\n【知情边界】\n' + BOUNDARY;
+    } });
+    const { ctx, chat, services } = host;
+    const addFloor = n => {
+        chat.push({ name: 'User', is_user: true, mes: '第' + n + '层：两人继续上路。' });
+        chat.push({ name: 'Seraphina', is_user: false, mes: '第' + n + '层：风把火吹歪了一下。' });
+    };
+    for (let round = 1; round <= 10; round += 1) {
+        addFloor(12 + round);
+        await updateNarrative(ctx, services, { force: true });
+    }
+    const report = readNarrativeReport(ctx);
+    assert.equal(pass, 10, 'the fixture really ran ten summary passes');
+    assert.equal(report.summary_failures, 0);
+    assert.equal(report.anchors_active, 1, 'the promise survived ten rewrites that dropped every prose detail');
+    assert.equal(report.anchors_resolved, 0);
+    assert.equal(report.knowledge_entries, 1, 'and so did the knowledge boundary');
+    assert.equal(report.summary_valid, true, 'while coverage stayed valid against the growing history');
+    const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
+    assert.match(bundle.currentStateBlock, /钥匙的事说出去/, 'and it is still injected');
+    assert.match(bundle.currentStateBlock, /KNOWLEDGE BOUNDARIES/);
+    // The resident cost is the configured budget, not a function of how many times the summary was
+    // rewritten: the failure mode this pins is a summary that grows by accretion across passes.
+    const resident = bundle.diagnostics.summary_tokens + bundle.diagnostics.anchors_active * 20;
+    assert.ok(resident <= 900, 'the resident block stays inside its budget after ten rewrites: ' + resident);
+    assert.equal(chat.filter(row => row.is_system === true).length > 0, true, 'and covered floors are still folded');
+}
+
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

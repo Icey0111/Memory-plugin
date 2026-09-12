@@ -259,6 +259,9 @@ function warningsFor(state, opts) {
     if (state.anchors_unconfirmed >= opts.anchorUnconfirmedWarn) {
         out.push('有 ' + state.anchors_unconfirmed + ' 条锚点已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
     }
+    if (state.knowledge_unconfirmed >= opts.anchorUnconfirmedWarn) {
+        out.push('有 ' + state.knowledge_unconfirmed + ' 条知情边界已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
+    }
     if (state.anchors_truncated > 0) {
         out.push('锚点超出注入预算，已省略 ' + state.anchors_truncated + ' 条；调高“锚点 token 预算”或清理已解决的锚点。');
     }
@@ -348,7 +351,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const warnings = warningsFor({ ...pending, summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
         summary_error: live.narrative_diagnostics?.summary_error || null,
         anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
-        anchors_truncated: anchorsTruncated }, opts);
+        anchors_truncated: anchorsTruncated,
+        knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length }, opts);
     const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
         covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
@@ -360,7 +364,10 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         knowledge_entries: knowledge.length,
         knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         warnings,
-        sources: evidence.sources, candidates: ranked.length, vector_available: Boolean(index?.available && !vectorError),
+        sources: evidence.sources, candidates: ranked.length,
+        channels: { lexical: ranked.filter(row => row.channels.includes('lexical')).length,
+            vector: ranked.filter(row => row.channels.includes('vector')).length },
+        vector_available: Boolean(index?.available && !vectorError),
         vector_error: vectorError || live.narrative_diagnostics?.vector_reason || null,
         summary_error: live.narrative_diagnostics?.summary_error || null,
         summary_invalidated: live.narrative_diagnostics?.summary_invalidated || null,
@@ -445,7 +452,9 @@ export function readNarrativeReport(ctx) {
         warnings: warningsFor({ ...pending, summary_failures: failures,
             summary_error: store.narrative_diagnostics?.summary_error || null,
             anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
-            anchors_truncated: 0 }, options(settings)),
+            anchors_truncated: 0,
+            knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length },
+            options(settings)),
         messages: history ? history.active.length : 0,
         completed_floors: history
             ? history.active.filter(id => history.records[id].role === 'assistant').length : 0,

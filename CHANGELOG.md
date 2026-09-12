@@ -13,6 +13,13 @@ belongs in Git commits and pull requests.
 - Continuity anchors: promises, ownership, secrets, identities and life states are stored separately,
   fed back to the summarizer verbatim every pass, and re-injected every generation. An anchor the model
   stops mentioning is kept and flagged; only an explicit resolution removes it.
+- The measurement pass: the paraphrase set grew to 59 questions, oblique-question recall measured 45%
+  (and evidence span precision 15%) on the questions that can be judged, the archive measured 3.8 KB per
+  floor with zero superseded versions, and the resident block was shown to stay inside its budget across
+  ten lossy summary rewrites. Decisions: the dense channel is justified and already exists (ADR-0010),
+  the archive is not pruned (ADR-0011), boundaries stay a record rather than a filter (ADR-0012).
+- Diagnostics now report how many retrieval candidates came from each channel, so the dense half can be
+  A/B'd from the panel, and an unrepeated knowledge boundary is announced like an unrepeated anchor.
 - Knowledge boundaries: who knows what, and who explicitly does not, is its own section of the
   summary - stored, fed back to the summarizer verbatim, and re-injected every generation with its own
   budget. It is a record the panel can show and a test can assert, not enforcement.

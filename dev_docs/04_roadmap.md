@@ -134,29 +134,31 @@
 
 ### Next, in order
 
-1. **Grow the paraphrase set, then decide about dense retrieval.** The packer, not the ranking channel,
-   was the bottleneck: oblique recall went from 17% to 67% by fixing packing alone, and the residual
-   ranking miss rate is 1 of 6 on a six-question sample (ADR-0006). Six questions decide nothing; write
-   50+ and re-run before spending a backend, an index and a rebuild lifecycle on partial credit.
-3. **Re-measure the archive on a long chat before giving it a growth policy.** The first measurement
-   says the archive costs one copy of the conversation text (41-351 KB, 4-33% of the file) and is not the
-   biggest cost in the file; the retired fact set was, and it has moved out (ADR-0004). Bound the
-   archive only if a long chat shows it dominating; do not prune text without that measurement.
-3. **Decide whether boundaries need enforcement.** ADR-0008 records boundaries explicitly and
-   re-injects them every generation; enforcement would need a per-entity ledger and a filter over
-   generated text - a different feature with a different failure mode.
-5. **Measure the pipeline end to end on a long chat**: tokens per turn (resident summary, quoted
-   evidence, unsummarized tail), summary quality after N regenerations, and evidence precision.
+The four items this roadmap carried are closed. The paraphrase set was grown from 6 countable
+questions to 12 and the retrieval decision made (ADR-0010); the archive rate was measured and the
+growth policy is "no pruning, because superseded versions measured zero" (ADR-0011); the end-to-end
+questions were answered offline - the resident block stays inside its budget across ten rewrites, and
+evidence precision is a measured 15% (ADR-0010) - and the boundary question is decided as a record
+rather than a filter (ADR-0012).
+
+What is left needs a live model, and it is the owner’s to run:
+
+1. **A dense A/B with a configured backend.** The two channels are reported separately now, so this is
+   a before/after on the same question set rather than a judgement call.
+2. **A drift run against the real summarizer**: ten rewrites on a long chat, checking the same anchors
+   and boundaries the offline experiment checks with a stub summarizer.
+3. **Re-run the ruler once a story passes a few hundred floors.** The per-floor rates are in its output,
+   and the assumption they carry - superseded versions stay negligible - is stated in ADR-0011.
 
 ### Open risks
 
-| Risk | Why it is still open |
+| Risk | State |
 | --- | --- |
-| Summary drift over many regenerations | Each pass rewrites the previous summary; nothing yet checks that an old detail survives ten rewrites |
-| Chat file size | Measured: the archive adds about one copy of the text (4-33% of the file). The retired fact set, which was 18-53%, now lives in the derived record (ADR-0004) |
-| Lexical-only recall on Chinese dialogue | Measured: 93-100% in-words, 100% entity, 67% oblique after the packing fix (ADR-0006). The oblique sample is six questions, which is the open weakness |
-| The unsummarized tail | If the summary job keeps failing, the prompt grows until the host trims it, and only the diagnostic says so |
-
+| Summary drift over many regenerations | Bounded offline: anchors and boundaries survive ten lossy rewrites (ADR-0005, ADR-0012). A run against the real summarizer is outstanding |
+| Chat file size | Closed by measurement: the archive costs 3.8 KB per floor and superseded versions measured zero, so nothing is pruned (ADR-0011) |
+| Lexical-only recall on oblique questions | Measured at 45% with 15% span precision; the dense channel already exists and is the answer (ADR-0010) |
+| The unsummarized tail | Guarded: counted, thresholded and announced (ADR-0005) |
+| Evidence precision | 15% of quoted spans carry the answer. The share is a proxy, but it is low enough to be worth re-measuring after the dense A/B |
 ### Explicitly not planned
 
 - No model training or fine-tuning.

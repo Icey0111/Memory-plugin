@@ -137,6 +137,13 @@ function measure(chat) {
     }
     const storeBytes = store ? bytes(store) : 0;
 
+    // Growth: the archive is one copy of the text plus one record per superseded version, so the
+    // question a policy has to answer is whether superseded versions stay negligible.
+    const live = new Set(history.active);
+    const superseded = Object.entries(history.records).filter(([id]) => !live.has(id));
+    const supersededChars = superseded.reduce((sum, [, row]) => sum + String(row.text || '').length, 0);
+    const visibleText = messages.map(row => String(row.mes ?? '')).join('\n');
+
     // Recall over the floors a summary would have folded.
     const assistants = messages.filter(row => row.is_user !== true && String(row.mes ?? '').trim());
     const probes = probesFor(messages, probeBudget);
@@ -157,6 +164,8 @@ function measure(chat) {
         file: path.basename(chat.file), fileKb: kb(chat.size), messages: messages.length, floors: assistants.length,
         transcriptKb: kb(transcriptChars * 3), storeKb: kb(storeBytes), derivedMovedKb: kb(movedBytes),
         archiveKb: kb(archiveBytes), chunks: chunks.length, probes: probes.length,
+        superseded: superseded.length, supersededKb: kb(supersededChars * 3),
+        visibleTokens: estimateTokens(visibleText),
         recall: probes.length ? found / probes.length : null,
         candidateHit: probes.length ? candidateHit / probes.length : null,
         medianRank: ranks.length ? ranks[Math.floor(ranks.length / 2)] : null,
@@ -192,6 +201,10 @@ function measureParaphrases(chats, entries) {
                 row.tokens = packed.tokens;
                 row.found = packed.text.includes(entry.needle);
                 row.found_in_candidates = true;
+                // Precision proxy: of the spans that were quoted, how many carry the answer.
+                row.spans = packed.sources.length;
+                row.spansWithNeedle = packed.sources.filter(span => String(chat.history.records[span.source]?.text || '')
+                    .slice(span.start, span.end).includes(entry.needle)).length;
                 break;
             }
             if (row.rank === null) row.found_in_candidates = false;
@@ -210,8 +223,14 @@ function measureParaphrases(chats, entries) {
             + (note || ('rank ' + row.rank + ', ' + row.tokens + ' tok')) + '  ' + row.question);
     }
     console.log('');
+    const counted = results.filter(row => row.occurrences === 1 && row.spans);
+    const spans = counted.reduce((sum, row) => sum + row.spans, 0);
+    const carrying = counted.reduce((sum, row) => sum + (row.spansWithNeedle || 0), 0);
     console.log('entity recall ' + pct(rate(entity)) + ' | oblique recall ' + pct(rate(oblique))
-        + ' | all ' + pct(rate(results.filter(row => row.occurrences === 1))));
+        + ' | all ' + pct(rate(results.filter(row => row.occurrences === 1)))
+        + ' (n=' + results.filter(row => row.occurrences === 1).length + ', oblique n=' + oblique.length + ')');
+    console.log('evidence precision proxy: ' + (spans ? Math.round(carrying / spans * 100) + '%' : 'n/a')
+        + ' of quoted spans carry the answer (' + carrying + '/' + spans + ')');
     return { entity: rate(entity), oblique: rate(oblique) };
 }
 
@@ -254,6 +273,14 @@ if (rows.length) {
     console.log('median recall ' + pct(median(rows.map(r => r.recall))) + ' | candidate hit '
         + pct(median(rows.map(r => r.candidateHit))) + ' | median rank ' + median(rows.map(r => r.medianRank))
         + ' | evidence ' + median(rows.map(r => r.meanTokens)) + ' tokens/query');
+    const perFloorKb = rows.map(r => r.floors ? r.archiveKb / r.floors : null);
+    const perFloorTokens = rows.map(r => r.floors ? Math.round(r.visibleTokens / r.floors) : null);
+    console.log('growth: median archive ' + median(perFloorKb.map(v => v === null ? null : Math.round(v * 100) / 100))
+        + ' KB/floor | superseded versions ' + median(rows.map(r => r.superseded))
+        + ' (' + median(rows.map(r => r.supersededKb)) + ' KB) | transcript ' + median(perFloorTokens) + ' tokens/floor');
+    console.log('at 500 floors that is an archive of about '
+        + Math.round((median(perFloorKb) || 0) * 500) + ' KB, and a visible transcript of about '
+        + Math.round((median(perFloorTokens) || 0) * 500 / 1000) + 'k tokens before any summary folds it');
     console.log('Derived keys now owned by the external record: ' + DERIVED_KEYS.filter(k => ['memories', 'slots', 'hierarchical_summaries'].includes(k)).join(', '));
 }
 const paraphrases = loadParaphrases(paraphraseFile);
