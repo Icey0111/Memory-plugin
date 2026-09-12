@@ -6,9 +6,13 @@
 // a plugin-owned marker in `message.extra` that lets every other reader in this extension tell a
 // plugin fold apart from a user /hide.
 //
-// Two invariants keep this safe:
+// Three invariants keep this safe:
 //   1. Hide only what a Level-1 summary already covers. A reset tree unfolds everything first, so raw
 //      text is never gone from the prompt without a summary standing in for it.
+//   1b. A hidden floor must still be REACHABLE, not merely covered. Coverage says something stands in for
+//      it; reachability says the original is still there to be produced on demand. Those are different
+//      claims and only the first was ever checked - the fold status now reports both, because a floor
+//      hidden with its original gone is the one outcome folding must never produce.
 //   2. Never fold the newest assistant turn. Swipes and regeneration act on the last message, and
 //      SillyTavern's own hide helper refreshes swipe buttons precisely because hiding the tail breaks
 //      them. The tail always stays hot.
@@ -346,8 +350,51 @@ export function floorFoldStatus(ctxInput = getContext()) {
     const hidden = folds?.hidden && typeof folds.hidden === 'object' ? folds.hidden : {};
     const runs = Array.isArray(folds?.runs) ? folds.runs : [];
     const rows = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    // A folded floor must still be REACHABLE, not merely covered. Folding only sets is_system, so the
+    // original text normally stays in ctx.chat at the same index - but a chat edit, a delete, or a lost
+    // marker can break that, and a floor that is hidden with its original gone is the one outcome folding
+    // must never produce. unfoldFloorsNotCovered restores for the missing-STAND-IN case; this reports the
+    // missing-ORIGINAL case, which until now had no observer at all. Stated as the contract it is: the
+    // fold module's first invariant used to be 'hide only what a summary already covers', which is about
+    // the stand-in and says nothing about whether the thing being hidden is still there.
+    // Driven by the ROW MARKERS first and the audit second, for the reason unfoldFloorsNotCovered gives
+    // above: the audit lives in the derived store and can legitimately be absent - a chat whose derived
+    // record predates the key, a lost backend, a read before hydration. An audit that iterates only the
+    // audit table reports "nothing at risk" in exactly the case where it cannot know, which is the same
+    // mistake this module already had to fix once.
+    const reach = { hidden: 0, reachable: 0, at_risk: [] };
+    const counted = new Set();
+    for (let index = 0; index < rows.length; index += 1) {
+        if (!isFoldedRow(rows[index])) continue;
+        counted.add(index);
+        reach.hidden += 1;
+        const marker = rows[index].extra?.[FOLD_EXTRA_KEY] || {};
+        const expected = Number(hidden[String(index)]?.fingerprint ?? marker.fingerprint);
+        if (!Number.isFinite(expected)) {
+            // Folded, but with no fingerprint on either carrier. The text is here; nothing can prove it is
+            // the text that was folded.
+            reach.at_risk.push({ index, reason: 'unverified' });
+            continue;
+        }
+        if (rowFingerprint(rows[index]) !== expected) {
+            // The text changed while folded. It is still ours to restore - unfoldAllFloors trusts the
+            // marker - but the audit can no longer prove this row is the one it folded.
+            reach.at_risk.push({ index, reason: 'content-changed' });
+            continue;
+        }
+        reach.reachable += 1;
+    }
+    for (const key of Object.keys(hidden)) {
+        const index = Number(key);
+        if (!Number.isFinite(index) || counted.has(index)) continue;
+        reach.hidden += 1;
+        reach.at_risk.push({ index, reason: rows[index] ? 'marker-lost' : 'row-missing' });
+    }
     return {
         enabled: settings?.summary_fold_hidden_floors === true,
+        // D2's invariant, made observable: hidden floors whose original is still present and unchanged,
+        // and the ones where it is not.
+        reachability: reach,
         keep_recent: Math.max(0, Math.floor(Number(settings?.summary_fold_keep_recent_floors)) || 0),
         hidden_messages: Object.keys(hidden).length,
         chat_messages: rows.length,

@@ -57,12 +57,31 @@ export function digestRows(store, turns, { maxRows = DIGEST_DEFAULT_MAX_ROWS, ma
         if (!Number.isInteger(index) || index < 0 || !text) continue;
         byIndex.set(index, { text, at: Number(record.generated_at) || 0 });
     }
+    // Who each floor was about, taken from the memories that floor produced. A sealed batch row has to cut
+    // every member's clause to a share of one line, and a cut clause keeps the HEAD of a sentence, which
+    // is frequently not the part that says who it is about. The extractor already named the cast, so the
+    // row carries it: the same bytes per member, more of them meaningful. Measured need - digest rows were
+    // built from event_summary alone and carried no participants at all, so a reader of a sealed row could
+    // not tell a clause about one character from a clause about another.
+    const castByIndex = new Map();
+    const memories = store?.memories && typeof store.memories === 'object' ? store.memories : {};
+    for (const memory of Object.values(memories)) {
+        if (!memory || !Array.isArray(memory.entities) || !memory.entities.length) continue;
+        const index = Number(memory.source_message);
+        if (!Number.isInteger(index)) continue;
+        const list = castByIndex.get(index) || [];
+        for (const name of memory.entities) {
+            const value = clean(name, 24);
+            if (value && !list.includes(value) && list.length < 6) list.push(value);
+        }
+        castByIndex.set(index, list);
+    }
     const rows = [];
     for (const turn of Array.isArray(turns) ? turns : []) {
         const index = Number(turn?.assistant_index);
         const hit = byIndex.get(index);
         if (!hit || !turn?.id) continue;
-        rows.push({ assistant_index: index, source_id: String(turn.id), text: hit.text, at: hit.at });
+        rows.push({ assistant_index: index, source_id: String(turn.id), text: hit.text, at: hit.at, entities: castByIndex.get(index) || [] });
     }
     rows.sort((a, b) => a.assistant_index - b.assistant_index);
 
@@ -100,6 +119,8 @@ export function digestToLevel1(rows) {
             digest: true,
             // How many turns this one line stands in for. 1 means A4 found no repetition worth merging.
             merged: ids.length,
+            // Carried through so a sealed batch can name the cast of a member whose clause it had to cut.
+            entities: Array.isArray(row.entities) ? row.entities : [],
         };
     });
 }
@@ -207,11 +228,28 @@ export function coalesceDigestBatches(rows, { everyTurns = 1, lineChars = DIGEST
         // gets trimmed. This is what keeps the stored tree at ceil(floors / everyTurns) * cap characters
         // instead of growing with the transcript.
         const share = Math.max(24, Math.floor((lineCap - (bucket.length - 1)) / bucket.length));
+        // Structure survives where prose cannot. A member's clause is cut to a share of one line, and a cut
+        // clause keeps the HEAD of a sentence - which is frequently not the part that says who it is about.
+        // C3 asks a situation row to carry the dimensions of the situation rather than the head of each
+        // sentence, and the one dimension the extraction records give deterministically is the cast. So a
+        // member that had to be cut spends part of its share naming its participants instead of spending
+        // the whole share on a fragment: the same bytes, more of them meaningful. It also marks the cut,
+        // which the bare join did not - a reader could not tell a complete clause from a severed one.
+        const member = row => {
+            const full = clean(row.text, 4000);
+            if (!full) return '';
+            if (full.length <= share) return full;
+            const names = [...new Set((Array.isArray(row.entities) ? row.entities : [])
+                .map(name => clean(name, 24)).filter(Boolean))].slice(0, 3).join('/');
+            if (!names) return clean(full, share) + '…';
+            return clean(full, Math.max(12, share - names.length - 3)) + '…[' + names + ']';
+        };
+        const members = bucket.map(member).filter(Boolean);
         out.push({
             id: 'summary_l1_batch_' + fnv1a32(floorIndexes.join(',')).toString(36),
             level: 1,
             source_ids: ids,
-            text: clean(bucket.map(row => clean(row.text, share)).filter(Boolean).join('；'), lineCap),
+            text: clean(members.join('；'), lineCap),
             created_at: bucket.reduce((at, row) => Math.max(at, Number(row.created_at) || 0), 0),
             digest: true,
             merged: ids.length,

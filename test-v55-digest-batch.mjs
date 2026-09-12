@@ -138,4 +138,48 @@ assert.equal(digestCoveredIndexes(carriedAway).has(1), false, 'a stand-in for tu
 assert.equal(digestCoveredIndexes(carriedAway).has(11), false, 'and neither is the second batch');
 assert.equal(carriedAway.length, 0, 'nothing may stand in for a chat that no longer has those turns');
 
+// --- D1: a sealed member that had to be cut carries its cast ----------------------------
+//
+// The row is one line and each member gets a share of it, so a long member's clause is cut and only its
+// head survives - frequently not the part that says who it is about. The extraction records name the
+// cast deterministically, so a cut member spends part of its share on that instead of on a fragment.
+// Same bytes per member, more of them meaningful, and the cut is marked where the bare join left a
+// reader unable to tell a complete clause from a severed one.
+const longMembers = [...Array(10).keys()].map(index => ({
+    assistant_index: index,
+    source_id: 'turn_' + index + '_fp',
+    text: '第' + index + '层：' + '情节细节'.repeat(30),
+    at: 1000 + index,
+    entities: ['弥拉', '井台', '手札'],
+}));
+const sealedLong = coalesceDigestBatches(digestToLevel1(longMembers), { everyTurns: 10 });
+const longText = sealedLong[0].text;
+assert.ok(longText.includes('…['), 'a cut member is marked as cut: ' + longText.slice(0, 140));
+assert.ok(longText.includes('弥拉'), 'and names its cast, so the row still says who it is about');
+assert.ok(longText.length <= DIGEST_LINE_MAX_CHARS, 'while staying one line');
+assert.equal((longText.match(/…\[/g) || []).length, 10, 'every member was cut, so every member is marked');
+
+// A member that fits is untouched: no marker, and no characters spent on a cast it does not need.
+const shortMembers = [...Array(10).keys()].map(index => ({
+    assistant_index: index,
+    source_id: 'turn_' + index + '_fp2',
+    text: '第' + index + '层：短句。',
+    at: 2000 + index,
+    entities: ['弥拉'],
+}));
+const sealedShort = coalesceDigestBatches(digestToLevel1(shortMembers), { everyTurns: 10 });
+assert.ok(!sealedShort[0].text.includes('…'), 'an uncut member carries no cut marker');
+assert.ok(!sealedShort[0].text.includes('弥拉'), 'and spends nothing on its cast');
+assert.ok(sealedShort[0].text.startsWith('第0层：'), 'the oldest member still leads the row');
+
+// A row with no cast at all still truncates rather than throwing, and still marks the cut.
+const bareMembers = [...Array(10).keys()].map(index => ({
+    assistant_index: index,
+    source_id: 'turn_' + index + '_fp3',
+    text: '第' + index + '层：' + '无主体细节'.repeat(30),
+    at: 3000 + index,
+}));
+const sealedBare = coalesceDigestBatches(digestToLevel1(bareMembers), { everyTurns: 10 });
+assert.ok(sealedBare[0].text.includes('…'), 'a castless cut is still marked');
+assert.ok(!sealedBare[0].text.includes('['), 'and invents no cast to fill the space');
 console.log('PASS v5.5 digest batch sealing: a full batch becomes one permanent row, so coverage is O(chat)');

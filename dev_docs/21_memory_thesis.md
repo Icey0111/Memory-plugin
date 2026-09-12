@@ -921,6 +921,81 @@ the last mile, not the overflow.*
 computed trigger for retrieving the original - is not implemented, and the one path that does retrieve the
 original is triggered by the model, which is the thing the semantics forbid.**
 
+<!-- VERSION 9 -->
+## v9 - 2026-09-12 08:55:00 - the retrieval trigger is computed, and two defects were found by verifying it
+
+v8's audit found four open items. All four are implemented, tested, and verified live on the 51-floor chat.
+
+### 1. The trigger is now computed, which was the whole gap
+
+`resolveTurnEvidence` reads the turn, takes its lexical neighbours, drops anything the prompt already
+carries verbatim, and resolves the rest to **original text** through the same resolver the model-triggered
+path uses. No model decision anywhere in it, no threshold to cross, no veto.
+
+**The measurement that justifies it.** On the live 51-floor chat, **not one of the 101 rows contains the
+`【查阅记忆】` marker** - the model has never once asked. So the only route by which original text could
+reach the prompt had never fired in the entire history of that chat, and the plugin still reported itself
+as having an on-demand expansion path. The computed route resolves **3 entries / 1,733 characters** from 12
+considered, every turn, without being asked.
+
+**And verifying it found the failure that would have made it worthless.** The evidence was appended after
+the derived blocks, and the 4,000-character reference cap was already spent by the summary and the imported
+setting text - so it was resolved, recorded in `last_evidence_sources` as injected, and then **silently cut
+by the reference trim**. Measured: evidence characters inside the prompt **0 → 2,112** after reserving the
+block's size out of the reference cap, exactly as the change chain had to be reserved in v3.
+
+**A path that measures as working and delivers nothing is worse than one that is absent**, because nothing
+reports the difference. It is the third instance of the same shape in this project - content placed last,
+budget spent first, trim removes it - and the third one was found only because the verification read the
+prompt instead of the resolver.
+
+### 2. Abstention, as the same function's other half
+
+When the turn names entities the registry tracks and **not one of them resolves to anything**, the block
+says so and names them, rather than injecting nothing. Silence is not neutral: it is what leaves the model
+free to fill the gap, which is the one outcome the record exists to prevent. `abstained` is reported
+separately from `entries.length === 0` so a caller can tell *nothing found* from *nothing to look for*.
+
+### 3. D2 - coverage is not reachability, and the fold status now says both
+
+`floorFoldStatus` reports `reachability: { hidden, reachable, at_risk }`: for every hidden floor, is its
+original still present at the same index and still matching its recorded fingerprint? A floor hidden with
+its original gone is the one outcome folding must never produce, and nothing observed it before.
+
+**My own first version had the bug this module already warns about.** It iterated the `floor_folds` audit
+table, and the audit lives in the derived store and can legitimately be absent - so it would report
+"nothing at risk" in exactly the case where it cannot know. The module's comment on
+`unfoldFloorsNotCovered` says so in as many words. It is driven by the row markers now, with the audit used
+only for entries whose rows are gone.
+
+**Live, that difference is the whole finding**: the audit-based counter says `hiddenMessages: 0`, while the
+row-driven audit says **`hidden: 74, reachable: 74, at_risk: []`**. Every folded floor on a real chat is
+reachable, and the old counter could not see them at all.
+
+### 4. D1 - a cut member carries its cast
+
+A sealed batch row is one line, each member gets a share of it, and a cut clause keeps the head of a
+sentence - frequently not the part that says *who* it is about. A member that had to be cut now spends part
+of its share naming its participants, and marks the cut; an uncut member is untouched. Same bytes per
+member, more of them meaningful, and one of C3's five dimensions (protagonists) survives where prose does
+not.
+
+**And finding this exposed that the data was not there.** Digest rows were built from `event_summary`
+alone and carried **no entities at all**, so the first version of this change would never have fired in
+production - it would have passed its own test and done nothing. The cast is now taken from the memories
+each floor produced, in `digestRows`, and preserved through `digestToLevel1`.
+
+### What is now true, and what is still not
+
+**True**: original text reaches the prompt every turn through a computed trigger; the fold's hidden floors
+are audited for reachability; a sealed batch member names who it is about; and the system says "I have
+nothing" instead of saying nothing.
+
+**Still not**: whether the retrieved original text is *used* is **H4**, and H4 needs model calls. The
+mechanism is now the one the semantics describe; whether it helps is unmeasured and is billed to the user.
+The compression gap (C1's 56%) is unchanged, and v6 measured that it cannot be closed deterministically.
+
+
 
 
 

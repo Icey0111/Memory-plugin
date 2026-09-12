@@ -780,443 +780,91 @@ trade the reservation makes, not just the headline number.
 | 4500 | 1/3 | **3/3** | 0 -> **694** | 9/12 | 10/12 | 5755 | 5791 |
 | 3000 | 0/3 | **3/3** | 0 -> **694** | 7/12 | 8/12 | 4636 | 4638 |
 
-The chain now renders **in full, 694 characters, at every cap from 12,000 down to 3,000**, and `causal`
-holds **3/3 across that entire range** where it used to be 1/3 or 0/3 below 7,000. No block exceeds its cap
-at any point (`over: false` throughout), and `commitment` stays **23/23** down to 3,000.
-
-**The trade is explicit, which is the part worth recording.** At caps 6,000 and 5,500 the state block gives
-up one and two slot-bearing memories respectively to keep the causal record whole. That is the intended
-direction - causation is one of the five dimensions the summary exists to preserve, and the certificate
-scored its loss as the larger failure - but it is a real cost, not a free win, and it is smaller in practice
-than the 12/12 -> 10/12 reading suggests: `state` is defined over **12 of 73 active memories** (see entry 10),
-so one slot is roughly 1.4% of the store.
-
-**The cost is nil.** At the live setting the block grew by **25 tokens** (+0.3%). At a 6,000-character cap it
-came out **10 tokens cheaper**, because reallocating inside the cap lets the assembler pack better than an
-append-after-the-cap did.
-
-**The floor guard is exercised live.** At a 900-character cap the block is 863 characters with **no chain
-reserved** (`spineChars: 0`, `causal 0/3`): 900 minus the 800-character floor leaves 100, which is below
-`spinePromptBlock`'s own 120-character render floor, so the reservation steps aside and hands the cap over
-untouched rather than starving the state block. That is exactly the behaviour
-`test-v55-spine-reservation.mjs` pins, now observed rather than only asserted.
-
-**Status: verified.** The fix is committed (`7fa405e`), scripted for deployment (`f399e81`), covered offline
-(79/79), and now measured working in the running app.
-
 ---
 
-## 13. The corpus was already on disk, the state block is 65% short at 51 floors, and the gate question is closed
+## 17. The retrieval trigger is computed, and verifying it found two defects
 
 ### Problem / Requirement
 
-Three plan revisions in a row — `22_plan_after_compression.md` v2, v3 and v4 — deferred a question with the
-same sentence: *this needs a corpus where the state cap actually binds*. Nothing checked whether one was
-already on the machine. It was:
-
-| chat | rows | assistant floors | memories | active | slot-bearing |
-|---|---|---|---|---|---|
-| the acceptance chat used since entry 9 | 55 | 28 | 76 | 73 | **12** |
-| `Seraphina - 2026-09-11@22h56m08s521ms` | 101 | 51 | 224 | 217 | **197** |
-
-Sixteen times the slot-bearing memories. Every question that had been deferred for want of a corpus was
-measurable within a minute of finding it.
+Entry 16's audit read the tree against the converged semantics and found four open items. The sharpest:
+**the only route by which original text reached the prompt was the model writing a `【查阅记忆】` marker**,
+which C5 forbids in as many words. Alongside it: the fold checked "every hidden floor has a stand-in" rather
+than "every hidden floor is still reachable"; a sealed batch member compressed by truncating prose where C3
+asks for structure; and abstention was absent entirely.
 
 ### Purpose of Change
 
-Measure the two open questions on a corpus with real power — *where does the state actually break?* and *can
-any query source recover what the budget dropped?* — and record what the answers force, including a
-correction to this session's own v3 conclusion and to a wrong number written into v4's first draft.
+Give the retrieval path a computed trigger, make the fold's second invariant observable, carry the cast in a
+sealed row's cut members, and make silence not the fallback.
 
 ### How It Was Changed
-
-**Measurement (no product code, zero model calls)**
-
-- [chat-scan.mjs](file:///D:/memory_plugin/chat-scan.mjs) - new, tracked. Lists every chat the host owns
-  with its memory store, read straight from the chat files, so "we need a longer corpus" can be checked
-  instead of asserted. Writes nothing.
-- [expr-open224.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-open224.js) - opens the
-  51-floor chat and confirms its live shape.
-- [expr-a2-breakdown.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a2-breakdown.js) -
-  re-run on the new corpus: the certificate across ten state caps.
-- [expr-a3-arms.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a3-arms.js) - new. Five arms
-  ranked inside the dropped set against the certificate's required set, with a paired bootstrap.
-- [expr-state-compose2.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-state-compose2.js) -
-  new. Where the 12,000 characters of the state block actually go.
-
-**Documentation**
-
-- [dev_docs/21_memory_thesis.md L401](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L401) - v4.
-- [dev_docs/22_plan_after_compression.md L283](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L283) - v4.
-
-### Result
-
-**The state contract fails at 51 assistant floors, and the certificate says so.** At the default
-12,000-character cap the block renders 11,965 characters and carries **69 of 197 slot values — 35%**.
-`commitment` is **15/15**, so the irreversible set is intact, which is the promise that matters and it holds.
-`stale` is 0 at every budget. But `state` goes from "12/12" on the acceptance chat to **0.35** here, and the
-shortfall is not a tuning error: rendering all 197 rows as they are written needs about **27,300 characters**,
-and even a 20,000-character cap only reaches **112/197**.
-
-**The gate question is closed, and not in the gate's favour.** Five arms — recency, the production dialogue
-query, a query built from the state block's own content (A3a), the last user message (A3b), and random —
-ranked inside the dropped set, with the certificate's `state.omitted` ∪ `commitment.missing` as ground truth:
-
-| cap | required / dropped | recency@8 | dialogue@8 | state@8 | lastUser@8 | random@8 |
-|---|---|---|---|---|---|---|
-| 12000 | 128 / 142 | 0.039 | 0.039 | 0.039 | 0.055 | **0.056** |
-| 9000 | 146 / 163 | 0.034 | 0.034 | 0.041 | 0.048 | **0.049** |
-| 7000 | 157 / 174 | 0.032 | 0.032 | 0.038 | 0.045 | **0.046** |
-| 4500 | 172 / 192 | 0.041 | 0.029 | 0.029 | 0.041 | **0.042** |
-| 2500 | 184 / 204 | 0.038 | 0.027 | 0.033 | 0.038 | **0.039** |
-
-**Every arm is at or below chance at every cap.** The reason is in the second column: **90% of dropped
-memories are required**, so recall@B is about B/|D| for any ordering — there is almost nothing to rank
-against. The measurement is informationless by construction, which is a property of the target, not of the
-scorers. A3a and A3b are therefore **closed rather than deferred**, and the gate's remaining honest scope is
-the narrow named-thing lookup, whose test protocol has to be H4's rather than the certificate's.
-
-**This revises entry 10's own conclusion.** Entry 10 said *retrieval is the overflow mechanism of a bounded
-state block*. On a 28-floor chat, where the overflow is a handful of rows, that reads well. On a real chat the
-overflow is **65% of the state**, and no ranking recovers 65% of anything: **retrieval is the mechanism for
-the last mile, not the overflow**, because selection is not a capacity mechanism. The capacity gap is now a
-number — **~56% compression** — and **C1 is promoted to the critical path with that target**.
-
-**A wrong number in this version's first draft, corrected.** The draft claimed the block spends **3,004
-characters on repeated slot labels and could fit 22 more rows** by hoisting them. That was an arithmetic
-error: the sum was taken over the 4 *distinct* owners instead of the 81 rendered rows, overstating the saving
-**fivefold**. Measured properly, the labels are 31% of the row characters but the repeated `owner.` prefix is
-5% and `kind:` another 5%; hoisting both is worth **1,048 characters, about 7.5 extra rows — 4% of the gap.**
-Worth doing, not the answer. It is the same class of error as entry 9's "89 names", and both are written down
-rather than quietly fixed.
-
-**Two things found on the way.** `causal` is **9/16 at a 20,000-character cap** with the block nowhere near
-tight — seven chains broken structurally rather than by pressure, a failure mode entry 10's reservation fix
-does not address and this entry does not diagnose. And the on-disk store is serialised **columnar**, so a
-naive `Object.values(store.memories)` returns four structural keys and reports a memory count of **4** for a
-chat holding **224**; `chat-scan.mjs` decodes both shapes and reproduces the live counts exactly.
-
-**Verification.** All numbers measured against the running app over CDP. `npm run check` clean, **79/79 test
-files pass**. No product code changed in this entry, so the live deployment is unchanged.
-
----
-
-## 14. The state block was spending its entire budget on beliefs and never rendering knowledge
-
-### Problem / Requirement
-
-Entry 13 established that at 51 assistant floors the state block carries 69 of 197 slot values at the
-default cap and 129 of 197 at the 20,000-character ceiling the assembler clamps to. It did not ask **which**
-68 were missing, or why that particular 68. The answer was not a budget effect and it was not random.
-
-### Purpose of Change
-
-Find what the missing set actually is, size the deterministic compression strategies before building any of
-them, and fix the reason the block loses the wrong things while it cannot fit everything.
-
-### How It Was Changed
-
-**Measurement (zero model calls)**
-
-- [expr-c1-profile.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-profile.js) - the shape
-  of the 197 slot memories: kinds, owners, text lengths, ages.
-- [expr-c1-strategies.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-strategies.js) - four
-  compression strategies sized against the real store.
-- [expr-c1-reuse.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-reuse.js) - re-mention
-  rate and dormancy per kind, which is what rejected the scope split.
-- [expr-c1-order.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-order.js),
-  [expr-c1-missing.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-missing.js) - which rows
-  render, which headings appear, and which memories the projection cannot reach.
-- [expr-c1-coverage.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-coverage.js),
-  [expr-c1-bykind.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-bykind.js) - coverage and
-  cost against the cap, per kind.
 
 **Product code**
 
-- [context-assembler.js L303-L340](file:///D:/memory_plugin/context-assembler.js#L303) - the group function
-  split into weight bands, and the heading table.
-- [context-assembler.js L357-L400](file:///D:/memory_plugin/context-assembler.js#L357) -
-  `buildCurrentStateBlock` emits rows in canonical priority order with the heading changing on group change,
-  replacing the six fixed `appendGroup` calls.
-- [v55-runtime.js L300-L325](file:///D:/memory_plugin/v55-runtime.js#L300) - `canonicalKindWeight` and
-  `compareCanonicalMemories` exported so the assembler shares the one comparator instead of copying it.
-- [test-v55-state-priority.mjs](file:///D:/memory_plugin/test-v55-state-priority.mjs) - new. Pins the
-  invariant that matters: across ten budgets, **a memory is never cut while a less consequential one is
-  still rendered**, plus the specific defect (a belief must never render while knowledge is cut).
-- [package.json](file:///D:/memory_plugin/package.json) - the new test registered in the `check` chain.
+- [v55-evidence.js L255-L300](file:///D:/memory_plugin/v55-evidence.js#L255) - `resolveTurnEvidence`, the
+  computed trigger, and `unmatchedRegistryNames` for abstention.
+- [v55-evidence.js L285-L300](file:///D:/memory_plugin/v55-evidence.js#L285) - `formatEvidenceBlock` gains
+  `heading`, `abstained` and `unmatched`, so an empty result can speak.
+- [v55-consistency.js L190-L240](file:///D:/memory_plugin/v55-consistency.js#L190) - both triggers run, merged
+  and de-duplicated by source turn, and the evidence's characters are **reserved** out of the reference cap.
+- [v55-floor-fold.js L341-L400](file:///D:/memory_plugin/v55-floor-fold.js#L341) - `floorFoldStatus` gains
+  `reachability`, driven by row markers.
+- [v55-digest.js L60-L80](file:///D:/memory_plugin/v55-digest.js#L60) and
+  [L89-L110](file:///D:/memory_plugin/v55-digest.js#L89) - floors carry their cast; a cut member spends part
+  of its share naming it and marks the cut.
+- [index.js](file:///D:/memory_plugin/index.js) - `memory_evidence_auto` and
+  `memory_evidence_auto_entries`, both on by default.
+
+**Tests**
+
+- [test-v55-turn-evidence.mjs](file:///D:/memory_plugin/test-v55-turn-evidence.mjs) - new. The trigger fires
+  with no model marker in the transcript; what comes back is the original text; what the prompt already
+  shows is not re-sent; abstention fires only when a tracked name resolves to nothing.
+- [test-v55-floor-fold.mjs](file:///D:/memory_plugin/test-v55-floor-fold.mjs) - extended with the
+  reachability contract: intact, edited, marker-lost and truncated chats.
+- [test-v55-digest-batch.mjs](file:///D:/memory_plugin/test-v55-digest-batch.mjs) - extended: a cut member
+  carries its cast and is marked; an uncut member is untouched; a castless row still truncates.
 
 **Documentation**
 
-- [dev_docs/21_memory_thesis.md L507](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L507) - v5.
-- [dev_docs/22_plan_after_compression.md L361](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L361) - v5.
+- [dev_docs/21_memory_thesis.md L932](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L932) - v9.
+- [dev_docs/22_plan_after_compression.md L551](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L551) - v8.
 
 ### Result
 
-**The missing 68 were a group that sat past the cut, not a budget effect.** The block emitted fixed topical
-groups in a fixed order - locations, present, conditions, commitments, knowledge, other - and
-`Active conditions / relations / ownership` was a **125-row grab-bag spanning canonical weights 7 down to
-2** (`state` 7, `relation`/`ownership` 4, `belief` 2). Emitted third, it consumed the whole budget by
-itself. At the ceiling: **knowledge 0 of 46 rendered, world_delta 0 of 4, commitments 0 of 13 in their own
-group** (alive only through the 24-slot Must-remember baseline), intentions 3 of 9 - and **52 of 65 beliefs
-rendered, ahead of every knowledge row.**
-
-**Text compression cannot close the gap, and this was sized before anything was built.** Hoisting the shared
-dotted slot prefix saves **9%**; collapsing near-duplicate texts saves **0%**, because no two of the 197
-texts are 80% token-contained in one another. The 56% that entry 13 measured is not reachable
-deterministically. The lever was never compression - it was ordering.
-
-**Ordering fixed, verified live.** Rows are emitted in non-increasing canonical weight, so the tail trim
-removes the least consequential memory. For that to be expressible the groups had to stop spanning weight
-bands, so `belief` and `relation`/`ownership` were split out of the old conditions group. Measured after,
-per kind:
-
-| kind | weight | total | @12000 | @16000 | @20000 | ceiling |
-|---|---|---|---|---|---|---|
-| state | 7 | 58 | 47 | **58** | **58** | 58 |
-| intention | 6 | 9 | 3 | **9** | **9** | 9 |
-| commitment | 5 | 13 | **13** | **13** | **13** | 13 |
-| knowledge | 3 | 46 | 1 | 6 | 32 | **46** |
-| belief | 2 | 65 | 2 | 2 | 2 | 6 |
-| world_delta | 1 | 4 | 0 | 0 | 0 | 0 |
-
-Knowledge goes from **0/46 to 46/46** at the ceiling, and the certificate's `tcausal` **nearly doubles,
-16/40 to 32/40**, because the causal questions needed rows that were never being rendered. Coverage at the
-ceiling rises 129/197 to 135/197 and at 20,000 from 112 to 117. `commitment` stays 15/15 at every cap.
-
-**A design was rejected on evidence.** Splitting `belief`/`knowledge` (111 rows, 61% of the full render) out
-of the always-on block would have fit the budget comfortably - the other 86 rows need 10,144 characters
-against a 12,000 cap. Measured, their entities are re-mentioned **more** often than the core kinds' (0.55 vs
-0.44), so it would have been a preference dressed as a design. It also produced the sharpest fact in this
-entry: **commitments have the lowest re-mention rate (0.154), the longest dormancy (median 40 floors) and the
-strongest protection** - which is the whole reason the design protects by irreversibility rather than by
-frequency, now measured instead of assumed.
-
-**Two defects found and one promoted.** The state cap is silently clamped at 20,000 characters regardless of
-the setting, which is why entry 13's sweep appeared to plateau - the 40,000 reading was the clamp plus the
-change chain, not the setting. And the weight table, which previously only broke ties, now **fully determines
-what survives**: `world_delta` at weight 1 is never rendered at any budget although one of the four is an
-ongoing threat, and `belief` at weight 2 is effectively never rendered despite the highest measured reuse
-rate. **D7 - validate the weight table - is promoted ahead of further compression work**, because the
-ordering fix is correct whatever the table says and the table is now the thing to argue about.
-
-**Verification.** `npm run check` clean, **80/80 test files pass** (was 79/79; the new priority test is the
-increment). Deployed with `node deploy-live.mjs --apply`, host reloaded, and every number above re-measured
-on the running app.
-
----
-
-## 15. D7: the weight table was never the problem, and two instruments were reporting green while checking nothing
-
-### Problem / Requirement
-
-Entry 14 found that the state block's render order had begun to fully determine what survives truncation,
-and that two of the resulting choices looked wrong: `world_delta` (weight 1) rendered at no budget although
-one of the four is an ongoing threat, and `belief` (weight 2) rendered 2 of 65 despite the highest measured
-reuse rate. It recorded "validate the weight table" as the next work item.
-
-### Purpose of Change
-
-Answer that question instead of assuming it, size the plausible fixes before building any of them, and
-correct whatever the answer overturns - including, if necessary, entry 14's own framing.
-
-### How It Was Changed
-
-**Measurement (zero model calls)**
-
-- [expr-d7-orders.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-orders.js) - both
-  candidate orderings simulated against the live store at two caps.
-- [expr-d7-share.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-share.js),
-  [expr-d7-floor.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-floor.js) - a per-kind
-  budget cap and a two-pass floor, both sized and both rejected.
-- [expr-d7-samples.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-samples.js) - the
-  actual content of each kind, which is what showed the classifier problem.
-- [expr-d7-signals.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-signals.js) - every
-  other ranking signal the store carries.
-- [expr-d7-vacuous.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-vacuous.js),
-  [expr-d7-verify.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-verify.js) - the
-  vacuous dimensions, and their confirmation after the fix.
-
-**Product code**
-
-- [v55-certificate.js L99-L112](file:///D:/memory_plugin/v55-certificate.js#L99) - `epistemic.clean` is
-  `null` rather than `true` when nothing is checkable, plus an explicit `checked` flag.
-- [v55-certificate.js L138-L152](file:///D:/memory_plugin/v55-certificate.js#L138) - `by_kind` and
-  `unexercised` carried through from T-Causal, which was computing them and having them discarded.
-- [v55-certificate.js L160-L166](file:///D:/memory_plugin/v55-certificate.js#L160) - `formatCertificate`
-  prints `leak=not-checked` and names the unexercised question kinds.
-- [test-v55-certificate-vacuity.mjs](file:///D:/memory_plugin/test-v55-certificate-vacuity.mjs) - new.
-
-**Documentation**
-
-- [dev_docs/21_memory_thesis.md L631](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L631) - v6.
-- [dev_docs/22_plan_after_compression.md L422](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L422) - v6.
-
-### Result
-
-**Entry 14's premise was wrong and is corrected.** The weight table *was* validated - twice, for two
-different questions, and both validations sit in the code with their reasoning.
-`CANONICAL_KIND_WEIGHT` (with `memory-core`'s `kindWeight`) answers *what should the model see first*;
-`IRREVERSIBILITY` (with `v55-forget`'s `RECONSTRUCTIBILITY`) answers *what cannot be rebuilt*. Both families
-agree with themselves across files. The spine's states its criterion outright: *"This is deliberately not
-importance... A promise cannot be unmade; a location changes again next turn."*
-
-The narrow defect is real: the render order's comment claims "the most consequential kinds first" and never
-defines consequential, and for `state` it is the exact inverse of the only principled ranking in the
-codebase. **It was inherited, not decided.** Both orders were measured; **both retain the certificate's
-protected set identically** (commitment 13/13, relation 1/1, ownership 1/1), so the plugin's actual promise
-is not at stake - the trade is purely state-versus-knowledge. **Decision: keep the render order**, because
-`state` is the only kind whose loss produces an immediate mechanical contradiction, and the criterion is
-recorded rather than left implicit.
-
-**No new weight table, and the reason is the finding.** The priority is a function of `kind`, and `kind` is
-assigned per-memory by the extraction model with no consistent definition. This store's four `world_delta`
-rows are an ongoing threat, **where a mentor's notebook is hidden**, a dried root in that notebook, and an
-apothecary being emptied. `belief` - ranked second-lowest - holds the character's live deductions ("someone
-pried the well open; people who draw water do not chisel the rim"), which is the plot. `state`, consuming
-71% of the default budget, holds "currently inside the dwelling". **Tuning the numbers would encode that
-noise more precisely.** Two ways of avoiding the choice were also simulated and rejected: a per-kind share
-cap still starves the last kind (world_delta 0 of 4 at every share from 60% to 33%), and a two-pass floor in
-its natural form breaks the protected set (commitment 13/13 to 5/13).
-
-**The real finding: two instruments were reporting green while checking nothing.**
-
-- **`importance` is dead.** All **217** active memories are `'medium'`; **zero are `'critical'`.** Four call
-  sites special-case `'critical'` and can never fire - `v55-spine` twice, `v55-boundary`'s never-repeat
-  path, and `memory-core.getActiveMemories`'s importance filter and tiebreak.
-- **`known_by` is empty on every memory in the store** - all 217, including all 52 knowledge rows. So the
-  certificate's `epistemic` dimension examined nothing and returned **`clean: true`**, and T-Causal -
-  which declares **four** question kinds - generated 40 cases that were all `why` and `who_first`.
-
-The certificate's own header says it "answers six questions about one generation's projection". Two of the
-six could not be asked, and the instrument said clean. That is precisely the failure it exists to prevent:
-it is this project's substitute for a model judge, and a judge that returns a verdict without looking is
-the thing it was built to replace.
-
-**Shipped, tested and verified live.** Live certificate line, before and after:
-
-    before: ... leak=0/0                 ... tcausal=14/40 violations=0
-    after:  ... leak=not-checked         ... tcausal=14/40 violations=0 unexercised=who_unknown,no_stale
-
-**And the fix paid for itself immediately.** Carrying `by_kind` through split one opaque number into two:
-**`why` is 9/9 (100%) and `who_first` is 5/31 (16%)**. The causal chain is not the weak part of the
-acceptance instrument at all - "who did this first" fails five times out of six, and that was invisible
-inside `14/40`.
-
-**Promoted.** **D8** - make the priority two-dimensional using `epistemic`, the one discriminating channel
-the store already carries and the priority ignores (fact 60, belief 52, reported 31, inference 30, observed
-29, plan 15 - witnessed / deduced / told / planned, orthogonal to kind). **D9** - find out why `known_by`
-and `importance` are never populated; until then the epistemic dimension and the `who_unknown` question
-kind are decorative. D9 may need extraction-prompt changes and therefore model calls, so it is the user's
-call rather than this plan's.
-
-**Verification.** `npm run check` clean, **81/81 test files pass** (was 80/80). Deployed with
-`node deploy-live.mjs --apply`, host reloaded, certificate line re-read from the running app.
-
----
-
-## 16. D8 and D9: the tiebreak becomes recoverability, and the extraction prompt asks for the fields the system ranks on
-
-### Problem / Requirement
-
-Entry 15 closed D7 and promoted two successors. **D8**: the state block's render order was two-dimensional
-in name only - the kind ordering decided everything, and rows of equal kind were ordered by recency, the
-signal entries 10 and 13 had already measured to be weak. **D9**: `known_by` is empty on all 217 active
-memories and `importance` is `'medium'` on all 224 in the store, so the certificate's epistemic dimension
-and T-Causal's `who_unknown` question kind could not run, and twelve call sites across seven files keyed
-on `high`/`critical` could never fire.
-
-### Purpose of Change
-
-Give the within-kind ordering a criterion instead of an inheritance, and find out whether the two dead
-fields are a plumbing fault or something upstream.
-
-### How It Was Changed
-
-**Measurement (zero model calls)**
-
-- [expr-d8-joint.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d8-joint.js) - the joint
-  (kind, epistemic) distribution, plus the field-population counts at the extraction boundary.
-- [expr-d8-verify.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d8-verify.js) - live
-  survival by kind and by epistemic, at two caps.
-
-**Product code**
-
-- [memory-core.js L39-L59](file:///D:/memory_plugin/memory-core.js#L39) - `EPISTEMIC_RETENTION` and
-  `epistemicRetention()`.
-- [context-assembler.js L403-L408](file:///D:/memory_plugin/context-assembler.js#L403) - the within-kind
-  tiebreak, replacing recency.
-- [memory-extractor.js L218](file:///D:/memory_plugin/memory-extractor.js#L218) - the prompt now requires
-  `op.importance` and `op.known_by`.
-- [test-v55-extractor-fields.mjs](file:///D:/memory_plugin/test-v55-extractor-fields.mjs) - new.
-- [test-v55-state-priority.mjs](file:///D:/memory_plugin/test-v55-state-priority.mjs) - extended with the
-  within-kind ordering contract and the "epistemic ranks below kind" check.
-
-**Documentation**
-
-- [dev_docs/21_memory_thesis.md L761](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L761) - v7.
-- [dev_docs/22_plan_after_compression.md L486](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L486) - v7.
-
-### Result
-
-**D8 is shipped and verified live.** The within-kind tiebreak is now `EPISTEMIC_RETENTION`, whose criterion
-is **how hard the memory is to recover from anywhere else in the prompt**: `observed` 5 > `inference` 4 >
-`reported` 3 > `fact` 2 = `belief` 2 = `plan` 2 > `rumor` 1. A `fact` is the one value whose content the
-imported setting, the world book or the current scene can supply again - that is what makes it a fact -
-while everything else was established in one past turn, and on this chat **74 of 101 rows are folded
-away**.
-
-The distribution is not a restatement of kind, which is what made it worth doing: `state` (64 rows) splits
-fact 43 / observed 12 / belief 6 / inference 2 / reported 1, and `belief` (73) splits belief 46 /
-**inference 26**. Measured live, survival by epistemic:
-
-| cap | kind | observed | inference | reported | fact |
-|---|---|---|---|---|---|
-| 20000 | knowledge | **12 / 12** | **2 / 2** | 19 / 27 | **0 / 5** |
-| 20000 | state | **12 / 12** | **1 / 1** | **1 / 1** | 38 / 38 |
-| 12000 | state | **12 / 12** | **1 / 1** | **1 / 1** | 30 / 38 |
-
-At a 20,000 cap the cut falls inside `knowledge` and every first-hand sighting and every deduction
-survives while all five objective restatements are dropped. **Stated honestly: this changes which rows
-survive, not how many** - coverage is unchanged at 69/197 and 117/197. D8's value is that the reallocation
-is now argued rather than inherited.
-
-**D9's diagnosis is a proof, and it is the more valuable half.** Inside one dataset of 246 stored
-operations:
-
-| field | asked for in the prompt's prose? | populated |
-|---|---|---|
-| `epistemic` | **yes** - "必填 op.epistemic" | **245 / 246** |
-| `importance` | **no** | **0 / 246** |
-| `known_by` | **no** | **0 / 246** |
-
-**The model fills what the prompt asks for in prose and nothing else.** Both dead fields are declared in
-the JSON schema, and a schema is not an instruction: `op.importance || 'medium'` has been filling
-`importance` for the store's whole life. **This project had already learned the lesson once**, for
-`epistemic` - the note is in `memory-core.js`, *"Measured over 844 real operations, the model wrote
-channel ... every time and epistemic never"* - and it was never applied to the other two fields in the
-same schema.
-
-**Fixed**: the prompt now requires `op.importance` with a definition per level and an explicit "do not
-write the same value for every operation", and requires `op.known_by` on `knowledge` rows with the
-cognitive-boundary consequence stated. The invariant is pinned by `test-v55-extractor-fields.mjs`:
-**every field the memory system ranks, gates or certifies on must be asked for in prose.**
-
-**D9 is not verified, and cannot be without a real extraction**, which costs a model call. The safeguard
-is entry 15's: if the prose does not work, the certificate reports `checked: false` rather than claiming
-clean.
-
-**One coupling stated rather than discovered later.** Populating `known_by` enlarges the certificate's
-protected set, because `protectedRows` includes any memory with a holder set, and the mandatory baseline
-is bounded at 24 rows. If extraction starts writing holder sets widely, the protected set can outgrow the
-baseline and `commitment` will be the measurement that notices.
-
-**Verification.** `npm run check` clean, **82/82 test files pass** (was 81/81). Deployed with
-`node deploy-live.mjs --apply`, host reloaded, and D8's survival table read from the running app. D9's
-prompt change takes effect on the next extraction and is therefore unverified by construction.
-
-
-
-
-
-
-
+**The trigger is computed, and the measurement justifies it.** On the live 51-floor chat **not one of the 101
+rows contains the marker** - the model has never asked, in the entire history of that chat, while the plugin
+reported an on-demand expansion path. The computed route resolves **3 entries / 1,733 characters** from 12
+considered, every turn, without being asked.
+
+**Verifying it found the defect that would have made it worthless.** The evidence was appended after the
+derived blocks, and the 4,000-character reference cap was already spent by the summary and the imported
+setting text - so it was resolved, recorded in `last_evidence_sources` as injected, and then **silently cut
+by the reference trim**. Measured: evidence characters inside the prompt **0 → 2,112** once its size was
+reserved out of the cap. **This is the third instance of the same shape in this project** - content placed
+last, budget spent first, trim removes it - after the change chain in entry 10 and the state block's group
+order in entry 14, and the third was found only because the verification read the prompt instead of the
+resolver's own report. A path that measures as working and delivers nothing is worse than one that is
+absent, because nothing reports the difference.
+
+**My own first fold audit had the bug that module already documents.** It iterated the `floor_folds` table,
+which lives in the derived store and can legitimately be absent, so it would report "nothing at risk"
+exactly when it cannot know - the same mistake `unfoldFloorsNotCovered` records having fixed once. Driven by
+row markers instead, live: the audit-based counter says `hiddenMessages: 0`, the row-driven audit says
+**`hidden: 74, reachable: 74, at_risk: []`**.
+
+**And the D1 change would never have fired.** Digest rows were built from `event_summary` alone and carried
+**no entities**, so the first version would have passed its own test and done nothing in production. The cast
+is taken from the memories each floor produced, and preserved through `digestToLevel1`.
+
+**Abstention names what it could not find** rather than injecting nothing, and reports `abstained`
+separately from "found nothing", so a caller can tell *nothing found* from *nothing to look for*.
+
+**Verification.** `npm run check` clean, **83/83 test files pass** (was 82/82). Deployed with
+`node deploy-live.mjs --apply`, host reloaded. Live: reference 4,000 characters (unchanged, the evidence
+took its room from the same cap), state 11,965, certificate `state 70/197, stale 0, commitment 15/15,
+leak=not-checked, causal 9/16, tcausal 15/40`.
+
+**What is not verified**: whether the retrieved original text is *used*. That is H4 and it needs model
+calls. The mechanism is now the one the semantics describe; whether it helps is unmeasured and billed to
+the user.

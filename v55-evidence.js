@@ -214,11 +214,94 @@ export function resolveMemoryLookupRequests(storeInput, chatInput, text, { perRe
     return { requests, entries };
 }
 
-export function formatEvidenceBlock(entriesInput, { maxChars = 4000 } = {}) {
+
+/**
+ * Entity names the turn mentions that the registry tracks. Used only to decide whether silence is
+ * acceptable: a turn full of tracked names that resolved to nothing is exactly when a model invents.
+ */
+function unmatchedRegistryNames(store, query) {
+    const text = String(query || '').toLowerCase();
+    const names = [];
+    for (const row of Object.values(store.entity_registry || {})) {
+        const name = clean(row?.canonical_name, 60);
+        if (!name || name.length < 2) continue;
+        if (!text.includes(name.toLowerCase())) continue;
+        if (names.includes(name)) continue;
+        names.push(name);
+        if (names.length >= 6) break;
+    }
+    return names;
+}
+
+/**
+ * The deterministic half of the same resolution.
+ *
+ * `resolveMemoryLookupRequests` answers the model when it asks. THIS asks on the model's behalf, from the
+ * turn itself, because a retrieval path whose trigger is the model choosing to speak is the failure mode
+ * this project was warned about: a model writes 【查阅记忆】 only when it already suspects it has forgotten
+ * something, which is precisely the case it cannot detect. Measured on the live tree, that marker was the
+ * only route by which original text ever reached the prompt.
+ *
+ * The trigger is computed and generous, per the failure asymmetry this system runs on - a missed retrieval
+ * is unrecoverable within the turn, a spurious one costs characters. It is deliberately not gated on a
+ * score: it takes the turn's own lexical neighbours, drops anything the prompt already shows verbatim,
+ * and resolves the rest to original text.
+ *
+ * Abstention is the other half of the same function. When the turn names entities the registry tracks and
+ * not one of them resolves to any memory, the block says so rather than injecting nothing - silence is
+ * what leaves the model free to invent, and `abstained` is reported separately so a caller can tell
+ * 'nothing found' from 'nothing to find'.
+ */
+export function resolveTurnEvidence(storeInput, chatInput, { maxEntries = 3, maxChars = 3000, alreadyVisible = '', protectRecent = 0, lookback = 2 } = {}) {
+    const store = normalizeStore(storeInput);
+    const rows = Array.isArray(chatInput) ? chatInput : [];
+    const dialogue = rows.filter(row => isDialogueRow(row) && String(row?.mes || '').trim());
+    const query = clean(dialogue.slice(-Math.max(1, lookback)).map(row => String(row.mes)).join('\n'), 4000);
+    if (!query) return { query: '', considered: 0, entries: [], abstained: false, unmatched: [] };
+    const visible = String(alreadyVisible || '');
+    const hits = lexicalSearchMemories(store, query, { limit: 12, protectRecent, chatLength: rows.length });
+    const entries = [];
+    const seenMemories = new Set();
+    const seenTurns = new Set();
+    for (const hit of hits) {
+        const memory = hit.memory;
+        if (!memory?.id || seenMemories.has(memory.id)) continue;
+        seenMemories.add(memory.id);
+        // What the prompt already carries is a duplicate, not evidence.
+        const head = clean(memory.text, 24);
+        if (head && visible.includes(head)) continue;
+        const expanded = expandMemoryEvidence(store, rows, { memoryId: memory.id, maxChars });
+        if (!expanded.ok) continue;
+        const dedupe = expanded.source + '|' + String(expanded.turns?.[0]?.index ?? '');
+        if (seenTurns.has(dedupe)) continue;
+        seenTurns.add(dedupe);
+        entries.push({ ...expanded, score: Number(hit.score) || 0 });
+        if (entries.length >= Math.max(1, Number(maxEntries) || 3)) break;
+    }
+    // Read the registry off the caller's store as well as the normalised copy: normalisation is a reader's
+    // convenience and the registry is written by stampRuntimeIdentity straight onto the chat store.
+    const registry = (storeInput && typeof storeInput === 'object' && storeInput.entity_registry)
+        || store.entity_registry
+        || {};
+    const unmatched = entries.length ? [] : unmatchedRegistryNames({ entity_registry: registry }, query);
+    return { query, considered: hits.length, entries, abstained: entries.length === 0 && unmatched.length > 0, unmatched };
+}
+
+export function formatEvidenceBlock(entriesInput, { maxChars = 4000, heading = null, abstained = false, unmatched = [] } = {}) {
     const entries = Array.isArray(entriesInput) ? entriesInput : [];
-    if (!entries.length) return '';
     const cap = Math.max(400, Math.min(24000, Number(maxChars) || 4000));
-    const lines = ['[MEMORY EVIDENCE — ORIGINAL TEXT, RESOLVED ON DEMAND]'];
+    if (!entries.length) {
+        // Abstention. Saying nothing is not neutral - it leaves the model free to fill the gap, which is
+        // the one outcome the record exists to prevent. Naming what could not be found is the honest
+        // answer, and it is bounded to a single line.
+        const names = (Array.isArray(unmatched) ? unmatched : []).map(name => clean(name, 40)).filter(Boolean).slice(0, 6);
+        if (!abstained || !names.length) return '';
+        const note = '[MEMORY ABSTENTION — THE RECORD HAS NOTHING FOR THIS TURN] No stored memory or original '
+            + 'text resolved for: ' + names.join('、') + '. Their current state is unknown; say so rather than '
+            + 'inventing it.';
+        return note.slice(0, Math.max(200, Math.min(1200, cap)));
+    }
+    const lines = [heading || '[MEMORY EVIDENCE — ORIGINAL TEXT, RESOLVED ON DEMAND]'];
     let used = lines[0].length;
     for (const entry of entries) {
         const label = `${entry.memoryId || entry.key || 'memory'} · ${entry.source === 'live' ? 'live' : 'cold-snapshot'}`;

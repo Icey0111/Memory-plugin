@@ -21,7 +21,7 @@ import { getMandatoryMemories, isDialogueRow } from './memory-core.js';
 import { persistChatStore } from './v55-derived-store.js';
 import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth, SUMMARY_PROMPT_KEY } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
-import { formatEvidenceBlock, resolveMemoryLookupRequests } from './v55-evidence.js';
+import { formatEvidenceBlock, resolveMemoryLookupRequests, resolveTurnEvidence } from './v55-evidence.js';
 import { REFERENCE_HEADER_CHARS } from './context-assembler.js';
 // A8 computed where the injected text actually exists. The published bundle is deleted a few lines
 // below, so an external reader can never measure what reached the prompt; the plugin has to measure
@@ -187,16 +187,58 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
     );
     const hierarchicalBlock = getHierarchicalSummaryContext(ctx, { actor, store, maxChars: summaryMaxChars });
     const summaryVisibility = store.hierarchical_summaries?.visibility_debug || {};
-    // On-demand backlink: if the previous assistant turn emitted a 【查阅记忆】 block, resolve it
-    // against the live chat first and the cold snapshot second, and add bounded原文 evidence.
+    // Original text reaches the prompt by two routes, and until now only the first existed.
+    //
+    //   1. On demand, when the previous assistant turn emitted 【查阅记忆】. Kept, but it cannot be the
+    //      only route: the model writes that marker only when it already suspects it has forgotten
+    //      something, which is exactly the case it cannot detect. A retrieval path whose trigger is the
+    //      model choosing to speak is the failure mode this project was warned about.
+    //   2. Computed, from the turn itself (memory_evidence_auto). No model decision, no veto, and it runs
+    //      every turn - generous by construction, because a missed retrieval is unrecoverable within the
+    //      turn while a spurious one costs characters.
+    //
+    // Both resolve through the same evidence resolver, so the original-text guarantee is one mechanism
+    // with two triggers rather than two mechanisms that can drift.
+    const rows = Array.isArray(ctx.chat) ? ctx.chat : [];
+    const visibleText = String(visibleCanonical.referenceBlock || '') + '\n' + String(visibleCanonical.currentStateBlock || '');
     const evidenceBlock = settings.memory_evidence_enabled === false ? '' : (() => {
-        const rows = Array.isArray(ctx.chat) ? ctx.chat : [];
         const lastAssistant = [...rows].reverse().find(row => row && !row.is_user && isDialogueRow(row));
-        if (!lastAssistant) return '';
-        const resolved = resolveMemoryLookupRequests(store, rows, String(lastAssistant.mes || ''), {
+        const asked = lastAssistant
+            ? resolveMemoryLookupRequests(store, rows, String(lastAssistant.mes || ''), {
+                maxChars: settings.memory_evidence_max_chars,
+            })
+            : { entries: [] };
+        const computed = settings.memory_evidence_auto === false
+            ? { entries: [], abstained: false, unmatched: [] }
+            : resolveTurnEvidence(store, rows, {
+                maxEntries: settings.memory_evidence_auto_entries ?? 3,
+                maxChars: settings.memory_evidence_max_chars,
+                alreadyVisible: visibleText,
+                protectRecent: settings.protect_recent_messages,
+            });
+        // One source turn is one piece of evidence: if both triggers found the same floor, send it once.
+        const seen = new Set();
+        const merged = [];
+        for (const entry of [...asked.entries, ...computed.entries]) {
+            const id = entry.source + '|' + String(entry.turns?.[0]?.index ?? '');
+            if (seen.has(id)) continue;
+            seen.add(id);
+            merged.push(entry);
+        }
+        store.last_evidence_sources = {
+            asked: asked.entries.length,
+            computed: computed.entries.length,
+            merged: merged.length,
+            considered: computed.considered ?? 0,
+            abstained: computed.abstained === true,
+            unmatched: computed.unmatched || [],
+            at: Date.now(),
+        };
+        return formatEvidenceBlock(merged, {
             maxChars: settings.memory_evidence_max_chars,
+            abstained: computed.abstained === true,
+            unmatched: computed.unmatched || [],
         });
-        return formatEvidenceBlock(resolved.entries, { maxChars: settings.memory_evidence_max_chars });
     })();
     // The scene-locator block is deliberately NOT injected. It calls itself "derived, rebuildable, not a
     // source of new facts" and exists to point at history, but 66% of its characters were measured to be
@@ -214,12 +256,25 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
     if (evidenceBlock) referenceWithDerived = `${referenceWithDerived}\n\n${evidenceBlock}`;
     store.last_evidence_resolution = { chars: evidenceBlock.length, at: Date.now() };
 
+    // The evidence is appended after the derived blocks, so without a reservation the reference trim below
+    // removes it first - the same failure the change chain had before it was reserved. Measured on the
+    // live 51-floor chat: a 3-entry, 1,733-character evidence block was resolved, recorded in
+    // last_evidence_sources as injected, and then silently cut, because the 4,000-character reference cap
+    // was already spent by the summary and the imported setting text. A path that measures as working and
+    // delivers nothing is worse than one that is absent, because nothing reports the difference.
     const bounded = budgetPromptPair(referenceWithDerived, visibleCanonical.currentStateBlock, {
         contextSize: args?.[1],
         replyReserve: settings.context_reply_reserve_tokens,
-        maxReferenceChars: settings.reference_context_max_chars,
+        maxReferenceChars: Math.max(0, (Number(settings.reference_context_max_chars) || 0)
+            - (evidenceBlock ? evidenceBlock.length + 2 : 0)),
         maxCurrentStateChars: settings.current_state_context_max_chars,
     });
+    if (evidenceBlock) {
+        bounded.referenceBlock = bounded.referenceBlock
+            ? bounded.referenceBlock + '\n\n' + evidenceBlock
+            : evidenceBlock;
+        bounded.diagnostics.evidence_chars = evidenceBlock.length;
+    }
 
     realSetPrompt(reference.key, bounded.referenceBlock, ...promptArgs(reference.rest, 4));
     realSetPrompt(current.key, bounded.currentStateBlock, ...promptArgs(current.rest, 1));

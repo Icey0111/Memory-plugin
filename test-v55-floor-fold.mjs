@@ -89,6 +89,35 @@ const again = fold.foldSummarizedFloors(ctx);
 assert.equal(again.folded, 0, 'folding twice must not re-fold');
 assert.equal(savedChat, 1, 'a no-op fold must not save the chat again');
 
+// --- D2: coverage is not reachability ---------------------------------------------------
+//
+// Coverage says something stands in for a hidden floor; reachability says the original is still there to
+// be produced on demand. Only the first was ever checked. Folding sets is_system and leaves the text in
+// ctx.chat at the same index, so normally both hold - but an edit, a delete or a lost marker separates
+// them, and a floor hidden with its original gone is the one outcome folding must never produce.
+const statusOf = rows => fold.floorFoldStatus({
+    extensionSettings: ctx.extensionSettings,
+    chatMetadata: { aetheriaUnifiedMemoryV54: store },
+    chat: rows,
+});
+const intact = statusOf(chat).reachability;
+assert.equal(intact.hidden, 38, 'every folded row is audited');
+assert.equal(intact.reachable, 38, 'and every one still has its original at the same index');
+assert.deepEqual(intact.at_risk, [], 'nothing is at risk in an untouched chat');
+
+const edited = statusOf(chat.map((row, i) => (i === 4 ? { ...row, mes: row.mes + ' EDITED' } : row))).reachability;
+assert.equal(edited.reachable, 37, 'an edited floor is no longer provably the one that was folded');
+assert.deepEqual(edited.at_risk, [{ index: 4, reason: 'content-changed' }], 'and it is named, not silently trusted');
+
+const unmarked = statusOf(chat.map((row, i) => (i === 6 ? { is_user: true, mes: 'replaced row' } : row))).reachability;
+assert.equal(unmarked.at_risk.length, 1, 'a row that lost its fold marker is at risk');
+assert.equal(unmarked.at_risk[0].reason, 'marker-lost');
+
+const truncated = statusOf(chat.slice(0, 5)).reachability;
+assert.equal(truncated.hidden, 38, 'the audit still counts every row the fold recorded');
+assert.equal(truncated.reachable, 5, 'only the rows that are still there are reachable');
+assert.equal(truncated.at_risk.filter(r => r.reason === 'row-missing').length, 33, 'and the rest are reported as gone');
+
 // --- 4. a host /hide is not our fold -----------------------------------------------------------
 chat[45].is_system = true; // host-hidden assistant of floor 23: covered by no summary, so unfolded
 assert.equal(core.isFoldedRow(chat[45]), false, 'a host /hide must not be mistaken for a plugin fold');

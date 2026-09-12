@@ -548,7 +548,53 @@ model call or the user's decision:
 The stop-doing list, the cost rule, B1/B2, C1's 56% target, A3's narrowing to the named-thing lookup, and
 the verification discipline: measure on the real app, and write down the corrections.
 
+<!-- VERSION 8 -->
+## v8 - 2026-09-12 08:55:00 - v7's audit is closed: all four open items are implemented and verified
 
+Measurements in `21_memory_thesis.md` v9.
 
+| the finding | state now |
+|---|---|
+| the original-text trigger is the model writing `【查阅记忆】` | **a computed trigger**, `resolveTurnEvidence`, runs every turn with no model decision in the path |
+| abstention absent | **implemented** as the same function's other half - the block names what it could not find |
+| D2: the fold checks "has a stand-in", not "is reachable" | **`floorFoldStatus.reachability`** audits every hidden floor's original, driven by row markers |
+| D1: a sealed member truncates prose | **a cut member carries its cast** and marks the cut; an uncut member is untouched |
 
+**Shipped, tested, verified live.** `npm run check` clean, **83/83 test files pass** (was 82/82). Deployed
+with `node deploy-live.mjs --apply`, host reloaded.
 
+### Two defects were found by verifying, not by building
+
+**The evidence was being silently cut.** Appended after the derived blocks, it was resolved, recorded in
+`last_evidence_sources` as injected, and then removed by the reference trim, because the 4,000-character
+cap was already spent. Measured: evidence characters in the prompt **0 → 2,112** after reserving its size,
+exactly as the change chain had to be reserved in v3. **Third instance of the same shape in this project** -
+content placed last, budget spent first, trim removes it - and the third was found only because the
+verification read the prompt rather than the resolver's own report.
+
+**The first fold audit had the bug that module already warns about.** It iterated the `floor_folds` audit
+table, which lives in the derived store and can legitimately be absent, so it would report "nothing at
+risk" exactly when it cannot know. Live, that is the whole difference: the audit-based counter says
+`hiddenMessages: 0` while the row-driven audit says **`hidden: 74, reachable: 74, at_risk: []`**.
+
+**And the D1 change would never have fired.** Digest rows were built from `event_summary` alone and carried
+**no entities**, so the first version would have passed its own test and done nothing in production. The cast
+is now taken from the memories each floor produced.
+
+### What remains, and it all has a price
+
+Nothing further can be advanced without one of these:
+
+- **A model call, billed to the user**: H4 (is the retrieved original actually *used*?), D9's verification
+  (one extraction, to confirm the prompt change makes `known_by` and `importance` live), H3, and phase E's
+  LongMemEval pass.
+- **A decision**: whether to raise the state cap from 12,000 - the coverage curve in v4 prices every step -
+  and whether to keep funding compression work.
+- **Nothing else.** C1's 56% gap cannot be closed deterministically: v6 sized the two strategies and one
+  saved 9%, the other 0%.
+
+### Unchanged
+
+The stop-doing list, the cost rule (**no per-turn model call; no model output may mean "do not retrieve"** -
+which now holds literally, since the computed trigger has no model in it), and the verification discipline:
+measure on the real app, and write down the corrections.

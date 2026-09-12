@@ -247,6 +247,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     cold_turn_snapshot_enabled: true,
     cold_turn_max_chars: 200000,
     memory_evidence_enabled: true,
+    // The computed half of the evidence trigger. On by default because the model-triggered half only fires
+    // when the model already suspects it has forgotten something, which is the case it cannot detect.
+    memory_evidence_auto: true,
+    memory_evidence_auto_entries: 3,
     memory_evidence_max_chars: 3000,
     temporal_channel_enabled: true,
     temporal_channel_limit: 6,
@@ -3148,6 +3152,8 @@ async function setupUi() {
     // Iteration 13 controls: cold snapshot, temporal channel, metering, batching, evidence budget.
     bindCheckbox('aum-v54-cold-snapshot', 'cold_turn_snapshot_enabled');
     bindCheckbox('aum-v54-evidence-enabled', 'memory_evidence_enabled');
+    bindCheckbox('aum-v54-evidence-auto', 'memory_evidence_auto');
+    bindNumber('aum-v54-evidence-auto-entries', 'memory_evidence_auto_entries', { min: 1, max: 8, integer: true });
     bindCheckbox('aum-v54-temporal-channel', 'temporal_channel_enabled');
     bindCheckbox('aum-v54-metrics', 'metrics_enabled');
     bindNumber('aum-v54-extract-batch', 'extraction_batch_turns', { min: 1, max: 10, integer: true });
