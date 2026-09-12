@@ -254,4 +254,34 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         'an existing summary is not re-summarized, only extended');
 }
 
+// --- 10. the chat store object is replaced on every persist --------------------------------------
+// The store projection replaces ctx.chatMetadata[KEY] when it writes, so any reference captured before
+// a persist points at a retired object and writes through it disappear. That is how the reason
+// original-text vectors were unavailable went missing while the failure itself was still reported.
+{
+    let summarizerCalls = 0;
+    const host = makeHost(12, { summarize: async () => { summarizerCalls += 1; return '摘要：稳定的局面。'; } });
+    const { ctx, chat, services } = host;
+    ctx.saveMetadataDebounced = () => { ctx.chatMetadata[KEY] = { ...ctx.chatMetadata[KEY] }; };
+
+    // Two concurrent passes for one chat must share one job, or the chat is summarized twice over.
+    const first = updateNarrative(ctx, services, { force: true });
+    const second = updateNarrative(ctx, services, { force: true });
+    await Promise.all([first, second]);
+    assert.equal(summarizerCalls, 1, 'concurrent passes for one chat share a single summary job');
+
+    const live = ctx.chatMetadata[KEY];
+    assert.ok(live.narrative_summary, 'the summary lands in the live store, not in the object it replaced');
+    assert.equal(live.narrative_diagnostics.vector_available, false);
+    assert.match(live.narrative_diagnostics.vector_reason, /vector disabled in this test/,
+        'the reason the index is unavailable survives the store swap');
+    assert.ok(chat.some(row => row.is_system === true), 'and folding still happened');
+
+    const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
+    assert.match(bundle.currentStateBlock, /摘要：稳定的局面/);
+    assert.equal(ctx.chatMetadata[KEY].narrative_diagnostics.quality,
+        'not measured; these are delivery and cost diagnostics',
+        'the delivery report lands in the live store too');
+}
+
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

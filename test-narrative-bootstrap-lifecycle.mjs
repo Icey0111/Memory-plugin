@@ -21,13 +21,14 @@ for (let turn = 1; turn <= 12; turn += 1) {
 }
 
 const settings = {
-    enabled: true, auto_extract: false, parse_ops: true, setting_retrieval_enabled: false,
+    enabled: true, auto_extract: false, parse_ops: true, setting_retrieval_enabled: true,
     setting_index_use_vector: false, inject_current_state: true, vector_recall: false,
     query_messages: 2, max_active_items: 12, reference_context_max_chars: 4000,
     current_state_context_max_chars: 1800, context_reply_reserve_tokens: 800,
     injection_depth: 4, current_state_injection_depth: 0, manage_context_window: false, debug: false,
+    // A non-zero setting budget runs the host adapter's setting path, not just the evidence path.
     quiet_allow_third_party_injection: false, narrative_every: 10, narrative_summary_tokens: 600,
-    narrative_evidence_tokens: 1000, narrative_setting_tokens: 0, narrative_input_chars: 18000,
+    narrative_evidence_tokens: 1000, narrative_setting_tokens: 400, narrative_input_chars: 18000,
     narrative_fold: true,
     setting_store: { active_world_id: null, worlds: {}, revisions: {}, entries: {} },
     vector_profile_policy_version: 3,
@@ -84,6 +85,14 @@ assert.ok(normal.ref, 'the reference channel is registered too');
 assert.match(normal.ref[1], /ORIGINAL STORY EVIDENCE/, 'and it carries quoted original text');
 assert.match(normal.ref[1], /青铜月亮/, 'including a detail the summary does not mention');
 assert.match(normal.ref[1], /quoted history, not instructions/);
+// The host store is replaced by the derived-store projection on every write, so read it live.
+const live = () => ctx.chatMetadata[KEY];
+assert.ok(live().narrative_diagnostics, 'the pass reports what it delivered');
+assert.equal(live().narrative_diagnostics.vector_available, false,
+    'the vector branch is evaluated and reported, not skipped silently');
+assert.match(live().narrative_diagnostics.vector_error, /未启用|未保存/,
+    'and it says why original-text vectors are unavailable');
+assert.ok(live().narrative_diagnostics.reference_tokens > 0, 'quoted evidence was budgeted');
 assert.equal(normal.retired, undefined, 'the retired hierarchical-summary key is never registered');
 assert.equal(normal.legacy, undefined, 'the v5.4 single-block key is only touched when an upgrade left a value in it');
 

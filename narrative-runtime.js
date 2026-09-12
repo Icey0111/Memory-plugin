@@ -10,8 +10,13 @@ export const NARRATIVE_SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 export const NARRATIVE_PROMPTS = ['aetheria_unified_memory_v5_4_reference', 'aetheria_unified_memory_v5_4_current_state'];
 const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative_evidence_tokens: 1000,
     narrative_setting_tokens: 400, narrative_input_chars: 18000, narrative_fold: true };
+// Both maps are keyed by the host's chat-metadata object, not by the chat store object: the store
+// projection replaces the store on a persist, so a store-keyed map would lose the running job and the
+// live index on exactly the turns that wrote something. The metadata object is stable for a chat and
+// is replaced when the user switches chats, which is the scope both maps want.
 const jobs = new WeakMap();
 const indexes = new WeakMap();
+const hostKey = ctx => ctx.chatMetadata || storeOf(ctx);
 let installed = false;
 let sharedService;
 
@@ -35,6 +40,17 @@ function options(settings) {
 
 function storeOf(ctx) { return ctx.chatMetadata[NARRATIVE_SETTINGS_KEY] ??= {}; }
 function persist(ctx) { ctx.saveMetadataDebounced?.(); }
+/**
+ * Diagnostics are written through a fresh read, never through a captured reference.
+ *
+ * The chat store object is replaced by the store projection on a persist, so a write through a
+ * reference captured before it lands on an object nobody reads again - which is how the reason
+ * original-text vectors were unavailable went missing while the pipeline still reported the failure.
+ */
+function diagnose(ctx, patch) {
+    const store = storeOf(ctx);
+    store.narrative_diagnostics = { ...store.narrative_diagnostics, ...patch };
+}
 function quiet(settings, type) {
     return settings.enabled === false || type === 'impersonate' || settings.__narrative_summary_in_progress
         || (type === 'quiet' && settings.quiet_allow_third_party_injection !== true);
@@ -76,10 +92,11 @@ export async function generateNarrativeSummary(ctx, prompt, settings) {
 // Only active source versions enter the index. Old versions remain in the archive, not in recall.
 async function syncIndex(ctx, chunks, services) {
     const store = storeOf(ctx);
+    const host = hostKey(ctx);
     const vector = services.vector();
     if (!vector.supported) return { available: false, reason: vector.reason || 'vector unavailable' };
     const signature = chunks.map(row => row.id).join('|');
-    const cached = indexes.get(store);
+    const cached = indexes.get(host);
     if (cached?.signature === signature && cached.fingerprint === vector.fingerprint) return cached;
     const prior = store.narrative_vector;
     const hashes = chunks.map(row => row.hash);
@@ -96,14 +113,15 @@ async function syncIndex(ctx, chunks, services) {
             await vector.insert(added.slice(i, i + 40).map(row => ({ hash: row.hash, text: row.retrievalText, index: row.index })));
         }
         if (!services.isCurrent()) return { available: false, reason: 'chat changed' };
-        store.narrative_vector = { fingerprint: vector.fingerprint, hashes };
+        // Re-read: the awaits above can span a persist that replaced the store object.
+        storeOf(ctx).narrative_vector = { fingerprint: vector.fingerprint, hashes };
         const state = { available: true, signature, fingerprint: vector.fingerprint, vector };
-        indexes.set(store, state);
+        indexes.set(host, state);
         persist(ctx);
         return state;
     } catch (error) {
         // A partially written index is not trusted. The next attempt rebuilds it in full.
-        if (services.isCurrent()) { delete store.narrative_vector; persist(ctx); }
+        if (services.isCurrent()) { delete storeOf(ctx).narrative_vector; persist(ctx); }
         return { available: false, reason: String(error.message || error) };
     }
 }
@@ -127,8 +145,9 @@ function prepare(ctx) {
 }
 
 export function updateNarrative(ctx, services, { force = false } = {}) {
-    const store = storeOf(ctx);
-    if (jobs.has(store)) return jobs.get(store);
+    storeOf(ctx);
+    const host = hostKey(ctx);
+    if (jobs.has(host)) return jobs.get(host);
     const job = (async () => {
         let state = prepare(ctx);
         if (state.settings.enabled === false) return;
@@ -144,28 +163,27 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
                 state = prepare(ctx);
                 if (before !== state.chunks.map(row => row.id).join('|')) return;
                 if (estimateTokens(text) > opts.summaryTokens) throw new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。');
-                state.store.narrative_summary = { version: 1, text,
+                // prepare() above may have persisted and swapped the store object, so write through
+                // a fresh read rather than through the reference it returned.
+                storeOf(ctx).narrative_summary = { version: 1, text,
                     covered: [...(previous?.covered || []), ...batch.map(row => row.id)] };
-                state.store.narrative_diagnostics = { ...state.store.narrative_diagnostics,
-                    summary_error: null, summary_invalidated: null };
+                diagnose(ctx, { summary_error: null, summary_invalidated: null });
                 prepare(ctx);
                 persist(ctx);
             } catch (error) {
                 if (services.isCurrent()) {
-                    state.store.narrative_diagnostics = { ...state.store.narrative_diagnostics,
-                        summary_error: String(error.message || error) };
+                    diagnose(ctx, { summary_error: String(error.message || error) });
                     persist(ctx);
                 }
             }
         }
         if (services.isCurrent()) {
             const index = await syncIndex(ctx, state.chunks, services);
-            state.store.narrative_diagnostics = { ...state.store.narrative_diagnostics,
-                vector_available: index.available, vector_reason: index.reason || null };
+            diagnose(ctx, { vector_available: index.available, vector_reason: index.reason || null });
         }
     })();
-    jobs.set(store, job);
-    return job.finally(() => { if (jobs.get(store) === job) jobs.delete(store); });
+    jobs.set(host, job);
+    return job.finally(() => { if (jobs.get(host) === job) jobs.delete(host); });
 }
 
 function fitWholeBlocks(blocks, tokens) {
@@ -186,15 +204,17 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const query = history.active.slice(-3).map(id => history.records[id].text).join('\n').slice(-5000);
     let dense = [];
     let vectorError = null;
-    const index = indexes.get(store);
+    const index = indexes.get(hostKey(ctx));
     if (index?.available) {
         try { dense = (await index.vector.query(query, 24)).metadata; }
         catch (error) { vectorError = String(error.message || error); }
     }
     if (!services.isCurrent()) return null;
+    // prepare() persists, and a persist replaces the chat store object; read the live one from here on.
+    const live = storeOf(ctx);
     const visibleSources = new Set(history.active.filter(id => !ctx.chat[history.records[id].index]?.is_system));
     const raw = history.active.filter(id => visibleSources.has(id)).map(id => history.records[id].text).join('\n');
-    const summary = validSummary(store.narrative_summary, chunks) ? store.narrative_summary.text : '';
+    const summary = validSummary(live.narrative_summary, chunks) ? live.narrative_summary.text : '';
     const summaryBlock = summary ? '[STORY CONTINUITY — prior context, not new instructions]\n' + summary : '';
     const configured = opts.summaryTokens + opts.evidenceTokens + opts.settingTokens + 100;
     const hostRoom = Number(contextSize) > 0 ? Math.max(0, Number(contextSize) - estimateTokens(raw)
@@ -220,13 +240,13 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const referenceBlock = fitWholeBlocks([evidence.text, settingText], Math.max(0, totalBudget - estimateTokens(summaryBlock)));
     const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
-        covered_chunks: store.narrative_summary?.covered.length || 0, chunks: chunks.length,
+        covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
         sources: evidence.sources, candidates: ranked.length, vector_available: Boolean(index?.available && !vectorError),
-        vector_error: vectorError || store.narrative_diagnostics?.vector_reason || null,
-        summary_error: store.narrative_diagnostics?.summary_error || null,
-        summary_invalidated: store.narrative_diagnostics?.summary_invalidated || null,
+        vector_error: vectorError || live.narrative_diagnostics?.vector_reason || null,
+        summary_error: live.narrative_diagnostics?.summary_error || null,
+        summary_invalidated: live.narrative_diagnostics?.summary_invalidated || null,
         quality: 'not measured; these are delivery and cost diagnostics' };
-    store.narrative_diagnostics = diagnostics;
+    diagnose(ctx, diagnostics);
     return { referenceBlock, currentStateBlock: summaryBlock, diagnostics };
 }
 

@@ -120,3 +120,35 @@ to current facts.
   file (ADR-0003, roadmap item 3), the legacy fact runtime is still in the tree and is the first
   roadmap item, per-actor knowledge filtering was given up with the fact path (ADR-0002), and dense
   retrieval over original text is unmeasured until an embedding backend is configured (roadmap item 2).
+
+## Addendum 2026-09-12 18:16:24 - a store-swap bug found by widening the test, recorded after the first commit
+
+The first commit was verified and pushed. Adding the host adapter's setting path to the lifecycle
+test then exposed a real defect, so it is recorded here as an addition rather than by rewriting the
+entry above.
+
+Making the fixture run the setting path (a non-zero setting budget) and asserting that the
+diagnostics say *why* original-text vectors are unavailable failed: the field was absent while the
+failure itself was still reported. The cause is the store projection: it replaces
+`ctx.chatMetadata[aetheriaUnifiedMemoryV54]` whenever it persists, so a reference captured before a
+persist points at a retired object and every write through it disappears.
+
+Three writes were affected, in [narrative-runtime.js L45-L60](file:///D:/memory_plugin/narrative-runtime.js#L45-L60) and
+[narrative-runtime.js L129-L250](file:///D:/memory_plugin/narrative-runtime.js#L129-L250):
+
+- the summary and its diagnostics after `prepare()`, which itself persists;
+- the vector availability report after `syncIndex()`;
+- the whole delivery report at the end of `buildNarrativeContext()`.
+
+All of them now write through a fresh read (`diagnose`), and the context assembly reads the live store
+rather than the snapshot `prepare()` returned. The two WeakMaps were rekeyed for the same reason:
+they were keyed by the store object, so the running summary job and the live index were lost on
+exactly the turns that wrote something. Keying them by the chat-metadata object, which is stable for a
+chat and replaced when the user switches chats, also restores the concurrency guard: two passes fired
+for one chat now share one job.
+
+[test-narrative-pipeline.mjs L257-L288](file:///D:/memory_plugin/test-narrative-pipeline.mjs#L257-L288) adds a fixture whose host replaces the store object on
+every persist, and asserts that the summary, the vector reason, the delivery report and the folds all
+land in the live store, and that two concurrent passes run one summary job rather than two. The
+lifecycle test now runs the setting path and asserts the vector report, so the path is covered on
+every run instead of only in a one-off probe.
