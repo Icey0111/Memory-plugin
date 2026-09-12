@@ -228,6 +228,38 @@ export function entityTargets(chunks, query, { visibleSources = new Set(), limit
 }
 
 /**
+ * The things the user asked about, and whether the floor that describes them was quoted.
+ *
+ * The entity metric above selects its terms from the retrieval query, so changing the query changes the
+ * denominator and two constructions cannot be compared with it - a shorter query simply has fewer and easier
+ * terms. This one takes its terms from the current user message alone, which is a property of the conversation
+ * rather than of the retrieval configuration, and asks the question that matters for a thing the user named:
+ * was the floor that says something about it quoted back. The describing floor is the hidden chunk that names
+ * it most often, which is a heuristic, so a miss is worth reading rather than trusting.
+ */
+export function askedThingRecall(chunks, history, { asked = '', visibleSources = new Set(), packed = [], limit = ENTITY_TERM_LIMIT } = {}) {
+    const rows = packed.map(entry => history.records[entry.source || entry]).filter(Boolean);
+    const counts = chunks.map(chunk => baselineTermCounts(chunk.retrievalText));
+    const cap = Math.max(2, Math.ceil(chunks.length * ENTITY_DF_RATIO));
+    const mentions = (chunk, term) => { let n = 0; for (let at = chunk.text.indexOf(term); at >= 0; at = chunk.text.indexOf(term, at + term.length)) n++; return n; };
+    const out = [];
+    for (const term of [...new Set(tokenizeBaselineText(String(asked || '')))]) {
+        if (term.length < 2 || term.length > 12) continue;
+        const holders = [];
+        for (let i = 0; i < chunks.length; i++) if (counts[i].has(term)) holders.push(chunks[i]);
+        if (!holders.length || holders.length > cap) continue;
+        const hidden = holders.filter(chunk => !visibleSources.has(chunk.source));
+        if (!hidden.length) continue;
+        const describing = hidden.slice().sort((a, b) => mentions(b, term) - mentions(a, term) || a.index - b.index)[0];
+        out.push({ term, floor: Math.ceil(describing.index / 2), mentions: mentions(describing, term),
+            recalled: rows.some(row => row.id === describing.source) });
+    }
+    const maximal = out.sort((a, b) => b.term.length - a.term.length)
+        .filter((row, _i, all) => !all.some(other => other !== row && other.term.length > row.term.length && other.term.includes(row.term)));
+    return maximal.sort((a, b) => a.floor - b.floor || b.term.length - a.term.length).slice(0, limit);
+}
+
+/**
  * Did the terms of the current situation bring their hidden floors back?
  *
  * This is the recall metric the probe runs had to be hand-written for: at each generation, the rare terms

@@ -337,6 +337,8 @@ function fitWholeBlocks(blocks, tokens) {
  */
 /** How many situation-channel documents a rerank shortlist admits beyond its score-ordered head. */
 const RERANK_ENTITY_EXTRA = 8;
+/** How much of each preceding message the retrieval query carries before the current question. */
+const QUERY_CONTEXT_CHARS = 80;
 
 async function applyRerank(services, opts, query, ranked, visibleSources) {
     const model = opts.rerankModel;
@@ -373,7 +375,18 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const sync = await ensureIndex(ctx, chunks, services);
     diagnose(ctx, { vector_available: sync.available, vector_reason: sync.reason || null });
     const opts = options(settings);
-    const query = history.active.slice(-3).map(id => history.records[id].text).join('\n').slice(-5000);
+    // The query is the situation, and it was almost entirely the assistant's own last reply: measured on a chat
+    // a user drove, the preceding rows were 703 characters against a 26-character question. The things a user
+    // names are what recall is for, and the floor that describes one was quoted for 21% of them with the rows
+    // whole, 35% when the preceding rows are bounded at 80 characters, and 79% when the question is the only
+    // input - which costs four points of character profiles, because those are described in the assistant's
+    // prose rather than in the question. The bounded form keeps the situation and pays neither. The question
+    // itself is never truncated: it is the one row whose length the user chose.
+    const queryRows = history.active.slice(-3);
+    const query = queryRows.map((id, index) => {
+        const text = String(history.records[id].text);
+        return index === queryRows.length - 1 ? text : text.slice(-QUERY_CONTEXT_CHARS);
+    }).join('\n').slice(-5000);
     let dense = [];
     let vectorError = null;
     const index = indexes.get(hostKey(ctx));

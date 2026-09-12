@@ -258,6 +258,33 @@ Direction one - a seat for the floor that describes a term named in the query - 
 should be judged by does not exist yet: entity recall is defined against the query, so it cannot compare two
 queries.
 
+### The entity metric cannot compare two queries, and the change it rejected
+
+`entityRecall` selects its terms **from the retrieval query**, so changing the query changes the denominator:
+a shorter query has fewer and easier terms and scored 100% where the shipped one scored 96%. It cannot compare
+two constructions, and the rejection above was based on it.
+
+`askedThingRecall` takes its terms from **the current user message alone** - a property of the conversation,
+not of the retrieval configuration - and asks whether the hidden floor that describes the thing was quoted.
+Its validity check passes: across four archives the target set is **identical under all three constructions**
+(4 of 4), so the comparison is real.
+
+| query construction | asked-about things whose describing floor was quoted | character profiles described |
+| --- | --- | --- |
+| last three rows, whole (was shipped) | 66 of 315 (21%) | 132 of 143 (92%) |
+| each preceding row bounded at 80 characters | **109 of 315 (35%)** | 132 of 143 (92%) |
+| the current user message alone | 250 of 315 (79%) | 126 of 143 (88%) |
+
+The direction reverses: the failure the mushroom turn exposed is not an outlier at all - **the floor that
+describes a thing the user names is quoted for one in five of them**. Bounding the preceding rows costs
+nothing measurable and is shipped; using the question alone recovers much more and costs four points of
+profiles, which are described in the assistant's prose rather than in the question, so it is not.
+
+**Caveat.** The offline harness approximates the character names handed to the profile channel; passing all
+known names rather than the ones in the query drops the first row of that table from 58% to 21%. The
+*ordering* is the same under both approximations and the shipped change is the one that costs nothing, but the
+absolute numbers move with the approximation and a live run is the confirmation.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
