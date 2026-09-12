@@ -9,7 +9,13 @@ import { syncFloorFoldDom, syncFloorFoldRow } from './v55-floor-fold.js';
 export const NARRATIVE_SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 export const NARRATIVE_PROMPTS = ['aetheria_unified_memory_v5_4_reference', 'aetheria_unified_memory_v5_4_current_state'];
 const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative_evidence_tokens: 1000,
-    narrative_setting_tokens: 400, narrative_input_chars: 18000, narrative_fold: true };
+    narrative_setting_tokens: 400, narrative_input_chars: 18000, narrative_fold: true,
+    // Guards. The pipeline can fail quietly in exactly two ways, and both are worse than an error,
+    // because the story keeps working while the memory behind it stops: the summary job keeps failing
+    // while the unsummarized tail grows into the prompt, or the tail simply outgrows what anyone
+    // notices. Neither is prevented by a budget - the tail is host text, not injected text - so both
+    // are reported with a threshold instead of being left to be discovered later.
+    narrative_pending_warn_tokens: 4000, narrative_summary_failure_warn: 3 };
 // Both maps are keyed by the host's chat-metadata object, not by the chat store object: the store
 // projection replaces the store on a persist, so a store-keyed map would lose the running job and the
 // live index on exactly the turns that wrote something. The metadata object is stable for a chat and
@@ -31,7 +37,9 @@ const bound = (value, fallback, min, max) => Number.isFinite(Number(value))
     ? Math.max(min, Math.min(max, Math.floor(Number(value)))) : fallback;
 
 function options(settings) {
-    return { every: bound(settings.narrative_every, 10, 1, 100),
+    return { pendingWarnTokens: bound(settings.narrative_pending_warn_tokens, 4000, 200, 200000),
+        failureWarn: bound(settings.narrative_summary_failure_warn, 3, 1, 50),
+        every: bound(settings.narrative_every, 10, 1, 100),
         summaryTokens: bound(settings.narrative_summary_tokens, 600, 100, 4000),
         evidenceTokens: bound(settings.narrative_evidence_tokens, 1000, 0, 8000),
         settingTokens: bound(settings.narrative_setting_tokens, 400, 0, 4000),
@@ -167,12 +175,14 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
                 // a fresh read rather than through the reference it returned.
                 storeOf(ctx).narrative_summary = { version: 1, text,
                     covered: [...(previous?.covered || []), ...batch.map(row => row.id)] };
-                diagnose(ctx, { summary_error: null, summary_invalidated: null });
+                diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0 });
                 prepare(ctx);
                 persist(ctx);
             } catch (error) {
                 if (services.isCurrent()) {
-                    diagnose(ctx, { summary_error: String(error.message || error) });
+                    // Counted, not just recorded: one failure is noise, a run of them is the warning.
+                    const failures = Number(storeOf(ctx).narrative_diagnostics?.summary_failures) || 0;
+                    diagnose(ctx, { summary_error: String(error.message || error), summary_failures: failures + 1 });
                     persist(ctx);
                 }
             }
@@ -184,6 +194,37 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
     })();
     jobs.set(host, job);
     return job.finally(() => { if (jobs.get(host) === job) jobs.delete(host); });
+}
+
+/**
+ * How much original text the accepted summary has not reached yet, and the warnings that follow.
+ *
+ * A summary that keeps failing does not break the story: the floors stay visible, which is the safe
+ * direction. What it does break is the premise - the prompt grows with the chat again, and the only
+ * symptom is a diagnostic nobody reads. These two numbers are that symptom, stated where a user will
+ * see them.
+ */
+function pendingState(store, chunks) {
+    const covered = validSummary(store.narrative_summary, chunks) ? store.narrative_summary.covered.length : 0;
+    const pending = chunks.slice(covered);
+    return {
+        covered,
+        pending_floors: new Set(pending.filter(row => row.role === 'assistant').map(row => row.source)).size,
+        pending_tokens: pending.length ? estimateTokens(pending.map(row => row.retrievalText).join('\n')) : 0,
+    };
+}
+
+function warningsFor(state, opts) {
+    const out = [];
+    if (state.summary_failures >= opts.failureWarn) {
+        out.push('摘要连续 ' + state.summary_failures + ' 次失败；原文保持可见，但常驻提示词会随楼层增长。'
+            + (state.summary_error ? ' 最后一次：' + state.summary_error : ''));
+    }
+    if (state.pending_tokens >= opts.pendingWarnTokens) {
+        out.push('已有 ' + state.pending_floors + ' 层 / 约 ' + state.pending_tokens
+            + ' token 原文尚未进入摘要；调低“每几楼更新摘要”或检查总结接口。');
+    }
+    return out;
 }
 
 function fitWholeBlocks(blocks, tokens) {
@@ -238,9 +279,15 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         settingText = fitWholeBlocks(formatted.split('\n\n'), opts.settingTokens);
     }
     const referenceBlock = fitWholeBlocks([evidence.text, settingText], Math.max(0, totalBudget - estimateTokens(summaryBlock)));
+    const pending = pendingState(live, chunks);
+    const warnings = warningsFor({ ...pending, summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
+        summary_error: live.narrative_diagnostics?.summary_error || null }, opts);
     const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
         covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
+        pending_floors: pending.pending_floors, pending_tokens: pending.pending_tokens,
+        summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
+        warnings,
         sources: evidence.sources, candidates: ranked.length, vector_available: Boolean(index?.available && !vectorError),
         vector_error: vectorError || live.narrative_diagnostics?.vector_reason || null,
         summary_error: live.narrative_diagnostics?.summary_error || null,
@@ -309,9 +356,16 @@ export function readNarrativeReport(ctx) {
     const chunks = history ? chunkHistory(history) : [];
     const summary = store.narrative_summary;
     const rows = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const pending = pendingState(store, chunks);
+    const failures = Number(store.narrative_diagnostics?.summary_failures) || 0;
     return {
         enabled: settings.enabled !== false,
         update_every_floors: bound(settings.narrative_every, defaults.narrative_every, 1, 100),
+        pending_floors: pending.pending_floors,
+        pending_tokens: pending.pending_tokens,
+        summary_failures: failures,
+        warnings: warningsFor({ ...pending, summary_failures: failures,
+            summary_error: store.narrative_diagnostics?.summary_error || null }, options(settings)),
         messages: history ? history.active.length : 0,
         completed_floors: history
             ? history.active.filter(id => history.records[id].role === 'assistant').length : 0,
@@ -342,11 +396,13 @@ export function mountNarrativeSettings(getContext, createServices) {
     root.id = 'aum-narrative-settings';
     root.innerHTML = '<h3>剧情摘要与原文检索</h3><p>摘要保障续写，检索找回原文。未完成总结的楼层继续保留。</p>'
         + [['narrative_every','每几楼更新摘要',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
-            ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000]]
+            ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000],
+            ['narrative_pending_warn_tokens','未总结原文告警阈值',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]
             .map(([key,label,min,max]) => `<label>${label}<input type="number" data-key="${key}" min="${min}" max="${max}"></label>`).join('')
         + '<label><input type="checkbox" data-key="narrative_fold">折叠已总结的历史楼层</label>'
         + '<button class="menu_button" data-action="summarize">立即更新摘要</button>'
-        + '<button class="menu_button" data-action="restore">恢复原文显示</button><pre data-status></pre>';
+        + '<button class="menu_button" data-action="restore">恢复原文显示</button>'
+        + '<div data-warning class="aum-v51-status"></div><pre data-status></pre>';
     const settings = narrativeSettings(ctx);
     for (const input of root.querySelectorAll('[data-key]')) {
         if (input.type === 'checkbox') input.checked = settings[input.dataset.key] !== false;
@@ -362,7 +418,7 @@ export function mountNarrativeSettings(getContext, createServices) {
     root.querySelector('[data-action="summarize"]').addEventListener('click', async () => {
         const current = getContext();
         await updateNarrative(current, createServices(current), { force: true });
-        root.querySelector('[data-status]').textContent = JSON.stringify(readNarrativeReport(current), null, 2);
+        renderNarrativePanel(root, current);
         syncFloorFoldDom(current);
     });
     root.querySelector('[data-action="restore"]').addEventListener('click', () => {
@@ -373,6 +429,18 @@ export function mountNarrativeSettings(getContext, createServices) {
         syncFloorFoldDom(current);
         root.querySelector('[data-key="narrative_fold"]').checked = false;
     });
-    root.querySelector('[data-status]').textContent = JSON.stringify(readNarrativeReport(ctx), null, 2);
+    renderNarrativePanel(root, ctx);
+    return true;
+}
+
+/** One place that writes the panel, so a warning cannot be shown on one path and lost on another. */
+function renderNarrativePanel(root, ctx) {
+    const report = readNarrativeReport(ctx);
+    const warning = root.querySelector('[data-warning]');
+    if (warning) {
+        warning.textContent = report.warnings.length ? '⚠ ' + report.warnings.join(' ') : '';
+        warning.hidden = !report.warnings.length;
+    }
+    root.querySelector('[data-status]').textContent = JSON.stringify(report, null, 2);
     parent.prepend(root);
 }

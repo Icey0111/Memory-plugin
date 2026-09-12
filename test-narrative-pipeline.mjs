@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
     nextSummaryBatch, applyNarrativeFolds, RAW_CHUNK_SIZE } from './raw-history.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
-    NARRATIVE_PROMPTS } from './narrative-runtime.js';
+    readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
 
@@ -282,6 +282,43 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(ctx.chatMetadata[KEY].narrative_diagnostics.quality,
         'not measured; these are delivery and cost diagnostics',
         'the delivery report lands in the live store too');
+}
+
+// --- 11. the two quiet failures are reported, not discovered later --------------------------------
+{
+    // A summary job that keeps failing does not break the story - the floors stay visible, which is the
+    // safe direction - so nothing throws and nobody notices. It is counted and it is announced.
+    const host = makeHost(12, { settings: { narrative_summary_failure_warn: 2 },
+        summarize: async () => { throw new Error('provider down'); } });
+    const { ctx, services } = host;
+    await updateNarrative(ctx, services, { force: true });
+    await updateNarrative(ctx, services, { force: true });
+    let report = readNarrativeReport(ctx);
+    assert.equal(report.summary_failures, 2, 'consecutive failures are counted');
+    assert.equal(report.warnings.length, 1, 'and announced once the threshold is reached');
+    assert.match(report.warnings[0], /连续 2 次失败/);
+    assert.match(report.warnings[0], /provider down/, 'the warning carries the last error');
+    services.summarize = async () => '摘要：恢复了。';
+    await updateNarrative(ctx, services, { force: true });
+    report = readNarrativeReport(ctx);
+    assert.equal(report.summary_failures, 0, 'a success clears the run');
+    assert.deepEqual(report.warnings, [], 'and the warning with it');
+    assert.equal(report.pending_tokens, 0, 'nothing is left unsummarized');
+}
+{
+    // The other quiet failure: the tail grows because the threshold is never reached.
+    // Long enough floors that the tail crosses the threshold the settings clamp allows (200 tokens).
+    const host = makeHost(3, { settings: { narrative_every: 20, narrative_pending_warn_tokens: 200 } });
+    host.chat.forEach(row => { row.mes += '填充'.repeat(80); });
+    const { ctx, services } = host;
+    await updateNarrative(ctx, services);
+    const report = readNarrativeReport(ctx);
+    assert.equal(report.summary_valid, false, 'the fixture has no summary yet');
+    assert.equal(report.pending_floors, 3, 'the tail is counted in floors');
+    assert.ok(report.pending_tokens > 200, 'and in tokens: ' + report.pending_tokens);
+    assert.match(report.warnings[0], /尚未进入摘要/, 'and it is announced with its size');
+    const quiet = makeHost(3, { settings: { narrative_every: 20, narrative_pending_warn_tokens: 200000 } });
+    assert.deepEqual(readNarrativeReport(quiet.ctx).warnings, [], 'a threshold above the tail stays quiet');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');
