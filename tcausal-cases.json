@@ -1,0 +1,202 @@
+{
+  "version": 1,
+  "scenario": "灰烬港契约场景：不可逆承诺 + 被推翻的推断 + 变过两次的地点 + 有限知情者",
+  "turns": [
+    {
+      "sourceMessageIndex": 1,
+      "ops": [
+        {
+          "op": "add",
+          "kind": "knowledge",
+          "slot": "契约.代价",
+          "text": "契约的代价是交出七人份的记忆，且不可撤销",
+          "importance": "critical"
+        },
+        {
+          "op": "add",
+          "kind": "state",
+          "slot": "灰烬港.地点",
+          "text": "我沿染坊后巷的夜路往回走",
+          "importance": "medium"
+        },
+        {
+          "op": "add",
+          "kind": "relation",
+          "slot": "白鸦.关系",
+          "text": "白鸦在井边把铜钥匙交给我，我欠他一次",
+          "importance": "high"
+        }
+      ]
+    },
+    {
+      "sourceMessageIndex": 3,
+      "ops": [
+        {
+          "op": "add",
+          "kind": "belief",
+          "slot": "白鸦.动机",
+          "text": "我认为白鸦想用钥匙换我的沉默",
+          "importance": "medium"
+        },
+        {
+          "op": "update",
+          "target_slot": "灰烬港.地点",
+          "text": "我回到钟楼旅店的前厅，坐在壁炉边",
+          "importance": "medium"
+        }
+      ]
+    },
+    {
+      "sourceMessageIndex": 5,
+      "ops": [
+        {
+          "op": "supersede",
+          "target_slot": "白鸦.动机",
+          "kind": "belief",
+          "text": "白鸦坦白他只是想保命，并非与我做交易",
+          "importance": "medium"
+        },
+        {
+          "op": "add",
+          "kind": "knowledge",
+          "slot": "井.灰絮",
+          "text": "井底有会呼吸的灰白絮状物，白鸦已经知情",
+          "importance": "high",
+          "known_by": [
+            "白鸦"
+          ]
+        },
+        {
+          "op": "add",
+          "kind": "commitment",
+          "slot": "誓言.守口",
+          "text": "我答应过白鸦不把井的事告诉第三个人",
+          "importance": "high"
+        },
+        {
+          "op": "add",
+          "kind": "belief",
+          "slot": "井.旧说",
+          "text": "我原以为井底的灰絮是一种毒",
+          "importance": "medium"
+        }
+      ]
+    },
+    {
+      "sourceMessageIndex": 7,
+      "ops": [
+        {
+          "op": "update",
+          "target_slot": "灰烬港.地点",
+          "text": "我下到钟楼旅店地窖的第十三级台阶",
+          "importance": "medium"
+        },
+        {
+          "op": "add",
+          "kind": "knowledge",
+          "slot": "井.真相",
+          "text": "灰絮不是毒，是根；灰咳是它在肺里抽丝",
+          "importance": "high"
+        },
+        {
+          "op": "invalidate",
+          "target_slot": "井.旧说",
+          "reason": "当场证伪：灰絮是根，不是毒"
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "why_location",
+      "kind": "why",
+      "question": "为什么我现在会在地窖里？",
+      "requiresText": [
+        "我下到钟楼旅店地窖的第十三级台阶",
+        "我沿染坊后巷的夜路往回走"
+      ],
+      "forbidsLiveSlotValue": [
+        {
+          "slot": "灰烬港.地点",
+          "text": "我沿染坊后巷的夜路往回走"
+        }
+      ]
+    },
+    {
+      "id": "why_motive",
+      "kind": "why",
+      "question": "白鸦的动机现在是什么？",
+      "requiresText": [
+        "白鸦坦白他只是想保命，并非与我做交易"
+      ],
+      "forbidsLiveSlotValue": [
+        {
+          "slot": "白鸦.动机",
+          "text": "我认为白鸦想用钥匙换我的沉默"
+        }
+      ]
+    },
+    {
+      "id": "no_stale_well",
+      "kind": "no_stale",
+      "question": "井底那些灰絮究竟是不是毒？",
+      "requiresText": [
+        "灰絮不是毒，是根"
+      ],
+      "forbidsText": [
+        "我原以为井底的灰絮是一种毒"
+      ]
+    },
+    {
+      "id": "who_first_key",
+      "kind": "who_first",
+      "question": "这把铜钥匙是谁先交出来的？",
+      "requiresText": [
+        "白鸦在井边把铜钥匙交给我"
+      ]
+    },
+    {
+      "id": "who_first_contract",
+      "kind": "who_first",
+      "question": "契约代价是谁先确认的？",
+      "requiresText": [
+        "契约的代价是交出七人份的记忆"
+      ]
+    },
+    {
+      "id": "who_unknown_well",
+      "kind": "who_unknown",
+      "question": "井的事情谁还不知道？",
+      "requiresText": [
+        "井底有会呼吸的灰白絮状物"
+      ],
+      "requiresKnownBy": [
+        "白鸦"
+      ]
+    },
+    {
+      "id": "commitment_oath",
+      "kind": "why",
+      "question": "我为什么不能说出井的事？",
+      "requiresText": [
+        "我答应过白鸦不把井的事告诉第三个人"
+      ]
+    },
+    {
+      "id": "relation_debt",
+      "kind": "who_first",
+      "question": "我什么时候欠下白鸦的？",
+      "requiresText": [
+        "白鸦在井边把铜钥匙交给我，我欠他一次"
+      ]
+    },
+    {
+      "id": "who_first_well_truth",
+      "kind": "who_first",
+      "question": "灰絮是根这个判断是谁先得出的？",
+      "requiresText": [
+        "灰絮不是毒，是根"
+      ]
+    }
+  ]
+}

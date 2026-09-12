@@ -280,23 +280,51 @@ export function stampRuntimeIdentity(ctx) {
 function canonicalLine(memory) {
     const slot = clean(memory?.slot);
     const label = [clean(memory?.kind) || 'state', slot].filter(Boolean).join(':');
-    const entityIds = unique(memory?.entity_ids);
-    const knownByIds = unique(memory?.known_by_ids);
-    const attrs = [
-        entityIds.length ? `entities=${entityIds.join(',')}` : '',
-        knownByIds.length ? `known_by=${knownByIds.join(',')}` : '',
-    ].filter(Boolean).join(' ');
-    return `- [${label}${attrs ? ` ${attrs}` : ''}] ${clean(memory?.text)}`;
+    // The entity and holder attributes were opaque registry hashes ("ent_1h6kygz"), which a reader cannot
+    // map to anything. Measured on a 50-floor chat: 62 rows carried 2,842 characters / 709 tokens of them,
+    // 5% of the entire injection, for no answerability. Dropped. When the epistemic channel is built it
+    // must render holder NAMES, not these ids.
+    return `- [${label}] ${clean(memory?.text)}`;
+}
+
+const CANONICAL_KIND_WEIGHT = Object.freeze({ state: 7, intention: 6, commitment: 5, relation: 4, ownership: 4, knowledge: 3, belief: 2, world_delta: 1, event: 0 });
+
+/**
+ * Every live memory, in the order this file has always rendered canonical state: the most
+ * consequential kinds first, then most recent, then a stable id tiebreak.
+ *
+ * Exported because the generation prompt now renders this exact list once, in topical groups,
+ * instead of rendering it once as a flat summary and again as groups. Both renderings wanted the
+ * same order, and duplicating the comparator is how the two drift apart.
+ */
+export function orderCanonicalMemories(storeInput) {
+    const store = storeInput && typeof storeInput === 'object' ? storeInput : {};
+    const memories = Object.values(store.memories || {}).filter(memory => memory?.status === 'active' && clean(memory?.text));
+    memories.sort(compareCanonicalMemories);
+    return memories;
+}
+
+/**
+ * The canonical ordering, as a comparator over a list of memories rather than over a store.
+ *
+ * Exported because the current-state block has to trim from the bottom of this order and no other: it
+ * renders every live memory and cuts whatever does not fit, so "what is last" is "what is lost". It
+ * used to emit fixed topical groups instead, which is a different order entirely, and the difference
+ * was measured to cost the whole of two kinds (see buildCurrentStateBlock). Both callers share this
+ * comparator rather than each keeping a copy, because a copy is how the two orders drift apart.
+ */
+export function canonicalKindWeight(kind) {
+    return CANONICAL_KIND_WEIGHT[kind] || 0;
+}
+
+export function compareCanonicalMemories(a, b) {
+    return (CANONICAL_KIND_WEIGHT[b?.kind] || 0) - (CANONICAL_KIND_WEIGHT[a?.kind] || 0)
+        || Number(b?.source_message ?? -1) - Number(a?.source_message ?? -1)
+        || clean(a?.id).localeCompare(clean(b?.id));
 }
 
 export function buildCanonicalState(storeInput, maxChars = 12_000) {
-    const store = storeInput && typeof storeInput === 'object' ? storeInput : {};
-    const memories = Object.values(store.memories || {}).filter(memory => memory?.status === 'active' && clean(memory?.text));
-    const kindWeight = { state: 7, intention: 6, commitment: 5, relation: 4, ownership: 4, knowledge: 3, belief: 2, world_delta: 1, event: 0 };
-    memories.sort((a, b) => (kindWeight[b.kind] || 0) - (kindWeight[a.kind] || 0)
-        || Number(b.source_message ?? -1) - Number(a.source_message ?? -1)
-        || clean(a.id).localeCompare(clean(b.id)));
-    const lines = memories.map(canonicalLine);
+    const lines = orderCanonicalMemories(storeInput).map(canonicalLine);
     let text = lines.join('\n');
     const cap = Math.max(0, Number(maxChars) || 0);
     if (cap && text.length > cap) text = `${text.slice(0, Math.max(0, cap - 42)).trimEnd()}\n…[canonical state truncated]`;

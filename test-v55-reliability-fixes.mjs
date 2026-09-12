@@ -1,39 +1,23 @@
-// Reliability regression suite for the review fixes: privacy filtering, extraction contract,
-// memory-op schema bounds, hash-authoritative dense mapping, budget accounting, store guards.
+// Reliability regression suite for the review fixes that still ship: memory-op schema bounds,
+// hash-authoritative dense mapping, ordering, store guards, Tauri store errors.
+//
+// The extraction contract, the assembler budget and the recall helpers retired with the fact
+// subsystem; their sections went with them rather than being kept as tests of dead code.
+//
+// The per-memory privacy filter that used to be section 1 retired with the fact-injection path: facts
+// are no longer assembled into a prompt, so there is no per-line filter left to test. Role-private
+// audiences are still enforced where a prompt is still built, by filterSettingRowsForActor, which
+// test-setting-retrieval-host.mjs and test-setting-secret-visibility.mjs cover.
 import assert from 'node:assert/strict';
-import { filterPrivateKnowledge } from './v55-finalizer.js';
-import { parseExtractionResult } from './memory-extractor.js';
-import { validateMemoryOp, normalizeStore, fuseHybridCandidates, diversifyCandidates } from './memory-core.js';
+import { validateMemoryOp, normalizeStore } from './memory-core.js';
 import { mapDenseSettingMetadata } from './setting-retriever.js';
 import { installMetadataIntegrityForContext } from './v55-store-integrity.js';
-import { assembleGenerationContext } from './context-assembler.js';
 import {
   createSettingStore, createWorld, addSource, addRevision, addEntries,
   setActiveBaselineRevision, listEntriesForRevision,
 } from './setting-store.js';
 import { buildSettingIndexSnapshot } from './setting-index.js';
 import { handleTauriVectorRequest, __testResetTauriVectorBackend, isNativeTauriTavern } from './v55-tauri-vector-backend.js';
-
-// --- 1. private memory with XML-special characters must be removed, not merely reported as hidden ---
-{
-  const store = { memories: { secret: { id: 'secret', kind: 'knowledge', text: `O'Brien's vault code is 7391 & rising`, known_by: ['Alice'], known_by_ids: ['ent_alice'] } } };
-  const current = `- [knowledge:secret] O'Brien's vault code is 7391 & rising\n- [state] visible`;
-  const out = filterPrivateKnowledge('', current, store, { aliases: ['bob'], ids: ['ent_bob'] });
-  assert.doesNotMatch(out.currentStateBlock, /7391/, 'escaped/raw mismatch must not leak a private line');
-  assert.deepEqual(out.hiddenMemoryIds, ['secret']);
-}
-
-// --- 2. extraction contract: operations must be an array; missing fields are reported, not silently wiped ---
-{
-  assert.equal(parseExtractionResult('{"event_summary":"s","active_state":"a"}').ok, false, 'missing operations array must fail');
-  const warned = parseExtractionResult('{"event_summary":"s","operations":[]}');
-  assert.equal(warned.ok, true);
-  assert.ok(warned.warnings.includes('missing active_state'));
-  assert.ok(warned.warnings.includes('missing active_state') && warned.operations.length === 0);
-  const dropped = parseExtractionResult('{"event_summary":"s","active_state":"a","operations":[{"op":"bogus"}]}');
-  assert.equal(dropped.ok, true);
-  assert.equal(dropped.droppedOperations, 1, 'discarded operations must be counted');
-}
 
 // --- 3. memory-op schema bounds are enforced at the write gate ---
 {
@@ -90,34 +74,6 @@ import { handleTauriVectorRequest, __testResetTauriVectorBackend, isNativeTauriT
   assert.equal(installMetadataIntegrityForContext({ chatMetadata: {} }), true);
 }
 
-// --- 8. evidence-bearing history rows are admitted instead of being dropped by the probe ---
-{
-  const bundle = assembleGenerationContext({
-    historyResults: [{ memory: { id: 'h', kind: 'knowledge', status: 'active', importance: 'high', text: 'x'.repeat(200), evidence_excerpt: 'y'.repeat(400) } }],
-    maxReferenceChars: 4000,
-    maxCurrentStateChars: 1000,
-    hostContextBudget: 8192,
-    includeEvidence: true,
-  });
-  assert.deepEqual(bundle.diagnostics.memoryIds, ['h']);
-  assert.match(bundle.referenceBlock, /<evidence>/);
-  assert.ok(bundle.referenceBlock.length <= 4000);
-}
-
-// --- 9. pure recall helpers tolerate malformed candidate entries ---
-{
-  const memory = { id: 'a', kind: 'state', status: 'active', text: 'alpha', entities: [], topics: [] };
-  const fused = fuseHybridCandidates({ memories: { a: memory } }, [[memory, null]], [], {
-    rrfK: 60, denseWeights: [1], lexicalWeight: 0.4, denseGate: true, currentMessage: 10,
-  });
-  assert.ok(Array.isArray(fused) && fused.length === 1);
-  const diversified = diversifyCandidates([{ memory, score: 1 }, null, { score: 2 }], { finalCount: 5, lambda: 0.7 });
-  assert.equal(diversified.length, 1);
-  const normalized = normalizeStore({ memories: [], slots: [] });
-  assert.deepEqual(Object.keys(normalized.memories), []);
-  assert.deepEqual(Object.keys(normalized.slots), []);
-}
-
 // --- 10. a Tauri extension-store read failure must not look like an empty collection ---
 {
   __testResetTauriVectorBackend();
@@ -140,4 +96,4 @@ import { handleTauriVectorRequest, __testResetTauriVectorBackend, isNativeTauriT
   __testResetTauriVectorBackend();
 }
 
-console.log('PASS reliability fixes: privacy filter, extraction contract, op bounds, hash-first dense mapping, ordering, guards, budget, Tauri store errors');
+console.log('PASS reliability fixes: op bounds, hash-first dense mapping, ordering, store guards, Tauri store errors');

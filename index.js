@@ -30,16 +30,9 @@ import {
     validateMemoryOp,
 } from './memory-core.js';
 
-import {
-    EXTRACTION_JSON_SCHEMA,
-    buildAutonomousExtractionPrompt,
-    parseExtractionResult,
-    planExtractionPromptBudget,
-} from './memory-extractor.js';
 
 // A8: the quality side of the measurement story. v55-metrics.js meters cost; this meters whether
 // memory stayed good. Pure module, no host globals, so it is fully offline-testable.
-import { qualityReport as computeQualityReport } from './v55-quality-metrics.js';
 
 import {
     buildBaselineRecords,
@@ -50,8 +43,6 @@ import {
     isBaselineGateEligible,
 } from './baseline-index.js';
 
-import { collectSemanticBaselineSources } from './baseline-host.js';
-import { spinePromptBlock, spineStats } from './v55-spine.js';
 import { migrateSettingStore } from './setting-schema.js';
 import { listRevisionsForWorld, listWorlds } from './setting-store.js';
 import { commitImport, findDuplicateSources, previewImport } from './setting-importer.js';
@@ -74,20 +65,17 @@ import {
     mapDenseSettingMetadata,
     settingChunksToBaselineRecords,
 } from './setting-retriever.js';
-import { assembleGenerationContext } from './context-assembler.js';
-import { deriveActorIdentity } from './v55-runtime.js';
-import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
-import { writeMergedChatStore } from './v55-store-integrity.js';
-import { awaitDerivedReady, ensureDerivedHydrated, installV55DerivedStore, persistChatStore, resetDerivedHydration } from './v55-derived-store.js';
-import { rerankCandidates } from './v55-rerank.js';
-import { formatMetrics, recordEmbeddingCall, recordModelCall, resetMetrics } from './v55-metrics.js';
-import { formatSelfCheck, runRetrievalSelfCheck } from './v55-selfcheck.js';
+import { buildCanonicalState, deriveActorIdentity } from './v55-runtime.js';
+import { persistChatStore } from './v55-derived-store.js';
+import { formatMetrics, recordEmbeddingCall, resetMetrics } from './v55-metrics.js';
+import { getV55EmbeddingProfile } from './v55-vector-policy.js';
+import { requestRerank } from './v55-rerank.js';
+import { getTauriVectorApiKey } from './v55-tauri-vector-backend.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const LEGACY_SETTINGS_KEYS = ['aetheriaUnifiedMemoryV53', 'aetheriaUnifiedMemoryV52', 'aetheriaUnifiedMemoryV51'];
 const LEGACY_METADATA_KEYS = ['aetheriaUnifiedMemoryV53', 'aetheriaUnifiedMemoryV52', 'aetheriaUnifiedMemoryV51'];
-const LEGACY_PROMPT_KEY = 'aetheria_unified_memory_v5_4';
 const REFERENCE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_reference';
 const CURRENT_STATE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_current_state';
 const INTERCEPTOR_NAME = 'aetheriaUnifiedMemoryV54Interceptor';
@@ -165,8 +153,22 @@ const DEFAULT_SETTINGS = Object.freeze({
     setting_baseline_veto_enabled: true,
     setting_query_seed_from_memories: true,
     // v5.5-dev Commit F: one context assembler, two extension-prompt blocks.
-    reference_context_max_chars: 12000,
-    current_state_context_max_chars: 5000,
+    // Measured (change_log Entry 15). The reference block is flat below 4,000 characters: on a 50-floor
+    // chat, 8,000 / 4,000 / 2,000 all produced state 10/10, commitment 22/22, causal 3/3 and T-Causal 12/14,
+    // while the injection fell from 12,576 to 9,513 to 7,541 tokens. 2,000 is not taken as the default
+    // because on a denser chat the same trim cost 3 T-Causal points - the recall channel is worth something
+    // exactly when a conversation has more going on. 4,000 is the point that is free on the sparse chat and
+    // still funded on the dense one.
+    reference_context_max_chars: 4000,
+    // Measured on a 50-floor live chat by ablation, not by argument (change_log Entry 10): at a 5,000
+    // character cap the block carried only 17 of 31 live values, and raising it moved state coverage
+    // 55% -> 90% and T-Causal 43% -> 65% while total injected tokens FELL from 8,897 to 7,213, because
+    // state the model is given no longer has to be recalled.
+    // Since v4 this cap bounds ONE rendering of the state instead of a 45% share of a double one, so it
+    // is set to keep the block no larger than the double rendering ever was: the old summary alone was
+    // capped at 9,000 characters and the must-rows plus groups added roughly 3,000 more. 12,000 carries
+    // at least what that did, and bounds the block so a lengthening chat cannot grow it without limit.
+    current_state_context_max_chars: 12000,
     context_reply_reserve_tokens: 1200,
     current_state_injection_depth: 1,
     // Iteration 08: quiet generations are cleared by default (including background extraction).
@@ -179,8 +181,21 @@ const DEFAULT_SETTINGS = Object.freeze({
     mandatory_baseline_limit: 24,
     // Iteration 14 S1/S2: the change chain. Slots whose value was replaced, and what replaced it.
     spine_injection_enabled: true,
-    spine_injection_max_chars: 600,
-    spine_injection_max_rows: 8,
+    // Measured (change_log Entry 14): at 600 characters the change chain rendered 7 of 19 replaced
+    // values, and causal coverage sat at 6/17 (35%) - the largest remaining hole. The chain is the only
+    // carrier of "why is it like this now", and it was the smallest budget in the system. At 4,000
+    // characters causal coverage is 13/17 (76%) and T-Causal 37/40 (93%), and the total injection is
+    // still cheaper than before, because the reference block was trimmed to pay for it.
+    spine_injection_max_chars: 4000,
+    spine_injection_max_rows: 24,
+    // The budgets above were corrected by measurement, not by taste. An install that already saved the old
+    // values would never see the new ones, because getSettings only fills keys that are missing - so the
+    // correction carries a version and a one-time migration.
+    memory_budget_version: 2,
+    // Plan A2/A4/A6 (scene boundaries, repetition compression, forgetting by reconstructability) were
+    // removed with the layered summary stack: their readers were v55-boundary/v55-compression and the
+    // hierarchical summarizer, and their only controls lived on its settings panel. The prune call below
+    // keeps the behaviour it always had (the default), so an install that saved the old keys is unaffected.
     // Iteration 14 (drift fix): the current-state block renders EVERY active memory, not only the
     // mandatory set, so it was already a baseline wider than S4 claimed. That was implicit, which
     // made the "irreversible-only" experiment impossible to run. Now it is a named setting and the
@@ -205,7 +220,6 @@ const DEFAULT_SETTINGS = Object.freeze({
     mmr_lambda: 0.78,
     recall_cooldown_turns: 4,
     vector_settle_messages: 0,
-    max_memory_context_chars: 7000,
     include_evidence: true,
     injection_depth: 4,
     max_active_items: 12,
@@ -216,15 +230,21 @@ const DEFAULT_SETTINGS = Object.freeze({
     cold_turn_snapshot_enabled: true,
     cold_turn_max_chars: 200000,
     memory_evidence_enabled: true,
+    // The computed half of the evidence trigger. On by default because the model-triggered half only fires
+    // when the model already suspects it has forgotten something, which is the case it cannot detect.
+    memory_evidence_auto: true,
+    memory_evidence_auto_entries: 3,
     memory_evidence_max_chars: 3000,
     temporal_channel_enabled: true,
     temporal_channel_limit: 6,
     metrics_enabled: true,
-    // Optional prompt-window management. Disabled by default until real-chat acceptance.
-    manage_context_window: false, // reserved; v5.4 intentionally does not mutate chat history
-    keep_recent_messages: 12,
     debug: false,
 });
+
+// Settings that shipped and were later removed. Their values survive in installs that predate the
+// removal, and nothing reads them any more, so `getSettings` deletes them instead of leaving a stored
+// blob that advertises a feature the plugin no longer has.
+const REMOVED_SETTINGS_KEYS = ['manage_context_window', 'keep_recent_messages'];
 
 const SUPPORTED_SERVER_VECTOR_SOURCES = new Set([
     'transformers', 'mistral', 'openai', 'palm', 'togetherai', 'nomicai', 'cohere',
@@ -272,6 +292,50 @@ function notify(type, message, title = '艾瑟瑞亚统一记忆') {
     else console[type === 'error' ? 'error' : 'log'](`[${title}] ${message}`);
 }
 
+/**
+ * One-time correction of the injection budgets.
+ *
+ * A changed default reaches new installs for free and reaches existing ones never, because the merge in
+ * getSettings only supplies keys that are absent. Measured corrections therefore have to be carried over
+ * explicitly. The migration rewrites only the budget keys, and only once: after it runs the version is
+ * stamped, so a value the user edits afterwards is kept.
+ */
+export const MEMORY_BUDGET_VERSION = 4;
+export const MEMORY_BUDGET_MIGRATIONS = Object.freeze({
+    2: Object.freeze({
+        spine_injection_max_chars: 4000,
+        spine_injection_max_rows: 24,
+        reference_context_max_chars: 8000,
+    }),
+    3: Object.freeze({
+        reference_context_max_chars: 4000,
+    }),
+    // v4 renders the current state once instead of twice. The old 20,000 cap was never reached because
+    // the flat summary inside it was independently capped at 9,000; with that summary gone the cap is
+    // the only bound, so it is set to the size the double rendering actually produced.
+    4: Object.freeze({
+        current_state_context_max_chars: 12000,
+    }),
+});
+
+export function migrateMemoryBudgets(settings, { version = MEMORY_BUDGET_VERSION } = {}) {
+    if (!settings || typeof settings !== 'object') return { migrated: false, applied: [] };
+    const from = Number(settings.memory_budget_version) || 1;
+    const target = Math.max(1, Number(version) || MEMORY_BUDGET_VERSION);
+    if (from >= target) return { migrated: false, from, applied: [] };
+    const applied = [];
+    for (let step = from + 1; step <= target; step += 1) {
+        const patch = MEMORY_BUDGET_MIGRATIONS[step];
+        if (!patch) continue;
+        for (const [key, value] of Object.entries(patch)) {
+            settings[key] = value;
+            applied.push(key);
+        }
+    }
+    settings.memory_budget_version = target;
+    return { migrated: true, from, to: target, applied };
+}
+
 function getSettings(ctx) {
     if (!ctx.extensionSettings[SETTINGS_KEY] || typeof ctx.extensionSettings[SETTINGS_KEY] !== 'object') {
         const legacy = LEGACY_SETTINGS_KEYS.map(key => ctx.extensionSettings[key]).find(value => value && typeof value === 'object');
@@ -282,6 +346,9 @@ function getSettings(ctx) {
     const current = ctx.extensionSettings[SETTINGS_KEY];
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
         if (current[key] === undefined) current[key] = value;
+    }
+    for (const dead of REMOVED_SETTINGS_KEYS) {
+        if (dead in current) delete current[dead];
     }
     return current;
 }
@@ -433,6 +500,13 @@ function getStore(ctx) {
     const legacySource = LEGACY_METADATA_KEYS.map(key => ctx.chatMetadata?.[key]).find(value => value && typeof value === 'object');
     const source = ctx.chatMetadata?.[METADATA_KEY] ?? legacySource;
     const normalized = normalizeStore(source);
+    // The canonical state summary is not persisted: it is `buildCanonicalState` over `memories`, which the
+    // same chat file already carries in full (see v55-store-compact.js). Rebuild it here - at the single
+    // point every reader obtains a store from - so no reader can observe the difference. A summary whose
+    // source is not 'canonical-memory' came from the legacy extractor and is left exactly as loaded.
+    if (normalized.last_active_state_source === 'canonical-memory' && !String(normalized.last_active_state || '').trim()) {
+        normalized.last_active_state = buildCanonicalState(normalized);
+    }
     if (!ctx.chatMetadata) return normalized;
     return persistStore(ctx, normalized, false);
 }
@@ -456,35 +530,6 @@ function enqueue(task) {
     return operationQueue;
 }
 
-function enqueueExtraction(task) {
-    extractionPending += 1;
-    const run = extractionQueue.then(() => task(), () => task());
-    extractionQueue = run
-        .catch(error => {
-            console.error('[Aetheria Memory v5.4] extraction task failed', error);
-            const ctx = getContext();
-            const settings = ctx ? getSettings(ctx) : DEFAULT_SETTINGS;
-            if (settings.extraction_notifications) notify('error', String(error?.message || error), '自动记忆抽取失败');
-        })
-        .finally(() => {
-            extractionPending = Math.max(0, extractionPending - 1);
-            scheduleStatusUpdate();
-        });
-    scheduleStatusUpdate();
-    return run;
-}
-
-async function waitForExtractionFreshness(ctx) {
-    const settings = getSettings(ctx);
-    const ms = Math.max(0, Math.min(5000, Number(settings.memory_freshness_wait_ms) || 0));
-    if (!ms || extractionPending <= 0) return;
-    await Promise.race([
-        extractionQueue.catch(() => {}),
-        new Promise(resolve => setTimeout(resolve, ms)),
-    ]);
-}
-
-
 function withVectorLock(task) {
     const run = vectorQueue.then(() => task(), () => task());
     vectorQueue = run.catch(error => {
@@ -503,7 +548,6 @@ function getCollectionId(ctx) {
     return id;
 }
 
-
 function getChatIdentity(ctx) {
     // The host reports the same chat with and without its .jsonl suffix depending on which path
     // opened it (a UI chat switch versus openCharacterChat / restore-at-startup). Hashing the raw
@@ -511,7 +555,6 @@ function getChatIdentity(ctx) {
     // second one and then reported the first as a stale index with no per-index space_fingerprint.
     return String(ctx?.getCurrentChatId?.() ?? ctx?.chatId ?? '').trim().replace(/\.jsonl$/i, '');
 }
-
 
 function getBaselineCollectionId(ctx) {
     const chatId = getChatIdentity(ctx);
@@ -584,329 +627,16 @@ async function purgeAllAetheriaCollections(ctx) {
     return purged;
 }
 
-function computeBaselineVectorHash(record) {
-    return fnv1a32Baseline(`baseline-v54|${record?.id || ''}|${record?.normalized || record?.text || ''}`);
-}
-
-function summarizeBaselineSources(sources) {
-    return (Array.isArray(sources) ? sources : []).map(s => ({
-        type: String(s?.source_type || 'unknown'),
-        id: String(s?.source_id || ''),
-        title: String(s?.title || ''),
-        chars: String(s?.text || '').length,
-    }));
-}
-
-async function ensureSemanticBaseline(ctx, { force = false, silent = true } = {}) {
-    const settings = getSettings(ctx);
-    const sources = await collectSemanticBaselineSources(ctx, {
-        includeActiveWorldInfo: Boolean(settings.baseline_include_active_world_info),
-    });
-    const records = buildBaselineRecords(sources, { maxChars: settings.baseline_chunk_chars });
-    const fingerprint = computeBaselineFingerprint(records);
-    // Activated World Info can change from turn to turn as keyword/selective entries fire.
-    // Keep it in the lexical hard gate + extractor hint, but do not force a full vector rebuild
-    // every time that volatile activation set changes. Stable bound sources form the vector corpus.
-    const vectorRecords = records.filter(record => record.source_type !== 'active_world_info');
-    const vectorFingerprint = computeBaselineFingerprint(vectorRecords);
-    let store = getStore(ctx);
-    const provider = getVectorProvider(ctx);
-    const collectionId = getBaselineCollectionId(ctx);
-    const previous = store.baseline || createEmptyStore().baseline;
-    const fingerprintChanged = previous.vector?.fingerprint !== vectorFingerprint;
-    const providerChanged = Boolean(previous.vector?.provider_fingerprint && previous.vector.provider_fingerprint !== provider.fingerprint);
-
-    store.baseline = {
-        ...previous,
-        fingerprint,
-        record_count: records.length,
-        vector_record_count: vectorRecords.length,
-        source_count: sources.length,
-        source_labels: summarizeBaselineSources(sources),
-        last_built_at: Date.now(),
-        vector: {
-            ...previous.vector,
-            collection_id: collectionId,
-        },
-    };
-
-    if (!records.length) {
-        store.baseline.vector.stale = false;
-        store.baseline.vector.fingerprint = vectorFingerprint;
-        store.baseline.vector.provider_fingerprint = provider.fingerprint;
-        store.baseline.vector.last_error = null;
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    if (!settings.semantic_baseline_gate) {
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = 'Semantic Baseline Gate 已关闭。';
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    if (!settings.baseline_use_vector) {
-        store.baseline.vector.stale = false;
-        store.baseline.vector.last_error = null;
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    if (!collectionId) {
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = '当前没有聊天ID，Baseline向量索引不可用；仍使用本地词法硬过滤。';
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-    if (!provider.supported) {
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = `${provider.reason || 'Embedding provider不可用'}；仍使用本地词法硬过滤。`;
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    const needsRebuild = force || fingerprintChanged || providerChanged
-        || previous.vector?.stale !== false
-        || previous.vector?.fingerprint !== vectorFingerprint
-        || previous.vector?.provider_fingerprint !== provider.fingerprint;
-
-    if (needsRebuild && settings.baseline_auto_rebuild) {
-        try {
-            const items = vectorRecords.map((record, index) => ({
-                hash: computeBaselineVectorHash(record),
-                text: `[${record.source_type}:${record.title}] ${record.text}`,
-                index,
-            }));
-            await withVectorLock(async () => {
-                await purgeVectorCollection(ctx, collectionId);
-                const batchSize = 40;
-                for (let i = 0; i < items.length; i += batchSize) {
-                    await vectorInsert(ctx, provider, collectionId, items.slice(i, i + batchSize));
-                }
-            });
-            store = getStore(ctx);
-            store.baseline = {
-                ...(store.baseline || {}),
-                fingerprint,
-                record_count: records.length,
-                vector_record_count: vectorRecords.length,
-                source_count: sources.length,
-                source_labels: summarizeBaselineSources(sources),
-                last_built_at: Date.now(),
-                vector: {
-                    ...(store.baseline?.vector || {}),
-                    collection_id: collectionId,
-                    fingerprint: vectorFingerprint,
-                    provider_fingerprint: provider.fingerprint,
-                    stale: false,
-                    last_error: null,
-                    last_sync_at: Date.now(),
-                },
-            };
-            setStore(ctx, store);
-            if (!silent) notify('success', `Semantic Baseline 已重建：${records.length} 个分块。`, 'Baseline Index');
-        } catch (error) {
-            store = getStore(ctx);
-            store.baseline.vector = {
-                ...(store.baseline?.vector || {}),
-                collection_id: collectionId,
-                fingerprint: vectorFingerprint,
-                provider_fingerprint: provider.fingerprint,
-                stale: true,
-                last_error: String(error?.message || error),
-            };
-            setStore(ctx, store);
-            if (!silent) notify('warning', `Baseline向量重建失败，将退化到词法过滤：${store.baseline.vector.last_error}`, 'Baseline Index');
-        }
-    } else {
-        if (needsRebuild) {
-            store.baseline.vector.stale = true;
-            store.baseline.vector.last_error = 'Baseline来源或Embedding provider已变化，需要重建。';
-        }
-        setStore(ctx, store);
-    }
-
-    const current = getStore(ctx);
-    const vectorReady = Boolean(
-        settings.baseline_use_vector
-        && provider.supported
-        && collectionId
-        && current.baseline?.vector?.stale === false
-        && current.baseline?.vector?.fingerprint === vectorFingerprint
-        && current.baseline?.vector?.provider_fingerprint === provider.fingerprint
-    );
-    return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady, provider, collectionId };
-}
-
-async function getSemanticBaselineMatches(ctx, op, prepared) {
-    const settings = getSettings(ctx);
-    if (!prepared?.vectorReady || !isBaselineGateEligible(op)) return [];
-    const threshold = Math.max(0, Math.min(1, Number(settings.baseline_similarity_threshold) || 0.84));
-    try {
-        const result = await withVectorLock(() => vectorQuery(
-            ctx,
-            prepared.provider,
-            prepared.collectionId,
-            String(op.text || ''),
-            5,
-            threshold,
-        ));
-        return (Array.isArray(result?.metadata) ? result.metadata : []).map(row => {
-            const index = Number(row?.index);
-            return {
-                index,
-                record: Number.isInteger(index) ? prepared.vectorRecords?.[index] || prepared.records[index] : null,
-                // ST's /api/vector/query threshold-filtered metadata does not guarantee score exposure.
-                score: Number.isFinite(Number(row?.score)) ? Number(row.score) : threshold,
-            };
-        }).filter(x => x.record);
-    } catch (error) {
-        const store = getStore(ctx);
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = `Baseline query failed: ${String(error?.message || error)}`;
-        setStore(ctx, store);
-        return [];
-    }
-}
-
-async function filterOperationsAgainstBaseline(ctx, ops, preparedHost, pluginDeduper = null) {
-    const settings = getSettings(ctx);
-    if (!settings.semantic_baseline_gate) return { accepted: [...ops], rejected: [] };
-    const hostRecords = Array.isArray(preparedHost?.records) ? preparedHost.records : [];
-    const hasPluginRecords = Boolean(pluginDeduper?.records?.length);
-    if (!hostRecords.length && !hasPluginRecords) return { accepted: [...ops], rejected: [] };
-
-    const accepted = [];
-    const rejected = [];
-    for (const op of ops) {
-        if (!isBaselineGateEligible(op)) {
-            accepted.push(op);
-            continue;
-        }
-
-        let decision = { blocked: false, reason: 'no-baseline-duplicate' };
-        let source = null;
-        if (hostRecords.length) {
-            decision = evaluateBaselineDuplicate(op, hostRecords, {
-                lexicalThreshold: settings.baseline_lexical_threshold,
-                semanticThreshold: settings.baseline_similarity_threshold,
-                semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-            });
-            if (!decision.blocked && preparedHost?.vectorReady) {
-                const semanticMatches = await getSemanticBaselineMatches(ctx, op, preparedHost);
-                decision = evaluateBaselineDuplicate(op, hostRecords, {
-                    lexicalThreshold: settings.baseline_lexical_threshold,
-                    semanticMatches,
-                    semanticThreshold: settings.baseline_similarity_threshold,
-                    semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-                });
-            }
-            if (decision.blocked) source = 'host_baseline';
-        }
-
-        if (!decision.blocked && pluginDeduper?.records?.length) {
-            const pluginDecision = await pluginDeduper.findPossibleMatches(op);
-            if (pluginDecision?.blocked) {
-                decision = pluginDecision;
-                source = 'plugin_setting';
-            }
-        }
-
-        if (decision.blocked) {
-            rejected.push({
-                op,
-                reason: decision.reason,
-                baseline_source_kind: source,
-                baseline_id: decision.match?.id || null,
-                baseline_source: decision.match ? `${decision.match.source_type}:${decision.match.title}` : null,
-                baseline_preview: String(decision.match?.text || '').slice(0, 300),
-                lexical_score: decision.lexical_score ?? decision.best_lexical ?? null,
-                semantic_score: decision.semantic_score ?? null,
-            });
-        } else accepted.push(op);
-    }
-    return { accepted, rejected };
-}
-
-function isAssistantMessage(message) {
-    // Folded rows are excluded from the prompt but remain dialogue: dropping them here would make
-    // extraction and its dialogue-pair fingerprints change identity the moment a floor is folded.
-    return Boolean(message && message.is_user !== true && isDialogueRow(message) && String(message.mes ?? '').trim());
-}
-
-function findLatestAssistantIndex(chat) {
-    const rows = Array.isArray(chat) ? chat : [];
-    for (let i = rows.length - 1; i >= 0; i--) {
-        if (isAssistantMessage(rows[i])) return i;
-    }
-    return -1;
-}
-
-function buildRecentContextForExtraction(chat, assistantIndex, maxMessages = 4) {
-    const rows = Array.isArray(chat) ? chat : [];
-    const count = Math.max(0, Math.min(12, Number(maxMessages) || 0));
-    if (!count) return '';
-    const start = Math.max(0, Number(assistantIndex) - count - 1);
-    const lines = [];
-    for (let i = start; i < assistantIndex - 1; i++) {
-        const msg = rows[i];
-        if (!msg || !isDialogueRow(msg)) continue;
-        const text = stripSummaryForQuery(String(msg.mes ?? '')).trim();
-        if (!text) continue;
-        lines.push(`${msg.is_user ? '[USER]' : '[ASSISTANT]'} ${text}`);
-    }
-    return lines.join('\n\n').slice(-16000);
-}
-
-function formatCanonicalStateForExtraction(storeInput) {
-    const store = normalizeStore(storeInput);
-    const active = Object.values(store.memories)
-        .filter(m => m.status === 'active')
-        .sort((a, b) => Number(b.source_message ?? -1) - Number(a.source_message ?? -1))
-        .slice(0, 28)
-        .map(m => {
-            const slot = m.slot ? ` slot=${m.slot}` : '';
-            const known = Array.isArray(m.known_by) && m.known_by.length ? ` known_by=${m.known_by.join(',')}` : '';
-            return `- [${m.kind}${slot}${known}] ${m.text}`;
-        });
-    const recentClosed = Object.values(store.memories)
-        .filter(m => m.status === 'closed' && ['high', 'critical'].includes(m.importance || 'medium'))
-        .sort((a, b) => Number(b.source_message ?? -1) - Number(a.source_message ?? -1))
-        .slice(0, 8)
-        .map(m => `- [past:${m.kind}] ${m.text}`);
-    return [...active, ...recentClosed].join('\n').slice(0, 12000);
-}
-
-function pruneStaleExtractionRecords(storeInput, chat) {
-    const store = normalizeStore(storeInput);
-    const valid = new Set();
-    for (let i = 0; i < (Array.isArray(chat) ? chat.length : 0); i++) {
-        const pair = computeDialoguePairFingerprint(chat, i);
-        if (pair) valid.add(pair.key);
-    }
-    for (const key of Object.keys(store.extractions || {})) {
-        if (!valid.has(key)) delete store.extractions[key];
-    }
-    return store;
-}
-
 // A quiet generation is not a safe carrier for the extraction prompt in TauriTavern: the request
 // that reached the provider carried the character card as the user message and none of the extraction
 // instructions, so the model answered with roleplay prose or raw reasoning and the JSON parse always
 // failed. generateRaw delivered the exact prompt and returned clean JSON against the same host, which
 // is also why the summary path works (it goes through a different host service). generateQuietPrompt
 // stays as the fallback for hosts without generateRaw.
-const EXTRACTION_SYSTEM_PROMPT = '你是记忆抽取器。只输出严格 JSON，不要解释、标题或代码围栏。';
 
 // A reasoning model spends part of the budget on hidden reasoning before it emits any visible text, so
 // a completion that starts like JSON and stops mid-string is a starved generation rather than a
 // formatting mistake. That is worth one retry with a doubled budget instead of another prompt variant.
-function looksLikeStarvedJson(raw) {
-    const text = String(raw ?? '').trim();
-    if (!text.startsWith('{')) return false;
-    try { JSON.parse(text); return false; } catch { return true; }
-}
 
 // Sticky: set once the provider has refused response_format, so later extractions go straight to the
 // plain-text path instead of paying for a request that is already known to be rejected every turn.
@@ -922,381 +652,6 @@ let structuredOutputRefused = false;
  * with half of it. That is the shape of a retry that cannot succeed, and it is why a live 40-turn run
  * ended with 9 of 40 extractions.
  */
-export function extractionBudgetLadder(configuredBudget) {
-    const base = Math.max(128, Math.min(8192, Number(configuredBudget) || 2048));
-    return {
-        first: base,
-        retry: Math.min(8192, base * 2),
-        plain: Math.min(8192, base * 4),
-    };
-}
-
-export function __testExtractionBudgetLadder(configuredBudget) {
-    return extractionBudgetLadder(configuredBudget);
-}
-
-async function runQuietExtraction(ctx, prompt, useStructured = true, budgetOverride = null) {
-    if (typeof ctx.generateRaw !== 'function' && typeof ctx.generateQuietPrompt !== 'function') {
-        throw new Error('当前 SillyTavern Context 未提供 generateRaw / generateQuietPrompt，无法执行自动记忆抽取。');
-    }
-    const settings = getSettings(ctx);
-    // Never inherit the chat preset's max_tokens: see extraction_response_tokens in DEFAULT_SETTINGS.
-    const configured = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
-    const budget = Math.max(128, Math.min(8192, Number(budgetOverride) || configured));
-    const schema = useStructured ? EXTRACTION_JSON_SCHEMA : null;
-    // Mark the plugin's own call so the interceptor/wrappers can keep it cleared even when third-party
-    // quiet injection is opted in.
-    settings.__quiet_extraction_in_progress = true;
-    runQuietExtraction.lastBudget = budget;
-    try {
-        const result = typeof ctx.generateRaw === 'function'
-            ? await ctx.generateRaw({ prompt, systemPrompt: EXTRACTION_SYSTEM_PROMPT, responseLength: budget, jsonSchema: schema })
-            : await ctx.generateQuietPrompt({ quietPrompt: prompt, responseLength: budget, ...(schema ? { jsonSchema: schema } : {}) });
-        if (settings.metrics_enabled !== false) {
-            const raw = typeof result === 'string' ? result : (result?.content ?? '');
-            recordModelCall(ctx, {
-                kind: 'extraction',
-                promptChars: String(prompt ?? '').length,
-                completionChars: String(raw ?? '').length,
-                // Pass the text as well: the token estimate is script-aware, so a Chinese prompt is
-                // no longer charged at the Latin characters / 4 rate.
-                promptText: String(prompt ?? ''),
-                completionText: String(raw ?? ''),
-            });
-        }
-        return result;
-    } finally {
-        delete settings.__quiet_extraction_in_progress;
-    }
-}
-
-async function extractMemoryForAssistant(ctx, assistantIndex, { force = false } = {}) {
-    const settings = getSettings(ctx);
-    if (!settings.enabled || !settings.auto_extract) return { skipped: 'disabled' };
-    const rows = ctx.chat || [];
-    const pair = computeDialoguePairFingerprint(rows, assistantIndex);
-    if (!pair) return { skipped: 'not-assistant' };
-    const chatIdentity = getChatIdentity(ctx);
-    if (!chatIdentity) return { skipped: 'no-chat' };
-
-    let store = getStore(ctx);
-    const existing = store.extractions?.[pair.key];
-    if (!force && existing && Number(existing.source_hash) === Number(pair.hash)) {
-        return { skipped: 'already-extracted', record: existing };
-    }
-    const replacingExistingRecord = Boolean(force && existing && Number(existing.source_hash) === Number(pair.hash));
-    // v5/v5.1/v5.2 already embedded machine operations in assistant replies.
-    // During migration, replay those operations instead of paying for a duplicate quiet extraction.
-    if (!force && settings.parse_ops && /<memory_ops\b[^>]*>/i.test(String(rows[assistantIndex]?.mes ?? ''))) {
-        return { skipped: 'legacy-inline-ops' };
-    }
-
-    let preparedBaseline = await ensureSemanticBaseline(ctx, { silent: true });
-    let preparedSettingIndex = await ensurePluginSettingIndex(ctx, { silent: true });
-    const extractionSettingRetrieval = await retrieveExtractionSettings(ctx, pair, store, preparedSettingIndex);
-    const relevantSettingContext = formatRelevantSettingContext(extractionSettingRetrieval, {
-        maxChars: settings.setting_extraction_max_chars,
-        constantLimit: settings.setting_retrieval_constant_limit,
-        includeConstants: true,
-    });
-    const relevantHostBaseline = buildRelevantHostBaselineContext(
-        preparedBaseline,
-        extractionSettingRetrieval.query?.text || `${pair.userText}
-${pair.assistantText}`,
-        Math.min(4500, Math.max(1200, Math.floor(settings.setting_extraction_max_chars * 0.55))),
-    );
-    const promptLayers = {
-        recentContext: buildRecentContextForExtraction(rows, assistantIndex, extractionContextMessages(settings)),
-        canonicalState: formatCanonicalStateForExtraction(store),
-        relevantSettingContext,
-        hostBaselineContext: relevantHostBaseline,
-    };
-    const promptPlan = planExtractionPromptBudget({
-        limit: settings.extraction_prompt_max_chars,
-        pairChars: String(pair.userText || '').length + String(pair.assistantText || '').length,
-        layerChars: Object.fromEntries(Object.entries(promptLayers).map(([key, value]) => [key, String(value || '').length])),
-    });
-    const prompt = buildAutonomousExtractionPrompt({
-        userText: pair.userText,
-        assistantText: pair.assistantText,
-        ...promptLayers,
-        optionalCeilings: promptPlan.ceilings,
-    });
-
-    const started = performance.now?.() ?? Date.now();
-    let raw = '';
-    let parsed = null;
-    let mode = 'structured';
-    // Every provider round-trip is recorded, failures included. Without this a truncated attempt and
-    // a skipped retry look identical from the outside: both end in the same parse error, and the only
-    // way to tell them apart was to correlate host-side request logs by hand.
-    const attempts = [];
-    const noteAttempt = (phase, value, ok) => attempts.push({
-        phase,
-        budget: runQuietExtraction.lastBudget ?? null,
-        type: typeof value,
-        chars: typeof value === 'string' ? value.length : null,
-        parsed: Boolean(ok),
-        starved: looksLikeStarvedJson(value),
-    });
-    // A provider that refuses response_format rejects the WHOLE request ("This response_format type
-    // is unavailable now" on the proxy this ran against live), so each attempt is contained here and
-    // a turn falls through to the plain-text path instead of losing its extraction outright.
-    const configuredBudget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
-    const wantsStructured = Boolean(settings.extraction_structured_output) && !structuredOutputRefused;
-    const attemptExtraction = async (phase, useStructured, budget, text) => {
-        try {
-            const value = await runQuietExtraction(ctx, text, useStructured, budget);
-            const result = parseExtractionResult(value);
-            noteAttempt(phase, value, result.ok);
-            return { value, result };
-        } catch (error) {
-            const message = String(error?.message || error);
-            // A provider that cannot accept response_format refuses it on every single turn. Remember
-            // that, so the next extraction does not pay for two requests that are known to be rejected.
-            if (useStructured && /response_format|json_schema|json_object|unavailable now/i.test(message)) {
-                structuredOutputRefused = true;
-            }
-            noteAttempt(phase, message, false);
-            return { value: '', result: { ok: false, error: message } };
-        }
-    };
-    try {
-        let step = await attemptExtraction('structured', wantsStructured, null, prompt);
-        raw = step.value;
-        parsed = step.result;
-        // Retry on any parse failure with budget headroom, not only on "looks truncated" output: a
-        // reasoning model can also spend the whole budget before it emits its first brace, and that
-        // shape is indistinguishable from a formatting mistake. The doubled budget is the fix for
-        // both, so the gate is deliberately just "did not parse".
-        const ladder = extractionBudgetLadder(configuredBudget);
-        if (!parsed.ok && configuredBudget < 8192) {
-            mode = 'budget-retry';
-            step = await attemptExtraction('budget-retry', wantsStructured && !structuredOutputRefused, ladder.retry, prompt);
-            raw = step.value;
-            parsed = step.result;
-        }
-        if ((!parsed.ok || (typeof raw === 'string' && raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json !== false) {
-            mode = 'plain-json-retry';
-            // The plain-text rung keeps the escalated budget. Passing no override here made the last
-            // attempt smaller than the one that had already failed.
-            step = await attemptExtraction('plain-json-retry', false, ladder.plain, prompt + '\n\n严格只输出JSON，不要代码围栏。');
-            raw = step.value;
-            parsed = step.result;
-        }
-    } catch (error) {
-        store.last_extraction_debug = {
-            status: 'error', message_index: assistantIndex, source_key: pair.key,
-            error: String(error?.message || error), at: Date.now(),
-        };
-        setStore(ctx, store);
-        throw error;
-    }
-    if (!parsed?.ok) {
-        const rawText = String(raw || '');
-        const error = new Error(`记忆抽取JSON解析失败：${parsed?.error || 'unknown error'}`);
-        store.last_extraction_debug = {
-            status: 'parse-error', message_index: assistantIndex, source_key: pair.key,
-            raw_preview: rawText.slice(0, 1200), error: error.message, at: Date.now(),
-            raw_length: rawText.length,
-            response_tokens_budget: runQuietExtraction.lastBudget ?? null,
-            mode,
-            attempts,
-            // A completion that carries no JSON delimiter at all is almost always a starved or
-            // reasoning-dominated generation rather than a formatting mistake, so say which.
-            truncated_hint: !rawText.includes('{')
-                ? '响应中没有 JSON（疑似被 max_tokens 截断或全部消耗在推理内容上）；可提高 extraction_response_tokens。'
-                : (looksLikeStarvedJson(rawText) ? 'JSON 未闭合（疑似被 max_tokens 截断，推理内容吃掉了预算）；可提高 extraction_response_tokens。' : null),
-        };
-        setStore(ctx, store);
-        throw error;
-    }
-
-    // Do not commit a result produced for a chat/branch that changed while the quiet LLM call was running.
-    const current = getContext();
-    const currentPair = current && getChatIdentity(current) === chatIdentity
-        ? computeDialoguePairFingerprint(current.chat || [], assistantIndex)
-        : null;
-    if (!currentPair || currentPair.key !== pair.key || Number(currentPair.hash) !== Number(pair.hash)) {
-        return { skipped: 'source-changed-during-extraction' };
-    }
-
-    const validatedOps = [];
-    const validationErrors = [];
-    for (const op of parsed.operations) {
-        const validationErrorsForOp = validateMemoryOp(op);
-        // An operation with no text is a hole in the record: it cannot become a memory, cannot be
-        // replayed into one, and only inflates the canonical transaction log (measured at 18-443% of
-        // the raw dialogue). Measured live: 0-7 such operations per chat.
-        if (!validationErrorsForOp.length && String(op?.text || '').trim()) validatedOps.push(op);
-        else validationErrors.push(...validationErrorsForOp);
-    }
-
-    // Refresh both host baseline and plugin-owned active Setting scope after the quiet call.
-    // The write gate must use the current canonical sources, not the snapshot from before generation.
-    preparedBaseline = await ensureSemanticBaseline(current, { silent: true });
-    preparedSettingIndex = await ensurePluginSettingIndex(current, { silent: true });
-    const pluginBaselineDeduper = createPluginBaselineDeduper(current, preparedSettingIndex);
-    const baselineFiltered = await filterOperationsAgainstBaseline(current, validatedOps, preparedBaseline, pluginBaselineDeduper);
-    const validOps = baselineFiltered.accepted;
-    const baselineRejections = baselineFiltered.rejected;
-    if (!validOps.length) {
-        validOps.push({
-            op: 'noop',
-            reason: baselineRejections.length
-                ? '候选操作均与Host Baseline或插件自有世界设定重复，已由写入层拦截。'
-                : '抽取器未返回可提交的记忆操作。',
-        });
-    }
-
-    store = getStore(current);
-    store = pruneStaleExtractionRecords(store, current.chat || []);
-    const record = {
-        version: '5.4',
-        source_hash: pair.hash,
-        source_key: pair.key,
-        assistant_index_at_creation: assistantIndex,
-        user_index_at_creation: pair.userIndex,
-        event_summary: parsed.eventSummary,
-        active_state: parsed.activeState,
-        operations: validOps,
-        baseline_fingerprint: preparedBaseline.fingerprint,
-        setting_scope_key: preparedSettingIndex.scope?.scope_key || null,
-        setting_index_fingerprint: preparedSettingIndex.fingerprint || null,
-        relevant_setting_ids: extractionSettingRetrieval.results.map(row => row.entry_id),
-        baseline_rejections: baselineRejections,
-        prompt_plan: promptPlan,
-        generated_at: Date.now(),
-        generation_mode: mode,
-    };
-    store.extractions[pair.key] = record;
-    // Cold原文 snapshot: the live chat is the only other copy, and an edit or delete would
-    // destroy it. Snapshot the pair under the same fingerprint the memory points at.
-    // This is an EVIDENCE CACHE, not memory: memory-core.js never reads cold_turns, and the extractor
-    // stays correct with the switch off. It exists so 【查阅记忆】 can still show original wording
-    // after the host text changed — which is why it is a copy of the transcript and not a fact store.
-    if (settings.cold_turn_snapshot_enabled === false) {
-        pruneColdTurns(store, settings.cold_turn_max_chars);
-    } else {
-        recordColdTurn(store, {
-            source_key: pair.key,
-            fingerprint: pair.hash,
-            assistantIndex,
-            userIndex: pair.userIndex,
-            userText: pair.userText,
-            assistantText: pair.assistantText,
-        }, { maxChars: settings.cold_turn_max_chars });
-    }
-
-    let changedIds = [];
-    let applyErrors = [];
-    if (replacingExistingRecord) {
-        // A forced re-extraction replaces one transaction. Replay all autonomous records so
-        // memories emitted by the old transaction cannot survive as ghosts.
-        const previousVector = store.vector;
-        const previousBaseline = store.baseline;
-        const replayed = replayStoreFromExtractions(current.chat || [], store.extractions || {}, {
-            includeLegacyMessageOps: Boolean(settings.parse_ops),
-        });
-        store = replayed.store;
-        store.baseline = previousBaseline || createEmptyStore().baseline;
-        store.vector = {
-            ...previousVector,
-            stale: true,
-            last_error: '记忆抽取记录被替换，需要安全重建向量。',
-        };
-        changedIds = Object.keys(store.memories);
-        applyErrors = replayed.errors;
-    } else {
-        const applied = applyMemoryOps(store, validOps, {
-            sourceMessageIndex: assistantIndex,
-            sourceHash: pair.hash,
-            sourceMessageText: `${pair.userText}\n${pair.assistantText}`,
-        });
-        store = applied.store;
-        store.extractions[pair.key] = record;
-        if (parsed.activeState) store.last_active_state = parsed.activeState;
-        store.last_active_state_source = assistantIndex;
-        if (parsed.eventSummary) store.last_event_summary = parsed.eventSummary;
-        store.source_fingerprints = collectAutonomousExtractionSources(current.chat || [], store.extractions)
-            .map(x => ({ index: x.assistantIndex, hash: x.hash }));
-        changedIds = applied.changedIds;
-        applyErrors = applied.errors;
-    }
-    const elapsed = (performance.now?.() ?? Date.now()) - started;
-    store.last_extraction_debug = {
-        status: applyErrors.length ? 'partial' : 'ok', message_index: assistantIndex, source_key: pair.key,
-        elapsed_ms: Math.round(elapsed * 10) / 10,
-        op_count: validOps.filter(op => op.op !== 'noop').length,
-        baseline_input_count: validatedOps.length,
-        baseline_rejected_count: baselineRejections.length,
-        baseline_rejections: baselineRejections,
-        baseline_fingerprint: preparedBaseline.fingerprint,
-        setting_scope_key: preparedSettingIndex.scope?.scope_key || null,
-        relevant_setting_ids: extractionSettingRetrieval.results.map(row => row.entry_id),
-        setting_retrieval: extractionSettingRetrieval.debug,
-        changed_ids: changedIds,
-        validation_errors: validationErrors,
-        apply_errors: applyErrors,
-        mode,
-        attempts,
-        replaced_existing: replacingExistingRecord,
-        at: Date.now(),
-    };
-    store.baseline.last_gate_debug = {
-        source_key: pair.key,
-        input_count: validatedOps.length,
-        accepted_count: validOps.filter(op => op.op !== 'noop').length,
-        rejected_count: baselineRejections.length,
-        rejections: baselineRejections,
-        fingerprint: preparedBaseline.fingerprint,
-        at: Date.now(),
-    };
-    store.last_errors = [
-        ...(store.last_errors || []),
-        ...validationErrors.map(e => `extract message ${assistantIndex}: ${e}`),
-        ...applyErrors.map(e => `extract message ${assistantIndex}: ${e}`),
-    ].slice(-100);
-    setStore(current, store);
-    if (replacingExistingRecord && settings.vector_recall) await rebuildVectorIndex(current, { silent: true });
-    else await syncChangedVectors(current, [...new Set(changedIds)]);
-    if (settings.extraction_notifications) {
-        const committedOps = validOps.filter(op => op.op !== 'noop').length;
-        if (applyErrors.length || validationErrors.length) notify('warning', `记忆抽取部分失败：提交 ${committedOps} 个，错误 ${applyErrors.length + validationErrors.length} 条。`, '自动记忆');
-        else notify('success', `已提交记忆操作 ${committedOps} 个；Baseline拦截 ${baselineRejections.length} 个。`, '自动记忆');
-    }
-    log('autonomous extraction complete', store.last_extraction_debug);
-    return { record, changedIds, baselineRejections, errors: [...validationErrors, ...applyErrors] };
-}
-
-function countAssistantTurns(chat, upToIndex) {
-    const rows = Array.isArray(chat) ? chat : [];
-    let count = 0;
-    for (let i = 0; i <= upToIndex && i < rows.length; i++) {
-        if (rows[i] && !rows[i].is_user && isDialogueRow(rows[i])) count += 1;
-    }
-    return count;
-}
-
-function extractionContextMessages(settings) {
-    const base = Math.max(0, Math.min(12, Number(settings.extraction_context_messages) || 0));
-    const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
-    // A batch of N samples the extractor every N-th turn; widen the recent-context window so the
-    // skipped span is still visible to the model instead of being silently dropped.
-    return Math.min(12, base + (batch - 1) * 2);
-}
-
-function scheduleLatestAssistantExtraction({ force = false } = {}) {
-    const ctx = getContext();
-    if (!ctx) return;
-    const settings = getSettings(ctx);
-    if (!settings.auto_extract) return;
-    const index = findLatestAssistantIndex(ctx.chat || []);
-    if (index < 0) return;
-    const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
-    if (!force && batch > 1 && countAssistantTurns(ctx.chat || [], index) % batch !== 0) return;
-    void enqueueExtraction(() => extractMemoryForAssistant(getContext(), index, { force }));
-}
 
 function getVectorProvider(ctx) {
     const settings = getSettings(ctx);
@@ -1837,39 +1192,6 @@ function searchPluginSettingsLexical(ctx, query, options = {}) {
     return { snapshot, results };
 }
 
-function buildRelevantHostBaselineContext(preparedBaseline, queryText, maxChars = 4500) {
-    const records = Array.isArray(preparedBaseline?.records) ? preparedBaseline.records : [];
-    if (!records.length) return '';
-    const coreTypes = new Set(['persona', 'character_description', 'character_personality', 'character_scenario']);
-    const coreReserve = records.filter(record => coreTypes.has(record.source_type)).slice(0, 6);
-    const ranked = String(queryText || '').trim()
-        ? records
-            .map(record => ({ record, score: baselineLexicalSimilarity(queryText, record.text || '') }))
-            .filter(row => row.score > 0)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 10)
-            .map(row => row.record)
-        : [];
-    const selected = [];
-    const seen = new Set();
-    for (const record of [...coreReserve, ...ranked]) {
-        const key = record.id || `${record.source_type}:${record.source_id}:${record.title}:${record.text}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        selected.push(record);
-    }
-    const cap = Math.max(1000, Math.min(12000, Number(maxChars) || 4500));
-    const lines = ['[RELEVANT HOST BASELINE — PERSONA / CHARACTER / HOST WORLD INFO]'];
-    let used = lines[0].length;
-    for (const record of selected) {
-        const line = `- [${record.source_type}:${record.title}] ${record.text}`;
-        if (used + line.length + 1 > cap) break;
-        lines.push(line);
-        used += line.length + 1;
-    }
-    return lines.length > 1 ? lines.join('\n') : '';
-}
-
 async function retrievePluginSettings(ctx, queryInput, options = {}) {
     const settings = getSettings(ctx);
     const query = typeof queryInput === 'string' ? { mode: options.mode || 'generic', text: queryInput, components: {} } : (queryInput || {});
@@ -1981,83 +1303,6 @@ async function retrieveGenerationSettings(ctx, interceptorChat, storeInput = nul
     return visible;
 }
 
-async function retrieveExtractionSettings(ctx, pair, storeInput, prepared = null) {
-    const settings = getSettings(ctx);
-    const store = normalizeStore(storeInput || getStore(ctx));
-    const pairSeed = `${pair?.userText || ''}
-${pair?.assistantText || ''}`;
-    const activeMemories = settings.setting_query_seed_from_memories === false
-        ? []
-        : getActiveMemories(store, pairSeed, Math.max(settings.max_active_items, 18));
-    const query = buildExtractionSettingQuery({
-        userText: pair?.userText || '',
-        assistantText: pair?.assistantText || '',
-        activeMemories,
-        currentState: store.last_active_state,
-    });
-    lastSettingSeedDebug = { scope: 'extraction', from_memories: settings.setting_query_seed_from_memories !== false, memory_seed_count: activeMemories.length, at: Date.now() };
-    const retrieval = await retrievePluginSettings(ctx, query, {
-        mode: 'extraction',
-        prepared,
-        topEntries: settings.setting_retrieval_final_count,
-        maxChars: settings.setting_extraction_max_chars,
-    });
-    // Keep role-private entries out of the extraction prompt as well; the extractor must not turn
-    // a world secret into "the active character already knows it". Dedup still sees the full index.
-    return filterSettingRowsForActor(retrieval, deriveActorIdentity(ctx, store));
-}
-
-function createPluginBaselineDeduper(ctx, preparedSettingIndex) {
-    const settings = getSettings(ctx);
-    const prepared = preparedSettingIndex || buildSettingIndexSnapshot(getSettingStore(ctx), { maxChars: settings.setting_index_chunk_chars });
-    const records = settingChunksToBaselineRecords(prepared);
-    return {
-        snapshot: prepared,
-        records,
-        async findPossibleMatches(candidateOperation) {
-            if (settings.setting_baseline_veto_enabled === false) {
-                return { blocked: false, reason: 'setting-veto-disabled', source: 'plugin_setting', records, semanticMatches: [] };
-            }
-            if (!settings.semantic_baseline_gate || !isBaselineGateEligible(candidateOperation) || !records.length) {
-                return { blocked: false, reason: 'ineligible-or-empty', source: 'plugin_setting', records, semanticMatches: [] };
-            }
-            let decision = evaluateBaselineDuplicate(candidateOperation, records, {
-                lexicalThreshold: settings.baseline_lexical_threshold,
-                semanticThreshold: settings.baseline_similarity_threshold,
-                semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-            });
-            let semanticMatches = [];
-            if (!decision.blocked && prepared.vectorReady && prepared.collection_id && prepared.provider?.supported) {
-                try {
-                    const response = await withVectorLock(() => vectorQuery(
-                        ctx,
-                        prepared.provider,
-                        prepared.collection_id,
-                        String(candidateOperation.text || ''),
-                        6,
-                        Math.max(0, Math.min(1, Number(settings.baseline_similarity_threshold) || 0.84)),
-                    ));
-                    const denseRows = mapDenseSettingMetadata(prepared, response?.metadata || []);
-                    const recordByChunkId = new Map(records.map((record, index) => [prepared.chunks[index]?.chunk_id, record]));
-                    semanticMatches = denseRows.map(row => ({
-                        record: recordByChunkId.get(row.chunk.chunk_id),
-                        score: Number.isFinite(Number(row.score)) ? Number(row.score) : settings.baseline_similarity_threshold,
-                    })).filter(row => row.record);
-                    decision = evaluateBaselineDuplicate(candidateOperation, records, {
-                        lexicalThreshold: settings.baseline_lexical_threshold,
-                        semanticMatches,
-                        semanticThreshold: settings.baseline_similarity_threshold,
-                        semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-                    });
-                } catch (error) {
-                    log('plugin setting baseline semantic query failed', error);
-                }
-            }
-            return { ...decision, source: 'plugin_setting', records, semanticMatches };
-        },
-    };
-}
-
 async function rebuildVectorIndex(ctx, { silent = false } = {}) {
     const settings = getSettings(ctx);
     const store = getStore(ctx);
@@ -2116,101 +1361,6 @@ async function rebuildVectorIndex(ctx, { silent = false } = {}) {
     }
 }
 
-async function syncChangedVectors(ctx, changedIds = []) {
-    const settings = getSettings(ctx);
-    if (!settings.vector_recall) return;
-    const store = getStore(ctx);
-    const idsToSync = new Set(changedIds);
-    for (const memory of Object.values(store.memories)) {
-        if (shouldIndexMemory(memory)
-            && memory.vector_hash == null
-            && isMemorySettled(memory, ctx.chat?.length || 0, settings.vector_settle_messages)) {
-            idsToSync.add(memory.id);
-        }
-    }
-    if (!idsToSync.size) return;
-    const provider = getVectorProvider(ctx);
-    const collectionId = getCollectionId(ctx);
-    store.vector.collection_id = collectionId;
-
-    if (!collectionId) {
-        store.vector.stale = true;
-        store.vector.last_error = '当前没有选中的聊天，无法同步向量。';
-        setStore(ctx, store);
-        return;
-    }
-
-    if (!provider.supported) {
-        store.vector.stale = true;
-        store.vector.last_error = provider.reason;
-        setStore(ctx, store);
-        return;
-    }
-
-    const hasExistingIndexable = Object.values(store.memories).some(m => m.vector_hash != null);
-    if (store.vector.fingerprint && store.vector.fingerprint !== provider.fingerprint) {
-        store.vector.stale = true;
-        store.vector.last_error = 'Embedding source/model 已变化，需要重建向量索引。';
-        setStore(ctx, store);
-        return;
-    }
-    if (!store.vector.fingerprint && hasExistingIndexable) {
-        store.vector.stale = true;
-        store.vector.last_error = '检测到已有记忆但没有 provider 指纹，请执行一次“重建向量索引”。';
-        setStore(ctx, store);
-        return;
-    }
-    if (!store.vector.fingerprint) store.vector.fingerprint = provider.fingerprint;
-
-    try {
-        const deleteHashes = [];
-        const insertItems = [];
-        let insertIndex = 0;
-        const pendingHashes = new Map();
-        for (const id of idsToSync) {
-            const memory = store.memories[id];
-            if (!memory) continue;
-            const oldHash = memory.vector_hash == null ? null : Number(memory.vector_hash);
-            if (!shouldIndexMemory(memory) || !isMemorySettled(memory, ctx.chat?.length || 0, settings.vector_settle_messages)) {
-                if (Number.isFinite(oldHash)) deleteHashes.push(oldHash);
-                pendingHashes.set(id, null);
-                continue;
-            }
-            const newHash = computeVectorHash(memory);
-            if (Number.isFinite(oldHash) && oldHash !== newHash) deleteHashes.push(oldHash);
-            if (!Number.isFinite(oldHash) || oldHash !== newHash) {
-                insertItems.push({ hash: newHash, text: buildRetrievalText(memory), index: insertIndex++ });
-            }
-            pendingHashes.set(id, newHash);
-        }
-        // Vectors must land before the local hash pointers move: on transport failure we keep the
-        // previous hashes so the same memories are retried instead of being treated as indexed.
-        await withVectorLock(async () => {
-            await vectorInsert(ctx, provider, collectionId, insertItems);
-            await vectorDelete(ctx, provider, collectionId, deleteHashes);
-        });
-        for (const [id, hash] of pendingHashes) {
-            const memory = store.memories[id];
-            if (memory) memory.vector_hash = hash;
-        }
-        store.vector.stale = false;
-        store.vector.last_error = null;
-        store.vector.last_sync_at = Date.now();
-        setStore(ctx, store);
-    } catch (error) {
-        store.vector.stale = true;
-        store.vector.last_error = String(error?.message || error);
-        setStore(ctx, store);
-        log('incremental vector sync failed', error);
-    }
-}
-
-function updateActiveSnapshot(store, chat) {
-    const active = findLatestActiveState(chat);
-    store.last_active_state = active.text;
-    store.last_active_state_source = active.source;
-}
-
 async function rebuildCanonicalFromChat(ctx, { rebuildVectors = false, silent = true } = {}) {
     const settings = getSettings(ctx);
     const previous = getStore(ctx);
@@ -2243,31 +1393,6 @@ async function rebuildCanonicalFromChat(ctx, { rebuildVectors = false, silent = 
     return replayed;
 }
 
-async function reconcileCurrentChat(ctx, { forceRebuild = false } = {}) {
-    if (!ctx) return;
-    const settings = getSettings(ctx);
-    let store = pruneStaleExtractionRecords(getStore(ctx), ctx.chat || []);
-    const currentSources = collectAutonomousExtractionSources(ctx.chat || [], store.extractions || {})
-        .map(x => ({ index: x.assistantIndex, hash: x.hash }));
-    const previousSources = Array.isArray(store.source_fingerprints) ? store.source_fingerprints : [];
-    const needsReplay = forceRebuild || !sourcesArePrefix(previousSources, currentSources) || previousSources.length !== currentSources.length;
-    if (needsReplay) {
-        await rebuildCanonicalFromChat(ctx, {
-            rebuildVectors: settings.vector_recall && settings.auto_rebuild_vectors_on_history_change,
-            silent: true,
-        });
-        return;
-    }
-    store.source_fingerprints = currentSources;
-    setStore(ctx, store);
-}
-
-function getProviderStatus(ctx, store) {
-    const provider = getVectorProvider(ctx);
-    const fingerprintChanged = Boolean(store.vector.fingerprint && store.vector.fingerprint !== provider.fingerprint);
-    return { provider, fingerprintChanged };
-}
-
 /**
  * Recall prefetch.
  *
@@ -2283,70 +1408,10 @@ function getProviderStatus(ctx, store) {
 let recallPrefetch = null;
 let pendingRecallCommit = null;
 
-export function recallSignature(ctx, chat) {
-    const rows = Array.isArray(chat) ? chat : [];
-    const last = rows[rows.length - 1] || {};
-    return [getChatIdentity(ctx) || '', rows.length, String(last.mes ?? '').length, String(last.swipe_id ?? last.swipeId ?? '')].join('|');
-}
-
-export function startRecallPrefetch(ctx = getContext()) {
-    const settings = getSettings(ctx);
-    if (!settings.vector_recall) return false;
-    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
-    if (!chat.length) return false;
-    const signature = recallSignature(ctx, chat);
-    if (recallPrefetch && recallPrefetch.signature === signature) return true;
-    const startedAt = Date.now();
-    const promise = recallMemories(ctx, chat, { commit: false, startedAt })
-        .then(rows => ({ rows, ms: Date.now() - startedAt }))
-        .catch(error => {
-            // A failed prefetch is not fatal: the interceptor falls back to a live recall. It must
-            // still be visible, or a permanently broken prefetch path would look like a cache miss.
-            lastRecallPrefetchError = String(error?.message || error).slice(0, 200);
-            log('recall prefetch failed', error);
-            return { rows: [], ms: Date.now() - startedAt };
-        });
-    recallPrefetch = { signature, promise, startedAt, chatId: getChatIdentity(ctx) };
-    lastRecallPrefetchError = null;
-    return true;
-}
-
-export function recallPrefetchStatus() {
-    return {
-        armed: Boolean(recallPrefetch),
-        signature: recallPrefetch?.signature || null,
-        // How many candidates are parked and not yet committed. The store is untouched until the
-        // interceptor commits them.
-        parked: pendingRecallCommit ? pendingRecallCommit.ids.length : 0,
-        last_lead_ms: lastRecallPrefetchLeadMs,
-        last_error: lastRecallPrefetchError,
-    };
-}
-
 let lastRecallPrefetchLeadMs = null;
 let lastRecallPrefetchError = null;
 
 /** Consume a parked prefetch for this exact chat state, committing it as the real recall. */
-export function commitPrefetchedRecall(ctx, signature) {
-    if (!pendingRecallCommit || pendingRecallCommit.signature !== signature) return null;
-    const parked = pendingRecallCommit;
-    pendingRecallCommit = null;
-    const store = getStore(ctx);
-    const rows = parked.ids.map(id => ({ memory: store.memories?.[id] })).filter(row => row.memory);
-    if (!rows.length) return null;
-    for (const row of rows) {
-        row.memory.recalled_count = Number(row.memory.recalled_count || 0) + 1;
-        row.memory.last_recalled_message = parked.currentMessage;
-    }
-    lastRecallPrefetchLeadMs = Date.now() - parked.startedAt;
-    store.last_recall_debug = {
-        ...(parked.debug || {}),
-        prefetched: true,
-        prefetch_lead_ms: lastRecallPrefetchLeadMs,
-    };
-    if (rows.length || getSettings(ctx).debug) setStore(ctx, store);
-    return rows;
-}
 
 /** Cheap preparation that has nothing to do with a specific query. */
 export async function warmupRecallRuntime(ctx = getContext()) {
@@ -2364,332 +1429,19 @@ export async function warmupRecallRuntime(ctx = getContext()) {
     return out;
 }
 
-async function recallMemories(ctx, interceptorChat, { commit = true, startedAt = 0 } = {}) {
-    const settings = getSettings(ctx);
-    if (!settings.vector_recall) return [];
-    const variants = buildQueryVariants(interceptorChat, settings.query_messages);
-    if (!variants.length) return [];
-    const store = getStore(ctx);
-    const { provider, fingerprintChanged } = getProviderStatus(ctx, store);
-    const collectionId = getCollectionId(ctx);
-    let denseAvailable = Boolean(
-        provider.supported
-        && !fingerprintChanged
-        && !store.vector.stale
-        && store.vector.fingerprint
-        && collectionId
-    );
-    if (fingerprintChanged) {
-        store.vector.stale = true;
-        store.vector.last_error = 'Embedding source/model 已变化；Dense通道暂停，Lexical通道仍可工作。请重建向量索引。';
-        setStore(ctx, store);
-    }
-    const started = performance.now?.() ?? Date.now();
-    try {
-        // LittleWhiteBox-inspired: multiple dense query views + a local lexical route.
-        // If Dense is unavailable, local lexical retrieval stays usable instead of failing closed.
-        const denseLists = [];
-        const denseDebug = [];
-        if (denseAvailable) {
-            try {
-                await withVectorLock(async () => {
-                    for (const variant of variants) {
-                        const result = await vectorQuery(
-                            ctx,
-                            provider,
-                            collectionId,
-                            variant.text,
-                            Math.max(1, Number(settings.candidate_top_k) || 18),
-                            Math.min(1, Math.max(0, Number(settings.score_threshold) || 0)),
-                        );
-                        const dense = filterRecalledMemories(store, result.metadata, {
-                            finalCount: Math.max(1, Number(settings.candidate_top_k) || 18),
-                            protectRecent: settings.protect_recent_messages,
-                            chatLength: ctx.chat?.length || 0,
-                        });
-                        denseLists.push(dense);
-                        denseDebug.push({ name: variant.name, count: dense.length, ids: dense.map(m => m.id) });
-                    }
-                });
-            } catch (error) {
-                // A failed dense query must not fail the whole recall; lexical retrieval and the
-                // Dense Gate semantics both depend on knowing dense is genuinely unavailable.
-                denseAvailable = false;
-                denseDebug.push({ error: String(error?.message || error) });
-                store.vector.last_error = String(error?.message || error);
-            }
-        }
-
-        const lexicalQuery = variants.find(v => v.name === 'context')?.text || variants[0].text;
-        const lexical = settings.hybrid_recall
-            ? lexicalSearchMemories(store, lexicalQuery, {
-                limit: settings.lexical_candidate_top_k,
-                protectRecent: settings.protect_recent_messages,
-                chatLength: ctx.chat?.length || 0,
-            })
-            : [];
-        // Third recall channel: effective-time window / scope precision, independent of similarity.
-        const structured = settings.temporal_channel_enabled === false ? [] : selectTemporalCandidates(store, {
-            asOfIndex: ctx.chat?.length || 0,
-            limit: settings.temporal_channel_limit,
-            protectRecent: settings.protect_recent_messages,
-            chatLength: ctx.chat?.length || 0,
-        });
-
-        // If no Dense backend is available, lexical becomes an intentional fallback and is not gated.
-        // If Dense is available, lexical-only candidates need semantic agreement, except exact entity matches.
-        let fused = fuseHybridCandidates(store, denseLists, lexical, {
-            rrfK: settings.rrf_k,
-            denseWeights: variants.map(v => v.weight),
-            lexicalWeight: settings.lexical_weight,
-            denseGate: denseAvailable,
-            structuredLists: structured.length ? [structured] : [],
-            currentMessage: ctx.chat?.length || 0,
-            cooldownTurns: settings.recall_cooldown_turns,
-        });
-        const fusedBeforeGraph = fused.map(r => ({ id: r.memory.id, score: r.score, channels: r.channels, entityBypass: r.entityBypass }));
-        if (settings.graph_diffusion) {
-            fused = graphDiffuseCandidates(store, fused, { damping: settings.graph_damping, iterations: 5 });
-        }
-        // Fusion scores channels; it never reads the query against the candidate. This stage does, and
-        // it runs before diversity selection so a query-matching candidate is not dropped first.
-        let rerankDebug = null;
-        if (settings.rerank_enabled !== false && fused.length > 1) {
-            const outcome = rerankCandidates(fused, lexicalQuery, {
-                weight: Number(settings.rerank_weight) || 0.55,
-                currentMessage: ctx.chat?.length || 0,
-                halfLifeTurns: Number(settings.rerank_half_life_turns) || 120,
-                maxPool: Math.max(30, (Number(settings.final_recall_count) || 6) * 5),
-            });
-            fused = outcome.rows;
-            rerankDebug = outcome.debug;
-        }
-        const selected = diversifyCandidates(fused, {
-            finalCount: settings.final_recall_count,
-            lambda: settings.mmr_lambda,
-        });
-        const currentMessage = ctx.chat?.length || 0;
-        const elapsed = (performance.now?.() ?? Date.now()) - started;
-        const recallDebug = {
-            at_message: currentMessage,
-            elapsed_ms: Math.round(elapsed * 10) / 10,
-            dense_available: denseAvailable,
-            dense_reason: denseAvailable ? null : (fingerprintChanged ? 'provider fingerprint changed' : (!provider.supported ? provider.reason : (store.vector.stale ? 'vector index stale' : 'no usable collection/index'))),
-            query_variants: variants.map(v => ({ name: v.name, weight: v.weight, chars: v.text.length })),
-            dense: denseDebug,
-            lexical: lexical.slice(0, 20).map(x => ({ id: x.memory.id, score: Math.round(x.score * 1000) / 1000, entityMatches: x.entityMatches })),
-            fused: fusedBeforeGraph.slice(0, 24),
-            structured: structured.map(x => ({ id: x.memory.id, score: Math.round(x.score * 1000) / 1000, reason: x.reason })),
-            graph_top: fused.slice(0, 20).map(x => ({ id: x.memory.id, score: x.score, graphScore: x.graphScore ?? null })),
-            rerank: rerankDebug,
-            selected: selected.map(x => ({ id: x.memory.id, score: x.score, mmrScore: x.mmrScore ?? null })),
-        };
-        if (!commit) {
-            // Park the ranking without touching counters, cooldowns or the store.
-            pendingRecallCommit = {
-                chatId: getChatIdentity(ctx),
-                signature: recallSignature(ctx, ctx.chat),
-                ids: selected.map(x => x.memory.id),
-                currentMessage,
-                debug: recallDebug,
-                startedAt: startedAt || Date.now(),
-            };
-            return selected;
-        }
-        for (const row of selected) {
-            const memory = row.memory;
-            memory.recalled_count = Number(memory.recalled_count || 0) + 1;
-            memory.last_recalled_message = currentMessage;
-        }
-        store.last_recall_debug = recallDebug;
-        if (selected.length || settings.debug || !denseAvailable) setStore(ctx, store);
-        return selected;
-    } catch (error) {
-        store.vector.last_error = String(error?.message || error);
-        store.last_recall_debug = { error: store.vector.last_error, at_message: ctx.chat?.length || 0 };
-        setStore(ctx, store);
-        log('hybrid recall failed', error);
-        return [];
-    }
-}
-
-async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
-    const ctx = getContext();
-    if (!ctx) return { referenceBlock: '', currentStateBlock: '', diagnostics: {} };
-    const settings = getSettings(ctx);
-    if (!settings.enabled) return { referenceBlock: '', currentStateBlock: '', diagnostics: {} };
-
-    await waitForExtractionFreshness(ctx);
-    await operationQueue;
-    const store = getStore(ctx);
-    const queryText = buildQueryText(interceptorChat, settings.query_messages);
-    const currentStateScope = resolveCurrentStateScope(settings);
-    const baseActive = settings.inject_current_state && currentStateScope === 'mandatory+broad'
-        ? getActiveMemories(store, queryText, settings.max_active_items)
-        : [];
-    // S4: the mandatory baseline is unioned in before assembly and marked, so the budget trim inside
-    // the assembler can never remove an irreversible change.
-    const mandatory = settings.inject_current_state && settings.mandatory_baseline_enabled !== false
-        ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
-        : [];
-    const mandatoryIds = new Set(mandatory.map(memory => memory.id));
-    const activeMemories = [...mandatory, ...baseActive.filter(memory => !mandatoryIds.has(memory.id))];
-    const activeState = settings.inject_current_state ? store.last_active_state : '';
-    const settingResults = await retrieveGenerationSettings(ctx, interceptorChat, store);
-    // Prefer the ranking the host's message events already computed. It is committed here, so the
-    // recall counters and the cooldown only ever move for a generation that really happened.
-    const signature = recallSignature(ctx, interceptorChat);
-    const recalledMemories = commitPrefetchedRecall(ctx, signature) ?? await recallMemories(ctx, interceptorChat);
-    const bundle = assembleGenerationContext({
-        scope: settingResults?.snapshot?.scope || null,
-        latestMessages: interceptorChat,
-        currentState: activeState,
-        activeMemories,
-        mandatoryIds,
-        settingResults,
-        historyResults: recalledMemories,
-        hostContextBudget: contextSize,
-        replyReserve: settings.context_reply_reserve_tokens,
-        maxReferenceChars: settings.reference_context_max_chars,
-        maxCurrentStateChars: settings.current_state_context_max_chars,
-        includeEvidence: settings.include_evidence,
-        constantLimit: settings.setting_retrieval_constant_limit,
-    });
-    // S1/S2: the change chain rides with the current-state block. It is appended after assembly so a
-    // tail trim removes it before it can remove the mandatory rows that were rendered first.
-    if (settings.spine_injection_enabled !== false && bundle.currentStateBlock !== undefined) {
-        const spineBlock = spinePromptBlock(store, {
-            maxChars: settings.spine_injection_max_chars ?? 600,
-            maxRows: settings.spine_injection_max_rows ?? 8,
-        });
-        if (spineBlock) {
-            bundle.currentStateBlock = bundle.currentStateBlock
-                ? bundle.currentStateBlock + '\n\n' + spineBlock
-                : spineBlock;
-            bundle.diagnostics.spineChars = spineBlock.length;
-        }
-    }
-    lastGenerationContextDiagnostics = {
-        ...bundle.diagnostics,
-        spine: spineStats(store),
-        mandatory_ids: [...mandatoryIds],
-        current_state_scope: currentStateScope,
-        broad_active_count: baseActive.length,
-        at: Date.now(),
-        reference_prompt_key: REFERENCE_PROMPT_KEY,
-        current_state_prompt_key: CURRENT_STATE_PROMPT_KEY,
-        reference_depth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
-        current_state_depth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
-    };
-    // The outer layers used to capture this write by swapping ctx.setExtensionPrompt on the context
-    // they were handed. That cannot work on a real host: getContext() returns a fresh object each
-    // call, so the swap mutated a throwaway and this module wrote through the real host function.
-    // v55-consistency then overwrote the block using position/depth from an empty capture, and
-    // Number(undefined) is NaN, which SillyTavern silently drops because it matches no position type.
-    // Publishing the bundle is how the outer layers now get the text they are responsible for.
-    const publishTarget = ctx.chatMetadata?.[METADATA_KEY];
-    if (publishTarget && typeof publishTarget === 'object') {
-        publishTarget.v55_inner_bundle = {
-            reference_block: String(bundle.referenceBlock || ''),
-            current_state_block: String(bundle.currentStateBlock || ''),
-            reference_position: IN_CHAT,
-            reference_depth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
-            current_state_position: IN_CHAT,
-            current_state_depth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
-            at: Date.now(),
-        };
-    }
-    return bundle;
-}
-
 function clearInjectedPrompts(ctx, settings, { includeLegacy = true } = {}) {
     const referenceDepth = normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth);
     const currentDepth = normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth);
-    if (includeLegacy) ctx.setExtensionPrompt(LEGACY_PROMPT_KEY, '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
+    // LEGACY_PROMPT_KEY is deliberately NOT cleared here. The host refuses a projection with more than two
+    // ranges and an empty extension prompt still counts as one, so clearing a key that no longer exists
+    // costs the range the real blocks need. The v5.4 single-block key has not been written by any code
+    // path for several versions, and nothing persists it across sessions.
     ctx.setExtensionPrompt(REFERENCE_PROMPT_KEY, '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
     ctx.setExtensionPrompt(CURRENT_STATE_PROMPT_KEY, '', IN_CHAT, currentDepth, false, SYSTEM_ROLE);
 }
 
-function applyInjectedContextBundle(ctx, settings, bundle) {
-    const referenceDepth = normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth);
-    const currentDepth = normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth);
-    ctx.setExtensionPrompt(REFERENCE_PROMPT_KEY, bundle?.referenceBlock || '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
-    ctx.setExtensionPrompt(CURRENT_STATE_PROMPT_KEY, bundle?.currentStateBlock || '', IN_CHAT, currentDepth, false, SYSTEM_ROLE);
-}
-
-
-function trimPromptHistory(_chat, _keepRecentMessages) {
-    // Deliberately disabled in v5.4. SillyTavern documents interceptor chat rows as mutable
-    // application data; splicing them can mutate real history. Context compaction must use a
-    // non-destructive host API before this feature can be enabled safely.
-    return 0;
-}
-
-async function backfillMissingExtractions(ctx, { maxMessages = 200 } = {}) {
-    if (!ctx) return { processed: 0, skipped: 0 };
-    const settings = getSettings(ctx);
-    const rows = ctx.chat || [];
-    let processed = 0;
-    let skipped = 0;
-    const cap = Math.max(1, Math.min(2000, Number(maxMessages) || 200));
-    for (let i = 0; i < rows.length && processed < cap; i++) {
-        const pair = computeDialoguePairFingerprint(rows, i);
-        if (!pair) continue;
-        const store = getStore(ctx);
-        const record = store.extractions?.[pair.key];
-        if (record && Number(record.source_hash) === Number(pair.hash)) {
-            skipped += 1;
-            continue;
-        }
-        // Legacy v5.x messages already contain usable machine ops; avoid spending a second LLM call.
-        if (settings.parse_ops && /<memory_ops\b[^>]*>/i.test(String(rows[i]?.mes ?? ''))) {
-            skipped += 1;
-            continue;
-        }
-        await extractMemoryForAssistant(ctx, i, { force: false });
-        processed += 1;
-    }
-    await rebuildCanonicalFromChat(ctx, { rebuildVectors: Boolean(settings.vector_recall), silent: true });
-    return { processed, skipped };
-}
-
-async function generationInterceptor(chat, _contextSize, _abort, type) {
-    const ctx = getContext();
-    if (!ctx) return;
-    const settings = getSettings(ctx);
-    if (!settings.enabled) {
-        clearInjectedPrompts(ctx, settings);
-        lastGenerationContextDiagnostics = null;
-        return;
-    }
-    if (type === 'impersonate' || type === 'quiet') {
-        const pluginOwnedQuiet = settings.__quiet_extraction_in_progress === true;
-        const thirdPartyQuietInjection = type === 'quiet' && settings.quiet_allow_third_party_injection === true && !pluginOwnedQuiet;
-        if (!thirdPartyQuietInjection) {
-            clearInjectedPrompts(ctx, settings);
-            return;
-        }
-    }
-    // Derived chat state (cold snapshots, scene locators, diagnostics) now lives outside the chat
-    // file, and prompt assembly is the one place that must see it. Bounded so a slow backend can
-    // never stall a generation.
-    await awaitDerivedReady(ctx, settings.derived_hydration_budget_ms ?? 1500);
-    const bundle = await buildInjectedContextBundle(chat, _contextSize);
-    // The interceptor never splices or appends fake chat messages. Both blocks are host
-    // extension prompts with distinct keys and depths.
-    applyInjectedContextBundle(ctx, settings, bundle);
-    const removed = settings.manage_context_window ? trimPromptHistory(chat, settings.keep_recent_messages) : 0;
-    log('interceptor injected context bundle', {
-        type,
-        referenceChars: bundle.referenceBlock.length,
-        currentStateChars: bundle.currentStateBlock.length,
-        referenceDepth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
-        currentStateDepth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
-        trimmedMessages: removed,
-    });
-}
-
-globalThis[INTERCEPTOR_NAME] = generationInterceptor;
+// The single generation entry is installed by narrative-runtime.js. This module provides host
+// adapters instead, and no longer assigns globalThis[aetheriaUnifiedMemoryV54Interceptor].
 
 function scheduleStatusUpdate() {
     clearTimeout(statusTimer);
@@ -3047,23 +1799,18 @@ async function setupUi() {
     bindCheckbox('aum-v54-graph', 'graph_diffusion');
     bindCheckbox('aum-v54-evidence', 'include_evidence');
     bindCheckbox('aum-v54-auto-rebuild', 'auto_rebuild_vectors_on_history_change');
-    bindCheckbox('aum-v54-manage-window', 'manage_context_window');
     bindCheckbox('aum-v54-debug', 'debug');
     // Iteration 13 controls: cold snapshot, temporal channel, metering, batching, evidence budget.
     bindCheckbox('aum-v54-cold-snapshot', 'cold_turn_snapshot_enabled');
     bindCheckbox('aum-v54-evidence-enabled', 'memory_evidence_enabled');
+    bindCheckbox('aum-v54-evidence-auto', 'memory_evidence_auto');
+    bindNumber('aum-v54-evidence-auto-entries', 'memory_evidence_auto_entries', { min: 1, max: 8, integer: true });
     bindCheckbox('aum-v54-temporal-channel', 'temporal_channel_enabled');
     bindCheckbox('aum-v54-metrics', 'metrics_enabled');
     bindNumber('aum-v54-extract-batch', 'extraction_batch_turns', { min: 1, max: 10, integer: true });
     bindNumber('aum-v54-evidence-chars', 'memory_evidence_max_chars', { min: 400, max: 8000, integer: true });
     const selfCheckOutput = document.getElementById('aum-v54-selfcheck');
     const writeSelfCheck = text => { if (selfCheckOutput) selfCheckOutput.textContent = String(text ?? ''); };
-    document.getElementById('aum-v54-run-selfcheck')?.addEventListener('click', () => {
-        const report = runRetrievalSelfCheck();
-        getSettings(ctx).selfcheck_last = { passed: report.passed, total: report.total, ok: report.ok, at: Date.now() };
-        ctx.saveSettingsDebounced?.();
-        writeSelfCheck(formatSelfCheck(report));
-    });
     document.getElementById('aum-v54-show-metrics')?.addEventListener('click', () => writeSelfCheck(formatMetrics(ctx)));
     document.getElementById('aum-v54-reset-metrics')?.addEventListener('click', () => { resetMetrics(ctx); writeSelfCheck(formatMetrics(ctx)); });
     document.getElementById('aum-v54-purge-collections')?.addEventListener('click', async () => {
@@ -3093,7 +1840,6 @@ async function setupUi() {
     // Iteration 14 (architecture drift): the two directions of the setting<->memory coupling.
     bindCheckbox('aum-v54-setting-veto', 'setting_baseline_veto_enabled');
     bindCheckbox('aum-v54-setting-seed', 'setting_query_seed_from_memories');
-    bindNumber('aum-v54-keep-recent', 'keep_recent_messages', { min: 2, max: 200, integer: true });
     bindNumber('aum-v54-query-messages', 'query_messages', { min: 1, max: 12, integer: true });
     bindNumber('aum-v54-candidate-k', 'candidate_top_k', { min: 1, max: 80, integer: true });
     bindNumber('aum-v54-lexical-k', 'lexical_candidate_top_k', { min: 1, max: 120, integer: true });
@@ -3126,46 +1872,6 @@ async function setupUi() {
         });
     });
 
-    document.getElementById('aum-v54-rebuild-baseline')?.addEventListener('click', () => {
-        void enqueueExtraction(async () => {
-            const current = getContext();
-            if (!current) return;
-            const result = await ensureSemanticBaseline(current, { force: true, silent: false });
-            notify('success', `Baseline已刷新：${result.records.length} 个分块 / ${result.sources.length} 个来源。`, 'Baseline Index');
-        });
-    });
-
-    document.getElementById('aum-v54-extract-latest')?.addEventListener('click', () => {
-        scheduleLatestAssistantExtraction({ force: true });
-    });
-    document.getElementById('aum-v54-backfill')?.addEventListener('click', () => {
-        void enqueueExtraction(async () => {
-            const result = await backfillMissingExtractions(getContext(), { maxMessages: 500 });
-            notify('success', `历史补建完成：新抽取 ${result.processed} 条，跳过 ${result.skipped} 条。`, '自动记忆');
-        });
-    });
-
-    document.getElementById('aum-v54-rebuild-memory')?.addEventListener('click', () => {
-        void enqueue(async () => {
-            await rebuildCanonicalFromChat(ctx, { rebuildVectors: false, silent: false });
-            notify('success', `Canonical Memory 已从当前聊天重放：${Object.keys(getStore(ctx).memories).length} 条。`);
-        });
-    });
-    document.getElementById('aum-v54-rebuild-vectors')?.addEventListener('click', () => {
-        void enqueue(async () => {
-            await rebuildVectorIndex(ctx, { silent: false });
-            await ensureSemanticBaseline(ctx, { force: true, silent: true });
-            await ensurePluginSettingIndex(ctx, { force: true, silent: true });
-        });
-    });
-    document.getElementById('aum-v54-rebuild-all')?.addEventListener('click', () => {
-        void enqueue(async () => {
-            await rebuildCanonicalFromChat(ctx, { rebuildVectors: true, silent: false });
-            await ensureSemanticBaseline(ctx, { force: true, silent: true });
-            await ensurePluginSettingIndex(ctx, { force: true, silent: true });
-            notify('success', 'Canonical Memory、剧情向量、Host Baseline 与 Plugin Setting Index 已完整重建。');
-        });
-    });
     document.getElementById('aum-v54-export')?.addEventListener('click', () => {
         downloadJson(`aetheria-memory-${Date.now()}.json`, getStore(ctx));
     });
@@ -3199,39 +1905,14 @@ function registerEvents() {
     // Streaming and non-streaming paths can emit different finalization events. The pair fingerprint
     // makes duplicate scheduling harmless.
     const onIf = (event, handler) => { if (event) eventSource.on(event, handler); };
-    const afterAssistant = () => {
-        scheduleLatestAssistantExtraction({ force: false });
-        // Free time: the next turn's prompt is at least one user message away, so the dense
-        // round-trip can start now and the interceptor then only has to commit the ranking.
-        try { startRecallPrefetch(getContext()); } catch (error) { log('recall prefetch failed', error); }
-    };
-    onIf(eventTypes.MESSAGE_RECEIVED, afterAssistant);
-    onIf(eventTypes.CHARACTER_MESSAGE_RENDERED, afterAssistant);
-    // Warm the credential and provider path once per chat so the first real recall does not pay for it.
-    onIf(eventTypes.CHAT_CHANGED, () => { void warmupRecallRuntime(getContext()); });
 
-    const afterHistoryMutation = () => {
-        void enqueue(async () => {
-            const current = getContext();
-            if (!current) return;
-            await reconcileCurrentChat(current, { forceRebuild: true });
-            scheduleLatestAssistantExtraction({ force: false });
-        });
-    };
-    for (const event of [eventTypes.MESSAGE_SWIPED, eventTypes.MESSAGE_EDITED, eventTypes.MESSAGE_UPDATED, eventTypes.MESSAGE_DELETED]) {
-        onIf(event, afterHistoryMutation);
-    }
-
+    // Extraction, recall prefetch and history reconciliation belonged to the retired generation
+    // path; they are gone rather than gated, because a gate keeps the code and the reader both.
     onIf(eventTypes.CHAT_CHANGED, () => {
         const current = getContext();
         if (!current) return;
-        const settings = getSettings(current);
-        clearInjectedPrompts(current, settings);
+        clearInjectedPrompts(current, getSettings(current));
         lastGenerationContextDiagnostics = null;
-        void enqueue(async () => {
-            await reconcileCurrentChat(current, { forceRebuild: true });
-            scheduleLatestAssistantExtraction({ force: false });
-        });
         scheduleStatusUpdate();
     });
 
@@ -3253,16 +1934,21 @@ async function startup() {
     if (!ctx) return;
     const settings = getSettings(ctx);
     getSettingStore(ctx);
-    // In-place upgrade safety: the old single-block key must not coexist with Commit F prompts.
-    ctx.setExtensionPrompt?.(LEGACY_PROMPT_KEY, '', IN_CHAT, normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth), false, SYSTEM_ROLE);
+    // In-place upgrade safety, kept but made conditional. A v5.4 install may have left the single-block
+    // prompt populated, and leaving it would double the state. Clearing it unconditionally on every
+    // generation is what broke generation entirely: registering a key - even with an empty value - costs
+    // one of the two projection ranges the host allows, and the plugin needs both for the blocks that
+    // actually carry state. So this clears the legacy value only when there is one, once, at init.
+    const staleLegacy = ctx.extensionPrompts?.['aetheria_unified_memory_v5_4'];
+    if (staleLegacy && String(staleLegacy.value || '').trim()) {
+        ctx.setExtensionPrompt?.('aetheria_unified_memory_v5_4', '', IN_CHAT, normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth), false, SYSTEM_ROLE);
+    }
     registerEvents();
     await setupUi();
     // v5.2/v5.1 canonical metadata migrates automatically; old inline <memory_ops> are replayed once.
     void enqueue(async () => {
-        await reconcileCurrentChat(ctx, { forceRebuild: true });
-        await ensureSemanticBaseline(ctx, { silent: true });
-        await ensurePluginSettingIndex(ctx, { silent: true });
-        scheduleLatestAssistantExtraction({ force: false });
+        getStore(ctx);                                          // migrate old metadata, replay nothing
+        await ensurePluginSettingIndex(ctx, { silent: true });  // the setting plane is live
     });
     scheduleStatusUpdate();
     console.log(`[Aetheria Memory v${MEMORY_VERSION}] autonomous plugin initialized`);
@@ -3270,20 +1956,53 @@ async function startup() {
 
 // Small explicit test hooks. They are not used by normal runtime, but make the autonomous
 // extraction pipeline verifiable without depending on DOM event timing.
-export function __testNormalizeDepth(value, fallback = DEFAULT_SETTINGS.injection_depth) {
-    return normalizeDepth(value, fallback);
-}
 
-export async function __testExtractMemoryForAssistant(ctx, assistantIndex, options = {}) {
-    return extractMemoryForAssistant(ctx, assistantIndex, options);
-}
-
-export async function __testBackfillMissingExtractions(ctx, options = {}) {
-    return backfillMissingExtractions(ctx, options);
-}
-
-export function __testGetStore(ctx) {
-    return getStore(ctx);
+/** Shared host adapters for the original-text pipeline. No prompt mutation in these services. */
+export function createNarrativeHostServices(ctx) {
+    getStore(ctx);
+    const identity = getChatIdentity(ctx);
+    const metadata = ctx.chatMetadata;
+    const chat = ctx.chat;
+    return {
+        isCurrent: () => {
+            const current = getContext();
+            return Boolean(current && getChatIdentity(current) === identity
+                && current.chatMetadata === metadata && current.chat === chat);
+        },
+        vector: () => {
+            const provider = getVectorProvider(ctx);
+            const settings = getSettings(ctx);
+            const collectionId = identity ? `aetheria_v54_raw_${fnv1a32(identity).toString(36)}` : null;
+            if (!settings.vector_recall || !collectionId) return { supported: false, reason: '原文向量检索未启用或聊天尚未保存' };
+            if (!provider.supported) return provider;
+            rememberVectorCollection(ctx, collectionId, 'raw');
+            return {
+                supported: true,
+                fingerprint: provider.fingerprint + '|' + getV55EmbeddingProfile(ctx).space_fingerprint,
+                purge: () => withVectorLock(() => purgeVectorCollection(ctx, collectionId)),
+                insert: items => withVectorLock(() => vectorInsert(ctx, provider, collectionId, items)),
+                remove: hashes => withVectorLock(() => vectorDelete(ctx, provider, collectionId, hashes)),
+                query: (text, topK) => withVectorLock(() => vectorQuery(ctx, provider, collectionId, text, topK, 0)),
+            };
+        },
+        // The cross-encoder stage is switched on by its own model name and reuses the embedding
+        // connection's endpoint and key, because a reranker and an embedder behind one provider share
+        // them. Unconfigured means the service reports itself unsupported and the retrieval path keeps
+        // the fused order without an extra call.
+        rerank: () => {
+            const settings = getSettings(ctx);
+            const model = String(settings.narrative_rerank_model || '').trim();
+            if (!model) return { supported: false, reason: '未配置重排模型' };
+            const apiUrl = String(settings.vector_direct_api_url || '').trim();
+            if (!apiUrl) return { supported: false, reason: '未配置 Embedding 直连地址' };
+            const apiKey = getTauriVectorApiKey();
+            if (!apiKey) return { supported: false, reason: '未配置 Aetheria 自有 Embedding API Key' };
+            return { supported: true, model,
+                rerank: (query, documents) => requestRerank({ baseUrl: apiUrl, apiKey, model, query, documents }) };
+        },
+        settings: async query => filterSettingRowsForActor(
+            await retrievePluginSettings(ctx, query, { mode: 'generation' }), deriveActorIdentity(ctx, getStore(ctx))),
+    };
 }
 
 export function __testGetSettingStore(ctx, options = {}) {
@@ -3322,94 +2041,29 @@ export async function __testRetrieveGenerationSettings(ctx, chat, store = null) 
     return retrieveGenerationSettings(ctx, chat, store);
 }
 
-export function __testGetLastSettingRetrievalDebug() {
-    return lastSettingRetrievalDebug;
-}
-
-export function __testGetLastGenerationContextDiagnostics() {
-    return lastGenerationContextDiagnostics;
-}
-
-export async function __testBuildInjectedContextBundle(chat, contextSize = null) {
-    return buildInjectedContextBundle(chat, contextSize);
-}
-
-export function __testCreatePluginBaselineDeduper(ctx, prepared = null) {
-    return createPluginBaselineDeduper(ctx, prepared);
-}
-
-export async function __testEnsureSemanticBaseline(ctx, options = {}) {
-    return ensureSemanticBaseline(ctx, options);
-}
-
-export async function __testFilterOperationsAgainstBaseline(ctx, ops, prepared) {
-    return filterOperationsAgainstBaseline(ctx, ops, prepared);
-}
-
 /**
  * The current-state block is a baseline wider than the mandatory set: it renders every active
  * memory, not only the irreversible ones. This resolves which of the two a run is using, so the
  * choice is a named policy rather than an implicit property of the assembly path.
  */
-export function resolveCurrentStateScope(settings) {
-    return settings?.current_state_scope === 'mandatory-only' ? 'mandatory-only' : 'mandatory+broad';
-}
-
-export function __testResolveCurrentStateScope(settings) {
-    return resolveCurrentStateScope(settings);
-}
-
-export function __testGetLastSettingSeedDebug() {
-    return lastSettingSeedDebug;
-}
 
 /**
  * A8 quality report for the current chat: key retention, causal recall (canonical vs injected) and
  * the compression curve. Reads only the store and the last published bundle, so it spends no model
  * call and can be run at any time — including by the live acceptance harness.
  */
-export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit = 60, injectedText = null, renderedBlock = null } = {}) {
-    const ctx = ctxInput || getContext();
-    if (!ctx) return null;
-    const settings = getSettings(ctx);
-    const store = getStore(ctx);
-    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
-    const dialogueTextsPerFloor = chat
-        .filter(row => isDialogueRow(row))
-        .map(row => String(row.mes ?? ''));
-    const published = ctx.chatMetadata?.[METADATA_KEY]?.v55_inner_bundle || null;
-    // A harness measuring at injection time passes the blocks it just read, which is the only moment
-    // they are guaranteed to exist.
-    const supplied = injectedText !== null || renderedBlock !== null;
-    const effectiveInjected = injectedText !== null
-        ? String(injectedText)
-        : [published?.reference_block, published?.current_state_block].filter(Boolean).join('\n\n');
-    const mandatory = settings.inject_current_state
-        ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
-        : [];
-    return computeQualityReport({
-        store,
-        rendered: renderedBlock !== null ? String(renderedBlock) : String(published?.current_state_block || ''),
-        injectedText: effectiveInjected,
-        // The published bundle lives in the derived record, so it can legitimately be absent — for
-        // example when this runs after the chat was reloaded. Pass that through: an unmeasured metric
-        // must not be published as a zero.
-        injectedAvailable: supplied || published !== null,
-        mandatory,
-        dialogueTextsPerFloor,
-        everyFloors,
-        probeLimit,
-    });
-}
-
-export function __testQualityReport(ctx, options = {}) {
-    return getQualityReport(ctx, options);
-}
 
 /** Manifest lifecycle hook. Keep activation lightweight; async work is deferred. */
 export function init() {
     const ctx = getContext();
     if (!ctx) return;
+    // Measured budget corrections reach existing installs only if something carries them over, because
+    // getSettings supplies missing keys and nothing else. Done here, once, at activation: doing it inside
+    // getSettings meant a settings write from a pure read path, which broke the host test that counts
+    // exactly how many times the setting library is persisted.
+    try {
+        if (migrateMemoryBudgets(getSettings(ctx)).migrated) ctx.saveSettingsDebounced?.();
+    } catch { /* a failed migration must never block activation */ }
     const ready = () => setTimeout(() => void startup(), 0);
     // If activation happens before APP_READY this is the clean path; timeout fallback handles already-ready sessions.
     ctx.eventSource.on(ctx.eventTypes.APP_READY, ready);

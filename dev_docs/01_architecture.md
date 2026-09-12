@@ -1,98 +1,130 @@
 # Architecture
 
-<!-- Versioned & append-only: never edit past versions; newest is last. -->
+**Scope of this document.** The whole system on one page, for a reader who does not know the module
+names. Superseded designs and their measurements are in Git history; the decision that
+replaced them is [decisions/ADR-0001](decisions/ADR-0001-narrative-memory-architecture.md).
 
+### 1. The shape of it
 
-<!-- VERSION 1 -->
-## v1 - baseline (pre-versioning)
+Two products come out of the original text, and they are produced for different jobs:
 
-> System architecture, module boundaries, key flows, diagrams.
+| Product | Job | Budget | Rebuilt from |
+| --- | --- | --- | --- |
+| Narrative summary | Let the story continue: where we are, why, who wants what, what is unresolved | narrative_summary_tokens (default 600) | the original text, every N floors |
+| Original-text evidence | Answer a question that needs the exact wording, number or negation | narrative_evidence_tokens (default 1000) | indexed original-text chunks, per generation |
 
-
-<!-- VERSION 2 -->
-## v2 - 2026-09-11 00:22:36 - describe the v5.5 architecture and module boundaries
-
-### 1. Four kinds of data
-
-The design keeps four things apart that summaries usually merge:
-
-    A. Canonical Baseline       Persona / Character / World Info       "what it always was"
-    B. Extraction Transactions  one per completed user+assistant pair  "what this turn changed"
-    C. Canonical Memory Store   replay(transactions)                   "what the story changed"
-    D. Derived Indices          vector / summaries / spine / audits    "how to find it again"
-
-Canonical never depends on Derived. Losing the derived record costs a rebuild, never a fact.
-
-One nuance introduced in iteration 13: the **memory spine** is logically authoritative (it is appended
-from the same operations that mutate the store, never by a language model, so a replay rebuilds it
-byte-identically) but it is *stored* in the derived record, because it is rebuildable and the chat
-file should not carry it.
-
-### 2. Entry chain
-
-    manifest.json
-      -> index-v55-bootstrap.js     installs the ownership guard first, then the staged core
-           -> v55-store-integrity.js
-           -> index-v55.js (init)
-                -> index.js          the v5.4-lineage runtime: extraction, replay, retrieval, injection
-           -> v55-derived-store.js, v55-summary-runtime.js, v55-floor-fold.js, UI modules
-
-The bootstrap exists because ordering is load-bearing: the store ownership guard must be installed
-before the core runs, or canonical replay assignments erase independently-owned runtime state.
-
-### 3. Module map
-
-| Group | Files | Responsibility |
-| --- | --- | --- |
-| Entry | `manifest.json`, `index-v55-bootstrap.js`, `index-v55.js`, `index.js` | load order, settings UI, generation interceptor |
-| Core memory | `memory-core.js`, `memory-extractor.js`, `memory-op.schema.json` | extraction contract, `applyMemoryOps` (the only place memories mutate), replay |
-| Injection | `context-assembler.js` | budget, labelling, reference/current-state/mandatory blocks |
-| v5.5 runtime | `v55-runtime.js`, `v55-finalizer.js`, `v55-summary-runtime.js`, `v55-floor-fold.js` | finalisation, hierarchical summaries, floor folding |
-| v5.5 state | `v55-derived-store.js`, `v55-store-integrity.js`, `v55-spine.js`, `v55-consistency.js` | derived ownership, replay guard, deterministic spine, self-check |
-| v5.5 support | `v55-tokenizer.js`, `v55-evidence.js`, `v55-provenance.js`, `v55-privacy.js`, `v55-metrics.js`, `v55-selfcheck.js`, `v55-rerank.js` | accounting, evidence expansion, provenance, privacy, metrics |
-| Vectors | `v55-vector-policy.js`, `v55-private-vector-transport.js`, `v55-tauri-native-http-bridge.js`, `v55-tauri-vector-backend.js` | per-chat vector space identity, transport isolation, host-native HTTP |
-| Settings | `setting-schema.js`, `setting-store.js`, `setting-importer.js`, `setting-index.js`, `setting-retriever.js`, `source-adapters/` | plugin-owned world info plane |
-| Baseline | `baseline-host.js`, `baseline-index.js`, `embedding-profile.js`, `retrieval-eval.js` | semantic baseline collection, indexing, profile identity |
-| UI | `settings.html`, `style.css`, `v55-ui-polish.js`, `v55-embedding-profile-ui.js`, `v55-api-connections.js` | panel and connection settings |
-
-### 4. Write pipeline
+The original text is never thrown away to save space. It is chunked, indexed and quoted.
 
 ```mermaid
 flowchart TD
-    A[assistant reply finalized] --> B[dialogue-pair fingerprint]
-    B --> C[collect semantic baseline]
-    C --> D[quiet extraction: structured, degrades to plain JSON]
-    D --> E[JSON parse + memory-op schema validation]
-    E --> F[branch / fingerprint re-check]
-    F --> G[semantic baseline write gate]
-    G --> H[applyMemoryOps - the only mutation point]
-    H --> I[extraction transaction -> canonical replay]
-    H --> J[appendSpine - deterministic, no model call]
-    I --> K[indexable memories -> memory vector]
+    subgraph W[Write path - on host events, never blocking a generation]
+        R[chat messages] --> C[captureHistory: version each message, keep its id lineage]
+        C --> K[chunkHistory: ~700 chars, 100 char overlap]
+        K --> B[nextSummaryBatch: completed floors, every N, input budget]
+        B -->|new floors| S[background model: one compact continuity summary]
+        S --> V{within the summary token budget?}
+        V -->|no| E[keep the previous summary, keep the raw text, record the error]
+        V -->|yes| A[store the summary with the chunk ids it covered]
+        A --> D[applyNarrativeFolds: hide only floors whose every chunk is covered]
+    end
+    subgraph G[Read path - once per generation]
+        Q[recent messages = the query] --> L[lexical rank over chunks, dense when configured]
+        Q --> N[situation terms that live only in hidden floors]
+        N --> L
+        K --> L
+        L --> P[packRawEvidence: skip what the prompt still shows, cite id, floor, speaker]
+        A --> Y[current-state block: the continuity summary]
+        P --> X[reference block: quoted original text]
+        Y --> I[setExtensionPrompt]
+        X --> I
+    end
 ```
 
-### 5. Injection path
+### 2. Life of one generation
 
-```mermaid
-flowchart LR
-    R[recall / retrieval] --> CA[context-assembler.js]
-    M[mandatory baseline: irreversibility rank >= 4] --> CA
-    S[spine prompt block] --> CA
-    CA --> B1[Reference block]
-    CA --> B2[Current State block]
-    CA --> B3[Must-remember rows rendered first]
-    B1 --> P[setExtensionPrompt only]
-    B2 --> P
-    B3 --> P
-```
+1. The host calls the single interceptor (aetheriaUnifiedMemoryV54Interceptor).
+2. If the host is generating a quiet prompt, an impersonation, or the plugin's own background
+   summary, both prompt channels are cleared and the call returns.
+3. Otherwise the plugin captures the chat into the versioned archive, folds what the accepted
+   summary covers, and builds:
+   - the current-state block: the continuity summary, or nothing when there is none;
+   - the reference block: original-text evidence, plus relevant setting entries.
+4. The two blocks are registered with setExtensionPrompt at fixed depths, and the transcript's
+   collapsed styling is re-applied.
+5. After the generation, the host's events schedule the background pass: at most one summary job per
+   chat store at a time, and only the newest unsummarized completed floors.
 
-Injection never appends pseudo-messages to the chat array; it goes through the host prompt extension
-API, so the visible transcript and the model context stay independent.
+### 3. Where the decision to show or hide text lives
 
-### 6. Failure isolation
+| Question | Answer | Module |
+| --- | --- | --- |
+| Which text is covered by the summary? | The exact chunk-id prefix the summary reported | raw-history.js, validSummary |
+| May this floor leave the prompt? | Only if every chunk of it is covered, and it is not the newest floor | raw-history.js, applyNarrativeFolds |
+| What if the summary cannot be injected? | Every floor it covered comes back, and the reason is recorded | narrative-runtime.js, buildNarrativeContext |
+| What if the history changed under the summary? | The summary is dropped, the invalidation is reported, and the floors come back | narrative-runtime.js, prepare |
+| How current is the injected state block? | It is the projection of the last accepted summary, and it says so: "current as of floor N; anything later in the transcript wins" | narrative-runtime.js, raw-history.js |
+| Who writes the transcript styling? | Only the projection of the markers; it never writes chat state | v55-floor-fold.js |
 
-- A failed extraction is recorded as a diagnostic and never stored as a memory or a summary.
-- The extraction provider degrades once: if the host rejects `response_format`/`json_schema`, the
-  remaining attempts for that session use plain JSON instead of retrying a doomed request.
-- An unreachable derived backend leaves the derived keys in the chat file, which is the previous
-  behaviour - it never silently writes an empty store over a real one.
+### 4. Modules
+
+Live path, reachable from index-v55-bootstrap.js:
+
+| Job | Files |
+| --- | --- |
+| Host bootstrap and settings shell | index-v55-bootstrap.js, index-v55.js, settings.html, style.css, v55-ui-polish.js, v55-api-connections.js, v55-embedding-profile-ui.js |
+| Original text: archive, chunks, folds, evidence | raw-history.js, v55-floor-fold.js |
+| The pipeline: summary job, index sync, budgeted assembly | narrative-runtime.js |
+| The quiet summary request (cloned preset, response metrics) | summary-transport.js |
+| Host adapters (store, identity, vectors, setting retrieval, metrics) | index.js |
+| Chat store, replay, operations, tokenizer | memory-core.js, v55-store-integrity.js, v55-store-compact.js, v55-derived-store.js, v55-tokenizer.js |
+| Vector transport and space identity | v55-vector-policy.js, v55-private-vector-transport.js, v55-tauri-vector-backend.js, v55-tauri-native-http-bridge.js, v55-rerank.js |
+| Setting plane | setting-schema.js, setting-store.js, setting-importer.js, setting-index.js, setting-retriever.js, source-adapters/ |
+| Baseline plane | baseline-index.js (the tokenizer and lexical floor the ranking uses) |
+| Measurement | v55-metrics.js |
+
+Retired (ADR-0007, ADR-0009): the v5.4 extraction pipeline, the prompt assembler, the recall path,
+the cold-snapshot cache, the length certificate, the quality metrics, the reranker, the retrieval
+self-check and the baseline builder - with the tests that pinned them. index.js keeps the host
+adapters, the chat store, the setting plane and the migration of old chats.
+
+The fact set itself no longer lives in the chat file either: memories, slots and hierarchical_summaries
+are derived keys, written to the external record and rebuildable from the canonical replay log, which
+the chat file keeps (ADR-0004).
+
+### 5. Invariants
+
+| Id | Statement | Enforced by |
+| --- | --- | --- |
+| N1 | A floor is hidden only while an accepted summary covers every chunk of it | applyNarrativeFolds |
+| N2 | The newest assistant floor, and the user turn that produced it, are never hidden | applyNarrativeFolds |
+| N3 | A summary is injected only while it still matches the current chunk list | validSummary, prepare |
+| N4 | If the summary cannot be injected, its floors are restored in the same call | buildNarrativeContext |
+| N5 | Background work is written only into the chat that started it | services.isCurrent |
+| N6 | Superseded message versions are archived, never overwritten | captureHistory |
+| N7 | Evidence quoting skips text the prompt still carries, and never quotes the same text twice | packRawEvidence |
+| N8 | Anchors and boundaries are injected only with the summary they were derived from, and are never recomputed between passes | prepare, source_revision |
+
+### 6. What this architecture does not do yet
+
+- Dense retrieval over original text needs a configured embedding backend; without one the pipeline
+  is lexical-only and says so in its diagnostics.
+- Recall is trigger-driven, not question-driven: the query is the recent messages, so the thing to measure is
+  whether the earlier floors of a returning person, place or object come back with it. That happened in 3 of 6
+  such moments, and 5 of 6 after the situation channel of ADR-0019; the channel's own metric counts character
+  n-grams rather than names and is an indicator, not a score. dev_docs/04_roadmap.md records the runs.
+- The archive keeps every superseded version, and nothing prunes it. Measured at about one copy of the
+  conversation text (41-351 KB per chat, 4-33% of the file), which is why it stays lossless (ADR-0004).
+  Growth on very long chats is still unmeasured.
+- Knowledge boundaries are text, not enforcement: a character cannot be prevented from acting on a
+  fact that appears in the summary.
+- The injected state block is a snapshot of the last accepted summary (N8). A state change reaches it only
+  at the next pass - measured lags of 4 to 9 turns across two runs, and changes made near the end never
+  reached a block at all - so every block header names its horizon rather than implying it is current
+  (ADR-0018). Folding is what keeps the window safe: it never hides a floor the summary does not cover, so
+  the change is still in the prompt (N1, N2).
+- Knowledge is one line per character, bundling what that character knows and does not know (ADR-0018). The
+  host counts characters that take more than one line and warns instead of merging them, because only the
+  summary knows which of two statements is current.
+- v55-spine.js survives because the live memory-core.js uses it for the fact model spine bookkeeping,
+  and applyMemoryOps is the migration path for old chats. Retiring it is a data decision, not a
+  dead-code one (ADR-0009).

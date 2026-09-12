@@ -18,7 +18,73 @@ export const MEMORY_KINDS = new Set([
 export const MEMORY_STATUSES = new Set(['active', 'closed', 'superseded', 'invalid']);
 export const MEMORY_IMPORTANCE = new Set(['low', 'medium', 'high', 'critical']);
 export const MEMORY_EPISTEMIC = new Set(['fact', 'observed', 'reported', 'rumor', 'belief', 'inference', 'plan']);
+
+/**
+ * How hard a memory is to recover from anywhere ELSE in the prompt, by how its holder came to know it.
+ *
+ * This orders rows WITHIN a kind. The kind ordering decides which categories survive a budget trim (see
+ * context-assembler); this decides which rows of an equally-ranked category do. It replaces recency as
+ * the tiebreak, because recency was measured to be a weak relevance signal (dev_docs 21 v3, v4).
+ *
+ * The criterion is recoverability, not importance, and it follows the same asymmetry the rest of this
+ * system uses. A "fact" is the one value whose content is routinely available from somewhere else the
+ * model can already see - the imported setting, the world book, the current scene - because that is what
+ * makes it a fact. Everything else was established in one specific past turn, and on a folded chat those
+ * turns are gone: 74 of 101 rows were hidden on the chat this was measured on. "observed" and
+ * "inference" lead because they are the two values the character's own mind produced, so contradicting
+ * them costs the character their senses or their reasoning. "reported" is second-hand but still only
+ * recoverable from the turn that said it.
+ *
+ * Measured on that chat (217 active memories): fact 60, belief 52, reported 31, inference 30,
+ * observed 29, plan 15 - so it is not a restatement of kind. Within "belief" (73 rows) it separates 26
+ * inferences from 46 held opinions; within "knowledge" (52) it separates 15 first-hand sightings from 30
+ * retellings; within "state" (64) it separates 12 personal observations from 43 restatements.
+ * "plan" is deliberately tied with "belief" rather than ranked against it: intentions are already
+ * ordered by their own kind, and commitment rows split 7 fact to 6 plan, which is too thin a margin to
+ * justify a claim that a plan outranks a promise.
+ */
+export const EPISTEMIC_RETENTION = Object.freeze({
+    observed: 5,
+    inference: 4,
+    reported: 3,
+    fact: 2,
+    belief: 2,
+    plan: 2,
+    rumor: 1,
+});
+
+/** The retention weight of a memory's epistemic value. Unknown or absent values are neutral. */
+export function epistemicRetention(memory) {
+    return EPISTEMIC_RETENTION[String(memory?.epistemic || '').toLowerCase()] ?? 2;
+}
 export const MEMORY_OPS = new Set(['add', 'update', 'close', 'supersede', 'reinforce', 'invalidate', 'noop']);
+
+/**
+ * How a memory's holder came to know something and how strong the claim is are two different axes, and
+ * the extractor prompt asks for both. Measured over 844 real operations, the model wrote `channel`
+ * (saw 316 / heard 145 / inferred 120 / told 26) every time and `epistemic` never. The old default
+ * (`op.kind === 'intention' ? 'plan' : 'fact'`) therefore published every belief and every inference to
+ * the prompt as `epistemic="fact"` - the injection literal said a guess was a fact, which is the one
+ * upgrade the extraction rules forbid. The channel vocabulary leaked in as a second source of the same
+ * mistake, so it is accepted as an alias rather than allowed to invalidate the whole operation.
+ */
+const EPISTEMIC_ALIASES = Object.freeze({
+    saw: 'observed', seen: 'observed', witnessed: 'observed',
+    heard: 'reported', told: 'reported', reported: 'reported',
+    inferred: 'inference', inference: 'inference', deduced: 'inference',
+    guessed: 'belief', guess: 'belief', suspected: 'belief',
+});
+
+/** Resolve what the model meant, then fall back to the record's own kind. Never returns undefined. */
+export function normalizeEpistemic(value, kind = '') {
+    const raw = String(value ?? '').trim().toLowerCase();
+    if (MEMORY_EPISTEMIC.has(raw)) return raw;
+    if (EPISTEMIC_ALIASES[raw]) return EPISTEMIC_ALIASES[raw];
+    // No usable value from the model: the kind is the only honest source. A belief is not a fact.
+    if (kind === 'belief') return 'belief';
+    if (kind === 'intention') return 'plan';
+    return 'fact';
+}
 
 const ACTIVE_EXACT_KINDS = new Set(['state', 'intention', 'commitment']);
 const ACTIVE_CONTEXTUAL_KINDS = new Set(['relation', 'ownership', 'knowledge', 'belief']);
@@ -115,7 +181,12 @@ export function validateMemoryOp(op) {
     if (op.kind !== undefined && !MEMORY_KINDS.has(op.kind)) errors.push(`invalid kind: ${String(op.kind)}`);
     if (op.status !== undefined && !MEMORY_STATUSES.has(op.status)) errors.push(`invalid status: ${String(op.status)}`);
     if (op.importance !== undefined && !MEMORY_IMPORTANCE.has(op.importance)) errors.push(`invalid importance: ${String(op.importance)}`);
-    if (op.epistemic !== undefined && !MEMORY_EPISTEMIC.has(op.epistemic)) errors.push(`invalid epistemic: ${String(op.epistemic)}`);
+    // A value in the channel vocabulary is a wrong field name, not a wrong operation: dropping the op
+    // loses a memory, so it is accepted here and resolved by normalizeEpistemic().
+    if (op.epistemic !== undefined && !MEMORY_EPISTEMIC.has(op.epistemic)
+        && !Object.prototype.hasOwnProperty.call(EPISTEMIC_ALIASES, String(op.epistemic ?? '').trim().toLowerCase())) {
+        errors.push(`invalid epistemic: ${String(op.epistemic)}`);
+    }
     if (op.scope !== undefined && op.scope !== null && (typeof op.scope !== 'string' || op.scope.length > 200)) errors.push('scope must be a string of at most 200 characters');
     if (typeof op.text === 'string' && op.text.length > 1200) errors.push('text exceeds 1200 characters');
     for (const key of ['entities', 'topics', 'known_by']) {
@@ -164,6 +235,40 @@ export function extractSummarySections(text) {
         activeState: extractTagContent(text, 'active_state'),
         memoryOps: extractTagContent(text, 'memory_ops'),
     };
+}
+
+/**
+ * The compact record-map encoding used in the chat file, and its decoder.
+ *
+ * The chat file writes one column per field instead of one key per field per record: the repeated key
+ * names were 24,620 bytes of a 74-record store, more than the memory text they wrapped. The shape lives
+ * HERE, next to the record definition, because decoding has to happen inside `normalizeStore` - the one
+ * function every reader obtains a store through - and this module deliberately depends on nothing but
+ * the deterministic spine. `v55-store-compact.js` imports these constants to build the same shape.
+ */
+export const STORE_COLUMNS_VERSION = 1;
+export const STORE_COLUMNS_MARKER = '__columns';
+
+export function decodeRecordMap(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    if (value[STORE_COLUMNS_MARKER] === undefined) return value;
+    const keys = Array.isArray(value.keys) ? value.keys : [];
+    const fields = Array.isArray(value.fields) ? value.fields : [];
+    const rows = Array.isArray(value.rows) ? value.rows : [];
+    const out = {};
+    for (let i = 0; i < keys.length; i += 1) {
+        const row = Array.isArray(rows[i]) ? rows[i] : [];
+        const record = {};
+        for (let j = 0; j < fields.length; j += 1) {
+            const cell = row[j];
+            // An empty cell is how the encoder writes every value no reader can tell apart from an
+            // absent one: null, undefined, '' , false and []. A 0 survives as 0.
+            if (cell === null || cell === undefined) continue;
+            record[fields[j]] = cell;
+        }
+        out[keys[i]] = record;
+    }
+    return out;
 }
 
 export function createEmptyStore() {
@@ -215,10 +320,13 @@ export function normalizeStore(store) {
     const base = createEmptyStore();
     if (!store || typeof store !== 'object') return base;
     const out = { ...base, ...store };
-    out.memories = store.memories && typeof store.memories === 'object' && !Array.isArray(store.memories) ? store.memories : {};
+    // The chat file stores these two maps column-encoded - one copy of each field name per map instead of
+    // one per record (see v55-store-compact.js). Decoding at the single normalisation point is what keeps
+    // every reader in the codebase seeing the plain object map it has always seen.
+    out.memories = decodeRecordMap(store.memories);
     out.slots = store.slots && typeof store.slots === 'object' && !Array.isArray(store.slots) ? store.slots : {};
     out.source_fingerprints = Array.isArray(store.source_fingerprints) ? store.source_fingerprints : [];
-    out.extractions = store.extractions && typeof store.extractions === 'object' && !Array.isArray(store.extractions) ? store.extractions : {};
+    out.extractions = decodeRecordMap(store.extractions);
     out.last_event_summary = typeof store.last_event_summary === 'string' ? store.last_event_summary : '';
     out.last_extraction_debug = store.last_extraction_debug && typeof store.last_extraction_debug === 'object' ? store.last_extraction_debug : null;
     out.last_errors = Array.isArray(store.last_errors) ? store.last_errors : [];
@@ -355,7 +463,7 @@ function memoryFromAdd(store, op, context) {
         topics: uniqueStrings(op.topics),
         status,
         importance: op.importance || 'medium',
-        epistemic: op.epistemic || (op.kind === 'intention' ? 'plan' : 'fact'),
+        epistemic: normalizeEpistemic(op.epistemic, op.kind),
         known_by: uniqueStrings(op.known_by),
         indexable: op.indexable === true,
         source_message: context.sourceMessageIndex,
@@ -453,10 +561,19 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
 
         if (op.op === 'update') {
             const oldSlot = target.slot;
+            // The value this update is about to overwrite. `update` rewrites the record in place, so
+            // without this the previous value exists nowhere at all - the spine node names the slot but
+            // not what it held - and the plan's S2 acceptance ("any slot enumerates its full history")
+            // silently held only for `supersede`. Measured on the extractor's own output, `update` is
+            // used 56 times against `supersede`'s 20, so this is the common path, not the corner.
+            const previousText = typeof target.text === 'string' ? target.text : null;
             const editable = ['kind', 'slot', 'text', 'status', 'importance', 'epistemic', 'indexable'];
             for (const key of editable) {
                 if (op[key] !== undefined) target[key] = key === 'slot' ? (String(op[key]).trim() || null) : op[key];
             }
+            // `epistemic` is derived from `kind` when the model does not state it, so a kind change has to
+            // re-derive it or an event stays labelled with the belief it used to be.
+            if (op.kind !== undefined && op.epistemic === undefined) target.epistemic = normalizeEpistemic(undefined, target.kind);
             for (const key of ['entities', 'topics', 'known_by']) {
                 if (op[key] !== undefined) target[key] = uniqueStrings(op[key]);
             }
@@ -481,6 +598,7 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             spineRecord.target_id = target.id;
             spineRecord.kind = target.kind;
             spineRecord.slot = target.slot;
+            if (previousText && previousText !== target.text) spineRecord.prev_text = previousText;
             spineRecords.push(spineRecord);
             return;
         }
@@ -532,10 +650,17 @@ export function applyMemoryOps(storeInput, ops, context = {}) {
             removeSlotIfOwned(store, target);
             changedIds.add(target.id);
             if (op.kind && op.text) {
+                // A supersede that names a target_slot but omits `slot` is replacing that slot's value, so
+                // the replacement has to inherit the slot. Without this the new record is created with
+                // `slot: null`, the old one has already released the slot, and the slot map ends up with
+                // NO current value at all - so the change chain renders nothing for a slot that visibly
+                // changed, and the next turn's extraction sees the state as unknown. Measured: the
+                // extractor writes `supersede` + `target_slot` and no `slot` as its normal shape.
+                const inheritedSlot = typeof op.slot === 'string' && op.slot.trim() ? op.slot : (target.slot || null);
                 const addLike = {
                     op: 'add',
                     kind: op.kind,
-                    slot: op.slot,
+                    slot: inheritedSlot,
                     text: op.text,
                     entities: op.entities,
                     topics: op.topics,
@@ -896,11 +1021,65 @@ function memorySearchText(memory) {
     return [memory?.text, ...(memory?.entities || []), ...(memory?.topics || [])].filter(Boolean).join(' ');
 }
 
-function exactEntityMatches(query, memory) {
+/**
+ * Names that contain one another, grouped into MATCHING families. Identity is left alone.
+ *
+ * Measured on the live 51-floor chat: a turn that says 井台 finds nothing tagged 井水样瓶, because entity
+ * matching was exact substring containment. The names form containment families - 井 / 井台 / 井水 / 井巷 /
+ * 井水样瓶, 弥拉 / 弥拉的手札 - and those families are NOT co-reference: the biggest one holds a port city,
+ * its slum district, an alley, a well platform, the water, a sample bottle, a shop and a shopkeeper.
+ *
+ * So this is deliberately not a canonicalisation and must never reach the entity registry. The registry's
+ * exact-match rule is correct for identity - holders, discriminators, known_by - and relaxing it would
+ * merge a city with a water bottle. What the families are for is the opposite direction: given that a
+ * turn mentioned one member, a memory tagged with another is worth looking at. Matching gets permissive;
+ * identity stays strict.
+ *
+ * Two rules keep the grouping from collapsing into one blob. A name links two others only when it is a
+ * PREFIX or a SUFFIX of them, never a mid-string coincidence - otherwise a particle like 的 would join
+ * everything that happens to contain it. And a single-character name may link but is never itself a
+ * member, because one character is contained in too much to be evidence on its own.
+ */
+export function entityMatchFamilies(namesInput) {
+    const all = [...new Set((Array.isArray(namesInput) ? namesInput : [])
+        .map(name => normalizeHybridText(String(name ?? '')).replace(/\s+/g, ''))
+        .filter(Boolean))].sort((a, b) => a.length - b.length);
+    const parent = new Map(all.map(name => [name, name]));
+    const find = name => { let root = name; while (parent.get(root) !== root) root = parent.get(root); return root; };
+    for (let i = 0; i < all.length; i += 1) {
+        for (let j = i + 1; j < all.length; j += 1) {
+            if (all[i] === all[j]) continue;
+            if (!all[j].startsWith(all[i]) && !all[j].endsWith(all[i])) continue;
+            const a = find(all[i]);
+            const b = find(all[j]);
+            if (a !== b) parent.set(b, a);
+        }
+    }
+    const groups = new Map();
+    for (const name of all) {
+        if (name.length < 2) continue;
+        const root = find(name);
+        if (!groups.has(root)) groups.set(root, []);
+        groups.get(root).push(name);
+    }
+    const out = new Map();
+    for (const members of groups.values()) {
+        if (members.length < 2) continue;
+        for (const name of members) out.set(name, members);
+    }
+    return out;
+}
+function exactEntityMatches(query, memory, families = null) {
     const q = normalizeHybridText(query).replace(/\s+/g, '');
     return uniqueStrings(memory?.entities).filter(entity => {
         const e = normalizeHybridText(entity).replace(/\s+/g, '');
-        return e.length >= 2 && q.includes(e);
+        if (e.length >= 2 && q.includes(e)) return true;
+        // Nothing matched by name. Before giving up, look at the entity's containment family: the turn may
+        // have named the well platform while this memory is tagged with the sample bottle.
+        if (!families) return false;
+        const family = families.get(e);
+        if (!family) return false;
+        return family.some(member => member !== e && q.includes(member));
     });
 }
 
@@ -921,6 +1100,9 @@ export function lexicalSearchMemories(storeInput, queryText, options = {}) {
     if (!docs.length) return [];
     const queryTokens = tokenizeHybridText(queryText);
     if (!queryTokens.length) return [];
+    // Built once per search from the store's own vocabulary. A matching aid only - see entityMatchFamilies
+    // - and it never reaches the entity registry.
+    const families = entityMatchFamilies(docs.flatMap(memory => uniqueStrings(memory?.entities)));
     const qtf = countTokens(queryTokens);
     const tokenized = docs.map(memory => {
         const tokens = tokenizeHybridText(memorySearchText(memory));
@@ -944,7 +1126,7 @@ export function lexicalSearchMemories(storeInput, queryText, options = {}) {
             const denom = tf + k1 * (1 - b + b * doc.length / Math.max(1, avgLen));
             score += idf * (tf * (k1 + 1) / denom) * Math.min(2, qCount);
         }
-        const entityMatches = exactEntityMatches(queryText, doc.memory);
+        const entityMatches = exactEntityMatches(queryText, doc.memory, families);
         if (entityMatches.length) score += 3.2 + Math.min(3, entityMatches.length - 1) * 0.8;
         const qNorm = normalizeHybridText(queryText);
         const topicMatches = uniqueStrings(doc.memory.topics).filter(t => {
@@ -1064,8 +1246,12 @@ export function fuseHybridCandidates(storeInput, denseLists, lexicalList, option
             row.score *= 0.82;
             row.evidencePenalty = 0.82;
         }
+        // Never-recalled and recalled-at-message-0 are not the same thing, and `Number(null)` is 0 - so the
+        // old guard treated a memory that had never been recalled as recalled at the very start of the chat
+        // and penalised it hardest exactly when the chat was short enough for that stamp to fall inside the
+        // cooldown window. Requiring a positive value is what the cooldown always meant.
         const last = Number(row.memory.last_recalled_message);
-        if (cooldownTurns > 0 && Number.isFinite(last) && currentMessage > last) {
+        if (cooldownTurns > 0 && Number.isFinite(last) && last > 0 && currentMessage > last) {
             const age = currentMessage - last;
             if (age <= cooldownTurns) {
                 const penalty = 0.42 + 0.58 * (age / (cooldownTurns + 1));

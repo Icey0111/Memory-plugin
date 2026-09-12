@@ -1,146 +1,64 @@
-// Aetheria Unified Memory v5.5 — local candidate reranker.
+// A cross-encoder rerank stage for the original-text candidates.
 //
-// Fusion scores channels; it never reads the query against the candidate. This stage does, using the
-// signals the calibrated tokenizer can supply without a model call:
-//
-//   coverage  - how much of the query's vocabulary the memory actually contains
-//   phrase    - two query words adjacent in the memory, which n-gram scoring cannot express
-//   slot      - query vocabulary occurring in the structured slot path
-//   entity    - a named entity the fusion stage already decided to protect
-//   recency   - exponential decay over turns since the memory was recorded
-//   importance- the extractor's own importance label
-//   breadth   - how many independent channels agreed
-//
-// Two decisions make it actually able to reorder a fused list:
-//
-// 1. Every feature is min-max normalised *across the candidate set* and then centred on 0.5. A
-//    feature that is the same for every candidate therefore contributes nothing instead of quietly
-//    diluting the ones that discriminate — with raw values, a constant recency term was worth more
-//    than a 2x coverage difference.
-// 2. The fusion score enters as a within-set min-max too, because an RRF sum has no absolute scale.
-//
-// It stays deliberately linear and dependency-free: a cross-encoder would be better but needs a
-// model, and the retrieval stack must not require one to be available.
+// Measured offline on 52 hand-written questions (dev_docs/06_retrieval_research.md section 14): reranking
+// the top 24 fused candidates with jina-reranker-v3 raised answer-in-context from 69% to 87%, ten questions
+// gained against one lost, p=0.012; jina-reranker-v2-base-multilingual reached 81%. It is the most expensive
+// layer - one call per generation over the whole shortlist - so it runs only when a model is configured, it
+// is fail-open, and it never reorders a candidate the provider did not actually score.
 
-import { buildRetrievalText } from './memory-core.js';
-import { phraseHits, segmentWords, wordCoverage } from './v55-tokenizer.js';
+import { resolveOpenAiCompatibleBaseUrl } from './v55-tauri-vector-backend.js';
 
-export const RERANK_VERSION = '5.5-rr2';
+export const RERANK_CANDIDATES = 24;
 
-const IMPORTANCE = Object.freeze({ high: 1, medium: 0.6, low: 0.3 });
-
-// Feature weights. The first four read the query against the candidate and carry the decision; the
-// last three are tie-breakers that only matter when the query match is close.
-const WEIGHTS = Object.freeze({
-    coverage: 0.30,
-    phrase: 0.18,
-    slot: 0.12,
-    entity: 0.12,
-    recency: 0.12,
-    importance: 0.08,
-    breadth: 0.08,
-});
-
-export const DEFAULT_RERANK_WEIGHT = 0.55;
-
-function clamp01(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return 0;
-    return n < 0 ? 0 : (n > 1 ? 1 : n);
-}
-
-function minMax(values) {
-    let min = Infinity;
-    let max = -Infinity;
-    for (const value of values) {
-        if (!Number.isFinite(value)) continue;
-        if (value < min) min = value;
-        if (value > max) max = value;
-    }
-    // A feature with no spread carries no information; 0.5 centres it so it contributes nothing.
-    if (!Number.isFinite(min) || !Number.isFinite(max) || max - min < 1e-9) return () => 0.5;
-    return value => clamp01((Number(value) - min) / (max - min));
+/** The request a cross-encoder reranker expects. */
+export function buildRerankRequest({ model, query, documents, topN }) {
+    const text = value => String(value ?? '');
+    const body = { model: text(model).trim(), query: text(query), documents: Array.from(documents || [], text) };
+    if (!body.model) throw new Error('重排模型未配置。');
+    if (!body.query) throw new Error('重排查询为空。');
+    if (!body.documents.length || body.documents.some(document => !document)) throw new Error('重排候选为空。');
+    body.top_n = Math.max(1, Math.min(body.documents.length, Math.trunc(Number(topN) || body.documents.length)));
+    return body;
 }
 
 /**
- * Reorder fused candidates. `rows` are fusion records shaped { memory, score, channels, entityBypass }.
- * Returns the reordered rows with `rerank_score` / `rerank_features` attached and a debug record.
+ * The order a reranker returned, checked against the documents that were sent.
+ *
+ * An index the provider was never given, a non-finite score, or two rows for one document would reorder
+ * the prompt around nothing, so those rows are dropped rather than trusted. An answer that names no usable
+ * candidate is an error, not an empty order: the caller keeps the fused ranking instead.
  */
-export function rerankCandidates(rowsInput, query, {
-    weight = DEFAULT_RERANK_WEIGHT,
-    currentMessage = 0,
-    chatLength = 0,
-    halfLifeTurns = 120,
-    maxPool = 60,
-} = {}) {
-    const rows = Array.isArray(rowsInput) ? rowsInput : [];
-    const debug = { version: RERANK_VERSION, considered: rows.length, query_words: 0, weight, top: [] };
-    if (rows.length < 2) return { rows, debug };
-    const queryWords = segmentWords(String(query ?? ''));
-    debug.query_words = queryWords.length;
-    if (!queryWords.length) return { rows, debug };
+export function parseRerankResponse(payload, count) {
+    const rows = Array.isArray(payload?.results) ? payload.results : null;
+    if (!rows) throw new Error('重排返回格式无效：缺少 results 数组。');
+    const seen = new Set();
+    const order = [];
+    for (const row of rows) {
+        const index = Number(row?.index);
+        const score = Number(row?.relevance_score);
+        if (!Number.isInteger(index) || index < 0 || index >= count || seen.has(index)) continue;
+        if (!Number.isFinite(score)) continue;
+        seen.add(index);
+        order.push({ index, score });
+    }
+    if (!order.length) throw new Error('重排未返回任何可用候选。');
+    return order.sort((a, b) => b.score - a.score || a.index - b.index);
+}
 
-    const now = Number.isFinite(currentMessage) && currentMessage > 0 ? currentMessage : Math.max(1, Number(chatLength) || 1);
-    const lambda = Math.log(2) / Math.max(1, Number(halfLifeTurns) || 120);
-    const phraseDenominator = Math.max(1, queryWords.length - 1);
-
-    const drafts = rows.map((row, index) => {
-        const memory = row?.memory || row;
-        const text = buildRetrievalText(memory);
-        const coverage = wordCoverage(queryWords, segmentWords(text));
-        const phraseScore = queryWords.length > 1 ? clamp01(phraseHits(queryWords, text) / phraseDenominator) : 0;
-        const slotWords = segmentWords(String(memory?.slot ?? ''));
-        const slotScore = slotWords.length ? wordCoverage(queryWords, slotWords) : 0;
-        const recorded = Number(memory?.source_message ?? memory?.recorded_at ?? now);
-        const age = Math.max(0, now - (Number.isFinite(recorded) ? recorded : now));
-        const recency = Number.isFinite(recorded) ? Math.exp(-lambda * age) : 0.5;
-        const importance = IMPORTANCE[String(memory?.importance || 'medium')] ?? IMPORTANCE.medium;
-        const channels = Array.isArray(row?.channels) ? row.channels.length : 0;
-        const breadth = clamp01(channels / 3);
-        const entity = row?.entityBypass ? 1 : 0;
-        return { row, index, memory, coverage, phrase: phraseScore, slot: slotScore, entity, recency, importance, breadth, channels, fusion: Number(row?.score) || 0 };
-    });
-
-    const norm = {
-        coverage: minMax(drafts.map(d => d.coverage)),
-        phrase: minMax(drafts.map(d => d.phrase)),
-        slot: minMax(drafts.map(d => d.slot)),
-        entity: minMax(drafts.map(d => d.entity)),
-        recency: minMax(drafts.map(d => d.recency)),
-        importance: minMax(drafts.map(d => d.importance)),
-        breadth: minMax(drafts.map(d => d.breadth)),
-    };
-    const baseNorm = minMax(drafts.map(d => d.fusion));
-
-    const scored = drafts.map(draft => {
-        let local = 0.5;
-        const features = {};
-        for (const name of Object.keys(WEIGHTS)) {
-            const value = clamp01(norm[name](draft[name]));
-            features[name] = Number(value.toFixed(3));
-            // Centre on 0.5 so a feature with no spread contributes exactly nothing.
-            local += WEIGHTS[name] * (value - 0.5) * 2;
-        }
-        local = clamp01(local);
-        const base = clamp01(baseNorm(draft.fusion));
-        const w = clamp01(Number(weight));
-        const combined = clamp01((1 - w) * base + w * local) + (draft.entity ? 0.05 : 0);
-        features.channels = draft.channels;
-        features.entity_bypass = Boolean(draft.entity);
-        features.fusion = Number(draft.fusion.toFixed(4));
-        features.local = Number(local.toFixed(3));
-        return { row: draft.row, combined, features, local, base };
-    });
-
-    // Stable: equal combined scores keep the fusion order.
-    scored.sort((a, b) => (b.combined - a.combined) || 0);
-    const pool = Math.max(1, Number(maxPool) || 60);
-    const kept = scored.slice(0, pool).map(entry => ({
-        ...entry.row,
-        rerank_score: Number(entry.combined.toFixed(6)),
-        rerank_features: entry.features,
-    }));
-    debug.pool = kept.length;
-    debug.top = kept.slice(0, 5).map(entry => ({ id: entry.memory?.id || entry.id || null, rerank: entry.rerank_score, features: entry.rerank_features }));
-    return { rows: kept, debug };
+export async function requestRerank({ baseUrl, apiKey, model, query, documents, topN, fetchImpl }) {
+    const base = resolveOpenAiCompatibleBaseUrl(baseUrl);
+    if (!base) throw new Error('重排地址未配置。');
+    const key = String(apiKey || '').trim();
+    if (!key) throw new Error('重排 API Key 未配置。');
+    const body = buildRerankRequest({ model, query, documents, topN });
+    const send = fetchImpl || globalThis.fetch?.bind(globalThis);
+    if (typeof send !== 'function') throw new Error('重排传输不可用。');
+    const response = await send(base + '/rerank', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + key },
+        body: JSON.stringify(body) });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error('重排请求失败：HTTP ' + response.status + (detail ? ' · ' + detail.slice(0, 300) : ''));
+    }
+    return parseRerankResponse(await response.json().catch(() => null), body.documents.length);
 }

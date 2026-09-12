@@ -11,13 +11,24 @@
 export const SPINE_VERSION = 1;
 export const SPINE_KEY = 'spine';
 
-// The spine is authoritative-but-BOUNDED state, not a derived store key. It cannot be derived:
-// as soon as an external derived record exists, the metadata guard removes every DERIVED_KEY from the
-// store object that runtime readers see, so a derived spine would be silently invisible to the
-// mandatory-baseline and provenance paths that depend on it. Keeping it authoritative also means it
-// can never be lost to an unreachable backend. The cost is bounded here instead: a recent window of
-// nodes is kept and older ones are dropped, while the durable per-slot history lives in the memories
-// themselves (factHistory reads those, not this window).
+// The spine is authoritative-but-BOUNDED state. It IS registered in DERIVED_KEYS, which keeps it out
+// of the chat file while it remains a readable property on the live store object that
+// mandatory-baseline, provenance and the prompt builder read.
+//
+// An earlier revision of the ownership guard stripped derived keys off the store object runtime
+// readers see, which made a derived spine silently invisible. That revision is gone: the guard now
+// projects the keys out at serialisation time instead of deleting them
+// (installDerivedSerializationFilter in v55-derived-store.js), so the two are compatible.
+//
+// Measured on the live chat "Seraphina - 2026-09-11@20h22m03s183ms" with the external derived backend
+// (tauritavern-extension-store) hydrated and SPINE_KEY present in DERIVED_KEYS: store.spine was an own
+// property of the live store, carrying 50 nodes and 10 ledger entries, and spinePromptBlock produced
+// 476 characters. The unresolved item in MEMORY_PLAN_2026.md is therefore closed in favour of the
+// derived-store registration.
+//
+// The cost is bounded here rather than by an eviction policy: a recent window of nodes is kept and
+// older ones dropped, while the durable per-slot history lives in the memories themselves
+// (factHistory reads those, not this window).
 const MAX_NODES = 300;
 const MAX_LEDGER = 120;
 const MAX_INDEX = 24;
@@ -85,6 +96,13 @@ export function isNeverDrop(memory) {
     return irreversibilityRank(memory) >= NEVER_DROP_RANK;
 }
 
+/** How many never-drop memories the store holds, and whether that is past the planning bound. */
+export function mandatoryBaselineSize(store, limit = 24) {
+    const count = mandatoryMemories(store).length;
+    const bound = Math.max(0, Number(limit) || 0);
+    return { count, limit: bound, over_limit: bound > 0 && count > bound };
+}
+
 export function mandatoryMemories(store, { limit = 24 } = {}) {
     const memories = store?.memories && typeof store.memories === 'object' ? store.memories : {};
     const spine = openSpine(store, false);
@@ -104,7 +122,19 @@ export function mandatoryMemories(store, { limit = 24 } = {}) {
     }
     rows.sort((a, b) => b.rank - a.rank
         || Number(b.memory.source_message || 0) - Number(a.memory.source_message || 0));
-    return rows.slice(0, Math.max(0, Number(limit) || 0)).map(row => row.memory);
+    // The limit is a PLANNING bound, not a truncation, and it used to be the latter.
+    //
+    // Every row here is a never-drop memory, so slicing to the limit cut the one kind of memory the
+    // design says can never be dropped - silently, and at the moment it mattered most, since the set only
+    // reaches the bound when the story has accumulated that many irreversible claims. Measured on the
+    // acceptance chat the baseline sat at 23 of 24: one slot of headroom, and the next promise would have
+    // been dropped from the baseline while the certificate went on computing its protected set from
+    // IRREVERSIBILITY and reporting the loss as an ordinary budget outcome.
+    //
+    // The set is bounded by the story's commitments rather than by its slots, so it stays small in
+    // practice - 15 on a 51-floor chat, 23 on a 28-floor one - and when it does exceed the bound that is
+    // information. mandatoryBaselineSize reports it instead of hiding it.
+    return rows.map(row => row.memory);
 }
 
 export function provenanceChannel(op = {}, memoryLike = {}) {
@@ -176,6 +206,9 @@ export function appendSpine(store, records, context = {}) {
             memory: memoryId,
             target: targetId,
             replaced: clean(record.superseded_by, 80) || null,
+            // The value this node replaced. `update` rewrites a record in place, so the previous value
+            // has no other carrier anywhere in the store.
+            previous: clean(record.prev_text, 240) || null,
             first,
         };
         spine.nodes.push(node);
@@ -230,6 +263,20 @@ export function factHistory(store, slot) {
     const key = clean(slot, 160);
     if (!key) return [];
     const memories = store?.memories && typeof store.memories === 'object' ? store.memories : {};
+    const spine = openSpine(store, false);
+    // Values an in-place `update` overwrote. They are not memory records any more, but they are the only
+    // surviving statement of what the slot held before, and "how did it get like this" is unanswerable
+    // without them.
+    const previous = new Map();
+    if (spine) {
+        for (const node of spine.nodes) {
+            if (node.slot !== key || !node.previous) continue;
+            const owner = node.memory || node.target || null;
+            const list = previous.get(owner) || [];
+            list.push({ seq: node.seq, text: node.previous });
+            previous.set(owner, list);
+        }
+    }
     return Object.values(memories)
         .filter(memory => memory && memory.slot === key)
         .sort((a, b) => Number(a.created_seq || 0) - Number(b.created_seq || 0))
@@ -240,6 +287,7 @@ export function factHistory(store, slot) {
             supersedes: memory.supersedes || null,
             superseded_by: memory.superseded_by || null,
             at: memory.recorded_at ?? null,
+            previous: (previous.get(memory.id) || []).sort((a, b) => a.seq - b.seq).map(entry => entry.text),
         }));
 }
 
@@ -268,8 +316,9 @@ export function spinePromptBlock(store, { maxChars = 600, maxRows = 10 } = {}) {
     const bySlot = new Map();
     for (const node of spine.nodes) {
         if (!node.slot) continue;
-        const entry = bySlot.get(node.slot) || { slot: node.slot, changes: 0, latest: null };
+        const entry = bySlot.get(node.slot) || { slot: node.slot, changes: 0, latest: null, previous: [] };
         entry.changes += 1;
+        if (node.previous) entry.previous.push(node.previous);
         entry.latest = node;
         bySlot.set(node.slot, entry);
     }
@@ -288,12 +337,63 @@ export function spinePromptBlock(store, { maxChars = 600, maxRows = 10 } = {}) {
     const lines = [header];
     let used = header.length + 2;
     for (const row of rows.slice(0, Math.max(1, Number(maxRows) || 10))) {
-        const line = '- [' + (row.current.kind || 'state') + '] ' + row.entry.slot + ' (已变更 ' + row.entry.changes + ' 次) 当前: ' + clean(row.current.text, 160);
+        // The replaced values, not just the fact that a change happened. "已变更 2 次" alone cannot answer
+        // "how did it get like this". Two carriers, because the store has two ways to replace a value:
+        // a retired memory on the same slot (what an `add` over an occupied slot leaves behind) and the
+        // `previous` text the spine keeps (what an in-place `update` would otherwise erase). Ordered so
+        // the chain reads oldest -> newest, then bounded to three endpoints and 220 characters.
+        const retired = Object.values(memories)
+            .filter(memory => memory && memory.slot === row.entry.slot && memory.id !== row.current.id && memory.text)
+            .sort((a, b) => Number(a.created_seq || 0) - Number(b.created_seq || 0))
+            .map(memory => memory.text);
+        const replaced = [...retired, ...row.entry.previous]
+            .slice(-3).map(value => clean(value, 90)).join(' -> ').slice(0, 220);
+        const line = '- [' + (row.current.kind || 'state') + '] ' + row.entry.slot + ' (已变更 ' + row.entry.changes + ' 次)'
+            + (replaced ? ' 曾: ' + replaced + ' ->' : '')
+            + ' 当前: ' + clean(row.current.text, 160);
         if (used + line.length + 1 > budget && lines.length > 1) break;
         lines.push(line);
         used += line.length + 1;
     }
     return lines.length > 1 ? lines.join('\n') : '';
+}
+
+/**
+ * The lowest current-state cap `context-assembler.buildCurrentStateBlock` will honour. Mirrors its
+ * `clampInteger` floor: a reservation that pushed the effective cap below this would be silently
+ * clamped back up, and the chain would overflow the block again exactly as it did before.
+ */
+export const SPINE_STATE_FLOOR = 800;
+
+/**
+ * Reserve the change chain's characters INSIDE the current-state cap instead of appending them after it.
+ *
+ * Appending made the chain the first casualty of any budget pressure. It renders at the tail of the
+ * current-state block, so once the assembler had already spent its whole cap, v55-consistency's
+ * `budgetPromptPair` trim removed the chain wholesale. Measured on the live 28-assistant-floor chat
+ * (change_log entry 10): the chain is 694 characters, and losing it drops the certificate's `causal`
+ * from 3/3 to 1/3 at a 6,000-character cap while `state`, `commitment`, `soundness` and `epistemic`
+ * all stay green. It is the only certificate dimension that fails before any state omission, and
+ * causation is one of the five dimensions a situation model has to preserve.
+ *
+ * The reservation is free whenever there is headroom: the returned cap equals the requested cap minus
+ * the chain, so the assembled block is unchanged until its natural size exceeds that difference.
+ *
+ * @returns {{ spineBlock: string, currentStateCap: number, reservedChars: number }}
+ */
+export function planSpineReservation(store, { stateCap = 0, maxChars = 600, maxRows = 10, floor = SPINE_STATE_FLOOR } = {}) {
+    const cap = Math.max(0, Number(stateCap) || 0);
+    const full = spinePromptBlock(store, { maxChars, maxRows });
+    if (!full) return { spineBlock: '', currentStateCap: cap, reservedChars: 0 };
+    const reserve = Math.min(full.length, Math.max(0, cap - Math.max(0, Number(floor) || 0)));
+    if (reserve <= 0) return { spineBlock: '', currentStateCap: cap, reservedChars: 0 };
+    let block = reserve >= full.length ? full : spinePromptBlock(store, { maxChars: reserve, maxRows });
+    // spinePromptBlock will not render below its own 120-character floor, so at a very small reservation
+    // it can hand back MORE than it was asked for. Taking that would push the state cap under the floor
+    // the assembler clamps at - the exact failure this reservation exists to prevent. Step aside.
+    if (block.length > reserve) block = '';
+    if (!block) return { spineBlock: '', currentStateCap: cap, reservedChars: 0 };
+    return { spineBlock: block, currentStateCap: Math.max(0, cap - block.length), reservedChars: block.length };
 }
 
 /** Diagnostics only: the traced chain for one slot, rendered for a developer panel. */

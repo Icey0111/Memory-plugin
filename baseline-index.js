@@ -36,20 +36,30 @@ function cleanDisplayText(input) {
         .trim();
 }
 
-export function tokenizeBaselineText(input) {
+/**
+ * The same tokenization, keeping term frequencies.
+ *
+ * BM25 needs a count per term, not a membership test, and a scorer that tokenizes differently from
+ * the index would rank a different document set for the same query. Keys come out in
+ * first-occurrence order, which is exactly what the deduplicated form used to return.
+ */
+export function baselineTermCounts(input) {
     const s = normalizeBaselineText(input);
-    if (!s) return [];
-    const out = [];
-    const latin = s.match(/[a-z0-9_][a-z0-9_.:/+-]*/g) || [];
-    out.push(...latin);
-    const hanRuns = s.match(/[\u3400-\u9fff]+/g) || [];
-    for (const run of hanRuns) {
-        if (run.length === 1) out.push(run);
+    const counts = new Map();
+    if (!s) return counts;
+    const bump = term => counts.set(term, (counts.get(term) || 0) + 1);
+    for (const term of s.match(/[a-z0-9_][a-z0-9_.:/+-]*/g) || []) bump(term);
+    for (const run of s.match(/[\u3400-\u9fff]+/g) || []) {
+        if (run.length === 1) bump(run);
         for (let n = 2; n <= 3; n++) {
-            for (let i = 0; i <= run.length - n; i++) out.push(run.slice(i, i + n));
+            for (let i = 0; i <= run.length - n; i++) bump(run.slice(i, i + n));
         }
     }
-    return [...new Set(out)];
+    return counts;
+}
+
+export function tokenizeBaselineText(input) {
+    return [...baselineTermCounts(input).keys()];
 }
 
 function sentencePieces(text) {
