@@ -62,6 +62,30 @@ The verified form keeps one line per character and puts what the character does 
 line, which is what the merge rule always assumed. The stale window is unchanged: the key handover on turn
 12 stayed wrong in the block until the turn-20 pass, a lag of 9 turns.
 
+### Which layer actually answers (four runs, 114 turns, 27 probes)
+
+Every probe was answered correctly across the four runs. The single exception was a character declining to
+assert a death on the strength of one report, which is the answer the scene wanted.
+
+| where the answer already was | probes |
+| --- | --- |
+| the injected state block (summary + anchors + boundaries) | 24 of 27 |
+| the summary alone, on the purpose-written probe set | 10 of 10 |
+| **retrieval was the only possible source** | **3 of 27** |
+
+The last row is the finding. Retrieval was the only possible source in 3 of 27 probes, all in the 60-turn run
+(turns 40, 51, 59); in the 30-turn run and in both 24-turn probe runs it was never the only source. All three
+were answered, and the two whose answer exists as original text had that text quoted. No missed recall was
+observed - three cases are not a rate.
+
+The summary is why. On a purpose-written probe set - a meaningless serial `灰鹭17-B`, a door plate
+`丙字三号`, a count that fell from seven to five, an `靛蓝` lining - the summary carried all ten details at a
+600-token budget, and still carried all ten after the budget was cut to 300 (summaries 344 vs 409 characters
+stored). Squeezing the budget shortened the prose and kept the itemised facts.
+
+So the continuity block is the foundation the story leans on, and retrieval is a fallback for what that block
+drops. The cost of the arrangement is the prompt budget the block occupies, not the accuracy of the index.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
@@ -84,6 +108,8 @@ line, which is what the merge rule always assumed. The stale window is unchanged
 - Embedding and reranking calls have costs beyond the final LLM context budget.
 - The earlier 87% answer-in-context result belongs to its measured question set and provider.
 - Source-id coverage verifies provenance alignment, not whether every necessary fact was summarized.
+- Retrieval is a fallback: it was the only possible source in 3 of 27 measured probes, so its precision is not
+  established by live play in this architecture, only its absence of observed failure.
 - The state block is stale by up to one cadence by design (ADR-0017); the visible transcript is what covers
   that window.
 

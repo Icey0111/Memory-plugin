@@ -106,6 +106,10 @@ the chat file keeps (ADR-0004).
 
 - Dense retrieval over original text needs a configured embedding backend; without one the pipeline
   is lexical-only and says so in its diagnostics.
+- Retrieval is a fallback rather than the foundation: across four runs and 27 probes the injected continuity
+  block already carried the answer 24 times, and retrieval was the only possible source 3 times. A summary
+  squeezed to 300 tokens still kept every planted detail, so the measured risk is prompt budget rather than
+  recall accuracy. dev_docs/04_roadmap.md records the run.
 - The archive keeps every superseded version, and nothing prunes it. Measured at about one copy of the
   conversation text (41-351 KB per chat, 4-33% of the file), which is why it stays lossless (ADR-0004).
   Growth on very long chats is still unmeasured.
