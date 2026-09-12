@@ -13,6 +13,12 @@ belongs in Git commits and pull requests.
 - Continuity anchors: promises, ownership, secrets, identities and life states are stored separately,
   fed back to the summarizer verbatim every pass, and re-injected every generation. An anchor the model
   stops mentioning is kept and flagged; only an explicit resolution removes it.
+- Knowledge boundaries: who knows what, and who explicitly does not, is its own section of the
+  summary - stored, fed back to the summarizer verbatim, and re-injected every generation with its own
+  budget. It is a record the panel can show and a test can assert, not enforcement.
+- The legacy generation runtime is retired rather than gated: the v5.4 interceptor, its prompt
+  assembly, the extraction and recall-prefetch events, the startup reconciliation, and six settings
+  controls that no longer had a handler are gone.
 - Two quiet failures are now counted and announced: a summary job that keeps failing, and an
   unsummarized tail that keeps growing. Neither breaks the story, and both used to be invisible.
 - Narrative continuity summary: a background pass every N floors writes one compact summary of where

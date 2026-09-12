@@ -1,5 +1,6 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
-    summaryPrompt, applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors } from './raw-history.js';
+    summaryPrompt, applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
+    mergeKnowledge } from './raw-history.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -19,7 +20,10 @@ const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative
     // Continuity anchors: the commitments, ownership, secrets and life states that must survive every
     // rewrite. They are re-fed to the summarizer and re-injected verbatim, so they stop depending on
     // the model remembering to carry them forward in prose.
-    narrative_anchor_tokens: 300, narrative_anchor_unconfirmed_warn: 2 };
+    narrative_anchor_tokens: 300, narrative_anchor_unconfirmed_warn: 2,
+    // Who knows what. Carried as its own block for the same reason as the anchors: a character
+    // silently learning a secret is a story change that no amount of prose quality fixes.
+    narrative_knowledge_tokens: 200 };
 // Both maps are keyed by the host's chat-metadata object, not by the chat store object: the store
 // projection replaces the store on a persist, so a store-keyed map would lose the running job and the
 // live index on exactly the turns that wrote something. The metadata object is stable for a chat and
@@ -45,6 +49,7 @@ function options(settings) {
         failureWarn: bound(settings.narrative_summary_failure_warn, 3, 1, 50),
         anchorTokens: bound(settings.narrative_anchor_tokens, 300, 0, 4000),
         anchorUnconfirmedWarn: bound(settings.narrative_anchor_unconfirmed_warn, 2, 1, 20),
+        knowledgeTokens: bound(settings.narrative_knowledge_tokens, 200, 0, 4000),
         every: bound(settings.narrative_every, 10, 1, 100),
         summaryTokens: bound(settings.narrative_summary_tokens, 600, 100, 4000),
         evidenceTokens: bound(settings.narrative_evidence_tokens, 1000, 0, 8000),
@@ -172,8 +177,10 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
             const previous = state.store.narrative_summary;
             const previousAnchors = state.store.narrative_anchors;
             try {
+                const previousKnowledge = state.store.narrative_knowledge;
                 const text = await (services.summarize || generateNarrativeSummary)(ctx,
-                    summaryPrompt(previous?.text, batch, opts.summaryTokens, previousAnchors?.active), state.settings);
+                    summaryPrompt(previous?.text, batch, opts.summaryTokens, previousAnchors?.active,
+                        previousKnowledge?.entries), state.settings);
                 if (!services.isCurrent()) return;
                 state = prepare(ctx);
                 if (before !== state.chunks.map(row => row.id).join('|')) return;
@@ -188,10 +195,17 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
                 // A missing section is not a resolution: without it the anchors are left exactly as they
                 // were, because dropping them on a format slip would lose the facts this feature exists
                 // to protect.
-                if (parsed.sections === 'ok') live.narrative_anchors = mergeAnchors(previousAnchors, parsed);
-                else if (previousAnchors?.active?.length) live.narrative_anchors = { ...previousAnchors,
-                    active: previousAnchors.active.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
-                    parse: 'missing', updated_at: Date.now() };
+                if (parsed.sections === 'ok') {
+                    live.narrative_anchors = mergeAnchors(previousAnchors, parsed);
+                    live.narrative_knowledge = mergeKnowledge(previousKnowledge, parsed);
+                } else {
+                    if (previousAnchors?.active?.length) live.narrative_anchors = { ...previousAnchors,
+                        active: previousAnchors.active.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
+                        parse: 'missing', updated_at: Date.now() };
+                    if (previousKnowledge?.entries?.length) live.narrative_knowledge = { ...previousKnowledge,
+                        entries: previousKnowledge.entries.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
+                        parse: 'missing', updated_at: Date.now() };
+                }
                 diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
                     anchor_parse: parsed.sections });
                 prepare(ctx);
@@ -301,8 +315,14 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const anchorsTruncated = anchorLines.length - (fittedAnchors ? fittedAnchors.split('\n').length : 0);
     const anchorBlock = fittedAnchors
         ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions]\n' + fittedAnchors : '';
-    const continuityBlock = [summaryBlock, anchorBlock].filter(Boolean).join('\n\n');
-    const configured = opts.summaryTokens + opts.anchorTokens + opts.evidenceTokens + opts.settingTokens + 100;
+    const knowledge = Array.isArray(live.narrative_knowledge?.entries) ? live.narrative_knowledge.entries : [];
+    const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
+    const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
+    const knowledgeBlock = fittedKnowledge
+        ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not]\n' + fittedKnowledge : '';
+    const continuityBlock = [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n');
+    const configured = opts.summaryTokens + opts.anchorTokens + opts.knowledgeTokens
+        + opts.evidenceTokens + opts.settingTokens + 100;
     const hostRoom = Number(contextSize) > 0 ? Math.max(0, Number(contextSize) - estimateTokens(raw)
         - bound(settings.context_reply_reserve_tokens, 1024, 0, 32000)) : configured;
     const totalBudget = Math.min(configured, hostRoom);
@@ -337,6 +357,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchors_active: anchors.length,
         anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: anchorsTruncated,
+        knowledge_entries: knowledge.length,
+        knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         warnings,
         sources: evidence.sources, candidates: ranked.length, vector_available: Boolean(index?.available && !vectorError),
         vector_error: vectorError || live.narrative_diagnostics?.vector_reason || null,
@@ -418,6 +440,8 @@ export function readNarrativeReport(ctx) {
         anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
         anchors_resolved: (store.narrative_anchors?.resolved || []).length,
         anchor_parse: store.narrative_diagnostics?.anchor_parse || store.narrative_anchors?.parse || null,
+        knowledge_entries: (store.narrative_knowledge?.entries || []).length,
+        knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
         warnings: warningsFor({ ...pending, summary_failures: failures,
             summary_error: store.narrative_diagnostics?.summary_error || null,
             anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,

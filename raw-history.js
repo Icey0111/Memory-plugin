@@ -107,7 +107,10 @@ export function nextSummaryBatch(summary, chunks, { every = 10, inputChars = 180
 
 export const ANCHOR_SECTION = '【锚点】';
 export const RESOLVED_SECTION = '【已解决】';
-const SECTION_HEADS = [ANCHOR_SECTION, RESOLVED_SECTION];
+export const KNOWLEDGE_SECTION = '【知情边界】';
+const SECTION_HEADS = [ANCHOR_SECTION, RESOLVED_SECTION, KNOWLEDGE_SECTION];
+/** The knowledge list is bounded: it is a prompt block, not a ledger. */
+export const MAX_KNOWLEDGE = 20;
 const anchorKey = item => (String(item.kind || '其他').trim() + '|' + String(item.text || '').trim()).normalize('NFKC');
 
 /**
@@ -124,6 +127,7 @@ export function parseAnchors(text) {
     let seenSection = false;
     const anchors = [];
     const resolved = [];
+    const knowledge = [];
     for (const line of lines) {
         const trimmed = line.trim();
         const head = SECTION_HEADS.find(value => trimmed.startsWith(value));
@@ -139,9 +143,12 @@ export function parseAnchors(text) {
             ? { kind: parts[0].slice(0, 12), text: parts.slice(1).join(' | ').slice(0, 200) }
             : { kind: '其他', text: body.slice(0, 200) };
         if (!item.text) continue;
-        (section === ANCHOR_SECTION ? anchors : resolved).push(item);
+        if (section === ANCHOR_SECTION) anchors.push(item);
+        else if (section === RESOLVED_SECTION) resolved.push(item);
+        else knowledge.push(item);
     }
-    return { summary: prose.join('\n').trim(), anchors, resolved, sections: seenSection ? 'ok' : 'missing' };
+    return { summary: prose.join('\n').trim(), anchors, resolved, knowledge,
+        sections: seenSection ? 'ok' : 'missing' };
 }
 
 /** The injected form: one short line per anchor, no ids, no bookkeeping. */
@@ -177,7 +184,30 @@ export function mergeAnchors(previous, parsed, at = Date.now()) {
         updated_at: at };
 }
 
-export function summaryPrompt(previous, batch, maxTokens, anchors) {
+/**
+ * Knowledge boundaries: who knows what, and who does not.
+ *
+ * Same discipline as the anchors. A boundary the model stops restating is kept and flagged, because a
+ * character silently learning something is a story change, not a formatting slip. The list is bounded,
+ * and the overflow is reported rather than dropped in silence.
+ */
+export function mergeKnowledge(previous, parsed, at = Date.now()) {
+    const prior = new Map((previous?.entries || []).map(item => [anchorKey(item), item]));
+    const entries = [];
+    for (const item of parsed.knowledge) {
+        const key = anchorKey(item);
+        const before = prior.get(key);
+        prior.delete(key);
+        entries.push({ id: before?.id || anchorId(item), kind: item.kind, text: item.text,
+            first_seen: before?.first_seen ?? at, last_confirmed: at,
+            passes: (before?.passes || 0) + 1, unconfirmed: 0 });
+    }
+    for (const item of prior.values()) entries.push({ ...item, unconfirmed: (item.unconfirmed || 0) + 1 });
+    const overflow = Math.max(0, entries.length - MAX_KNOWLEDGE);
+    return { version: 1, entries: entries.slice(-MAX_KNOWLEDGE), overflow, parse: parsed.sections, updated_at: at };
+}
+
+export function summaryPrompt(previous, batch, maxTokens, anchors, knowledge) {
     const current = formatAnchors(anchors);
     return `你是剧情续接摘要器。将旧摘要与新增原文合成一份替代旧摘要的紧凑摘要，目标不超过 ${maxTokens} token。\n`
         + '只保留目前局面、导致局面的必要因果、在场人物与目的、仍影响后续的承诺和未决事项。'
@@ -188,8 +218,12 @@ export function summaryPrompt(previous, batch, maxTokens, anchors) {
         + ANCHOR_SECTION + '：列出目前仍然生效的承诺、所有权、秘密、身份与生死状态。'
         + '输入列表里已有的锚点必须逐条原样照抄（不要改写、合并、翻译或省略），新发现的用同样格式追加。'
         + '没有就写“无”。格式：- 类型 | 一句陈述\n'
-        + RESOLVED_SECTION + '：只列出本轮原文明确解决、失效或被推翻的锚点。没有就写“无”。\n\n'
-        + `【旧摘要】\n${previous || '无'}\n\n【当前锚点】\n${current || '无'}\n\n【新增原文】\n`
+        + RESOLVED_SECTION + '：只列出本轮原文明确解决、失效或被推翻的锚点。没有就写“无”。\n'
+        + KNOWLEDGE_SECTION + '：列出当前仍然成立的知情边界——谁知道什么、谁明确不知道什么，'
+        + '尤其是秘密、隐瞒和误解。输入列表里已有的条目必须逐条原样照抄，新出现的用同样格式追加。'
+        + '没有就写“无”。格式：- 角色 | 知道或不知道 | 事实\n\n'
+        + `【旧摘要】\n${previous || '无'}\n\n【当前锚点】\n${current || '无'}\n\n`
+        + `【当前知情边界】\n${formatAnchors(knowledge) || '无'}\n\n【新增原文】\n`
         + batch.map(row => `[${row.id}] ${row.retrievalText}`).join('\n\n');
 }
 

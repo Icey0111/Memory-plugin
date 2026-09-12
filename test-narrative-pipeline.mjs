@@ -413,4 +413,47 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.ok(trimmed.sources[0].end < 2000, 'the quoted range is the trimmed one');
 }
 
+// --- 14. knowledge boundaries are carried, not re-derived -----------------------------------------
+// The retired fact path filtered by known_by: it could hide a line from a character who should not
+// know it. With facts out of the prompt there is nothing left to filter per line, so the boundary
+// becomes an explicit, inspectable part of the summary instead of an implicit one - and it is carried
+// the same way the anchors are, because a character silently learning a secret is a story change.
+{
+    const PROSE = '局面：两人在地窖里。';
+    const withBoundaries = PROSE
+        + '\n【锚点】\n- 秘密 | 钥匙来自林舟\n【已解决】\n无'
+        + '\n【知情边界】\n- 苏晚 | 不知道 | 钥匙来自林舟\n- 林舟 | 知道 | 钥匙现在在苏晚手里';
+    let reply = withBoundaries;
+    const host = makeHost(12, { summarize: async () => reply });
+    const { ctx, services } = host;
+    const addFloor = n => {
+        host.chat.push({ name: 'User', is_user: true, mes: '第' + n + '层：两人继续说话。' });
+        host.chat.push({ name: 'Seraphina', is_user: false, mes: '第' + n + '层：灯芯烧短了一截。' });
+    };
+
+    await updateNarrative(ctx, services, { force: true });
+    let report = readNarrativeReport(ctx);
+    assert.equal(report.knowledge_entries, 2, 'the boundaries the summarizer listed are recorded');
+    const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
+    assert.match(bundle.currentStateBlock, /KNOWLEDGE BOUNDARIES/,
+        'boundaries are injected as their own block, not left inside the prose');
+    assert.ok(bundle.currentStateBlock.includes('苏晚] 不知道 | 钥匙来自林舟'),
+        'including what a character must not act on');
+
+    // The format slips: the boundaries stay, and they are reported as unrepeated.
+    reply = PROSE;
+    addFloor(13); addFloor(14);
+    await updateNarrative(ctx, services, { force: true });
+    report = readNarrativeReport(ctx);
+    assert.equal(report.knowledge_entries, 2, 'a missing section does not delete a boundary');
+    assert.equal(report.knowledge_unconfirmed, 2, 'it flags them as unrepeated instead');
+
+    // And the block has its own budget: it sends whole lines or none.
+    const tight = makeHost(12, { settings: { narrative_knowledge_tokens: 0 }, summarize: async () => withBoundaries });
+    await updateNarrative(tight.ctx, tight.services, { force: true });
+    const clipped = await buildNarrativeContext(tight.ctx, tight.services, { contextSize: 32768 });
+    assert.doesNotMatch(clipped.currentStateBlock, /KNOWLEDGE BOUNDARIES/, 'no budget, no block');
+    assert.equal(clipped.diagnostics.knowledge_entries, 2, 'but the entries are still recorded');
+}
+
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');
