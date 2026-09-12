@@ -321,6 +321,13 @@ export function readNarrativeReport(ctx) {
         summary_tokens: summary ? estimateTokens(summary.text) : 0,
         covered_chunks: validSummary(summary, chunks) ? summary.covered.length : 0,
         folded_rows: rows.filter(row => row?.is_system === true && isFoldedRow(row)).length,
+        // What the archive costs, in characters, against what the transcript already holds. The chat
+        // file carries both, so this is the number a user can compare with the file size.
+        archive_chars: history ? Object.values(history.records).reduce((sum, row) => sum + String(row.text || '').length, 0) : 0,
+        superseded_chars: history ? Object.entries(history.records)
+            .filter(([id]) => !history.active.includes(id))
+            .reduce((sum, [, row]) => sum + String(row.text || '').length, 0) : 0,
+        visible_chars: rows.filter(row => row?.is_system !== true).reduce((sum, row) => sum + String(row?.mes || '').length, 0),
         diagnostics: store.narrative_diagnostics || null,
     };
 }

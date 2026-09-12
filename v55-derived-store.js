@@ -35,9 +35,23 @@ const WRITE_DEBOUNCE_MS = 900;
  *   vector, baseline      - tiny (a few hundred bytes) and a stripped copy would read as stale and
  *                           trigger a full rebuild before hydration lands;
  *   entity_registry       - losing it fragments entity identity for every later mention;
- *   runtime_identity      - the identity assignment itself is authoritative.
+ *   runtime_identity      - the identity assignment itself is authoritative;
+ *   extractions           - the replay log. It is the one thing the fact set is derived FROM, so it
+ *                           stays canonical and the fact set can always be rebuilt from it.
+ *
+ * memories, slots and hierarchical_summaries are here because they are a projection, not a fact:
+ * \`memories\` and \`slots\` are exactly \`buildCanonicalState(extractions)\`, and the summary tree is no
+ * longer written by any module. Measured on five real chats they were 18-53% of the whole chat file
+ * (99-371 KB of a 464-1069 KB file), which made the retired fact set the largest storage cost in the
+ * project - larger than the original-text archive this design added. The strip only happens after the
+ * external record for that chat has been read or written, so nothing leaves the chat file until a copy
+ * exists elsewhere (see ensureDerivedHydrated).
  */
 export const DERIVED_KEYS = Object.freeze([
+    // The retired fact set: kept readable in memory, kept out of the chat file.
+    'memories',
+    'slots',
+    'hierarchical_summaries',
     'cold_turns',
     'scene_summaries',
     'scene_summary_source',

@@ -51,11 +51,18 @@
 | 原文档案 raw_history | chat metadata | 丢失等于丢掉所有被编辑过的旧版本 |
 | 剧情摘要 narrative_summary | chat metadata | 丢失只是暂时没有摘要，原文还在 |
 | 诊断 narrative_diagnostics | chat metadata | 无影响 |
+| 已退役事实库（memories / slots / 摘要树） | 外部派生记录 | 不影响剧情；可由 extractions 重放重建 |
 | 派生缓存（向量集合等） | 宿主扩展存储 / IndexedDB | 可重建，代价是一次重建时间 |
 | 设定库 | 全局 extension settings | 可重新导入 |
 
-原文档案让聊天文件大约增大一倍，这是当前最大的成本，取舍记录在
-[ADR-0003](dev_docs/decisions/ADR-0003-original-text-archive-in-chat-metadata.md)。
+实测（5 个真实聊天，见 [ADR-0004](dev_docs/decisions/ADR-0004-measured-storage-and-lexical-baseline.md)）：
+
+- 原文档案约等于**一份对话正文**（41–351 KB，占聊天文件 4–33%）——不是“翻倍”，因为聊天文件的大头是每条消息的 JSON 结构；
+- 真正占地方的是**已退役事实库**（99–371 KB，占 18–53%）。本版本已把它迁到外部派生记录，
+  聊天文件因此减少 53–188 KB，而 extractions（重放日志）仍留在聊天文件里，所以投影随时可以重建；
+- 没有派生后端时一切照旧留在聊天文件，不会丢。
+
+原文档案的取舍见 [ADR-0003](dev_docs/decisions/ADR-0003-original-text-archive-in-chat-metadata.md)。
 
 ## 设定库（World Info / 角色卡 / Persona）
 
@@ -95,9 +102,13 @@
 ## 测试
 
 ```text
-npm run check   # 语法闸门：自动发现并解析所有源文件
-npm test        # 离线回归：68 个测试文件
+npm run check              # 语法闸门：自动发现并解析所有源文件
+npm test                   # 离线回归：68 个测试文件
+node recall-baseline.mjs   # 量尺：在真实聊天上测档案开销与词法召回
 ```
+
+改预算、改分块大小、改排序规则之前先跑量尺。首轮结果（ADR-0004）：词法召回 88–100%、中位排名 0、
+每次查询约 925 token——这就是稠密检索必须超过的基线。
 
 核心验收（test-narrative-pipeline.mjs）：**只存在于原文、从未被任何抽取记录的细节仍然可被找回**，
 且任何楼层都不会在没有替代物的情况下被隐藏。引导生命周期见 test-narrative-bootstrap-lifecycle.mjs。

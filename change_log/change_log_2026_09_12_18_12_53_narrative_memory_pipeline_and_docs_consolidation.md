@@ -152,3 +152,56 @@ every persist, and asserts that the summary, the vector reason, the delivery rep
 land in the live store, and that two concurrent passes run one summary job rather than two. The
 lifecycle test now runs the setting path and asserts the vector report, so the path is covered on
 every run instead of only in a one-off probe.
+
+## Addendum 2026-09-12 18:37:46 - measuring the three open items before proposing anything for them
+
+The open items - archive size, the legacy runtime, and whether original-text retrieval actually works -
+were being carried as risks argued from the design. This pass measured them on real chats first, and the
+measurement changed two of the three conclusions.
+
+### The ruler
+
+- Added [recall-baseline.mjs L1-L40](file:///D:/memory_plugin/recall-baseline.mjs#L1-L40): reads real chats, runs the real ranking and packing code,
+  loads no plugin and writes nothing. It reports the archive's contribution to the chat file, what the
+  retired fact set still costs there, and lexical recall over the floors a summary would have folded.
+
+### What the measurement found
+
+Five real chats (the five largest under the host's chat directory), median file 521 KB:
+
+- The archive costs 41-351 KB, about one copy of the conversation text: 4-33% of the file. ADR-0003's
+  claim that "the chat file roughly doubles" was an estimate and is wrong; per-message JSON overhead
+  and the plugin's own store dominate the bytes.
+- The retired fact set was 99-371 KB per chat, 18-53% of the file - the largest storage cost in the
+  project, larger than the archive this design added.
+- Lexical-only retrieval found 88-100% of the probes at median rank 0, for about 925 tokens per query,
+  with no embedding backend. The probe asks with the needle's own sentence minus the needle, so this is
+  an upper bound for the lexical channel; the oblique question is still unmeasured.
+
+### What was changed because of it
+
+- [v55-derived-store.js L31-L60](file:///D:/memory_plugin/v55-derived-store.js#L31-L60): memories, slots and hierarchical_summaries joined the derived
+  keys. They are a projection of the replay log, not a fact - memories and slots are exactly
+  buildCanonicalState(extractions), and the summary tree is written by no module - so the external
+  record owns them and the chat file keeps extractions. The strip only activates after the external
+  record has been read or written for that chat, so an install with no derived backend keeps everything.
+- [test-v55-derived-store.mjs L50-L60](file:///D:/memory_plugin/test-v55-derived-store.mjs#L50-L60): the assertion that canonical memory is not derived is
+  replaced by the new contract, with the fact set checked readable in memory, absent from the
+  serialized store, and the replay log still in the chat file.
+- [narrative-runtime.js L285-L310](file:///D:/memory_plugin/narrative-runtime.js#L285-L310): the report now carries archive_chars, superseded_chars and
+  visible_chars, so the cost is visible in the settings panel instead of only in a measurement script.
+- [dev_docs/decisions/ADR-0004-measured-storage-and-lexical-baseline.md L1-L73](file:///D:/memory_plugin/dev_docs/decisions/ADR-0004-measured-storage-and-lexical-baseline.md#L1-L73): the
+  measurements, the relocation decision, the corrected cost model, and the lexical baseline that dense
+  retrieval now has to beat.
+- dev_docs v2 blocks: [dev_docs/01_architecture.md L190-L228](file:///D:/memory_plugin/dev_docs/01_architecture.md#L190-L228),
+  [dev_docs/02_development.md L76-L119](file:///D:/memory_plugin/dev_docs/02_development.md#L76-L119), [dev_docs/03_data_model.md L108-L160](file:///D:/memory_plugin/dev_docs/03_data_model.md#L108-L160),
+  [dev_docs/04_roadmap.md L54-L110](file:///D:/memory_plugin/dev_docs/04_roadmap.md#L54-L110) - the fact set that left the chat file, the ruler and when
+  to run it, the new invariant D6, and two roadmap items restated against their measurements.
+- [README.md L40-L60](file:///D:/memory_plugin/README.md#L40-L60): the storage section now carries the measured numbers instead of the
+  "roughly doubles" claim.
+
+### Not changed, and why
+
+The legacy runtime itself is still in the tree. The measurement moved its data out of the chat file,
+which was the storage half of the problem; deleting the code is a separate pass with its own test
+pruning, and it stays roadmap item 1.

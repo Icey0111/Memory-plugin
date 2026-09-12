@@ -28,7 +28,10 @@ function collect() {
             const relative = dir === '.' ? name : dir + '/' + name;
             const target = path.join(DIR, relative);
             if (!statSync(target).isFile()) continue;
-            if (name.endsWith('.js') || /^test-.*\.mjs$/.test(name) || name === 'check-syntax.mjs') files.push(relative);
+            // Every source file, including the root tools (run-tests, recall-baseline, deploy-live,
+            // chat-scan, fx-dump). The first version of this gate checked only .js plus test-*.mjs, so a
+            // syntax error in a tool that the repository ships was invisible to it.
+            if (name.endsWith('.js') || name.endsWith('.mjs')) files.push(relative);
         }
     }
     return files.sort();

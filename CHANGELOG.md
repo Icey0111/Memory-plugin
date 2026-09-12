@@ -7,6 +7,8 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- `recall-baseline.mjs`: the committed ruler for archive cost and lexical recall, measured on real
+  chats. First results and their limits are recorded in ADR-0004.
 - Narrative continuity summary: a background pass every N floors writes one compact summary of where
   the story stands (default budget 600 tokens), replacing the previous summary rather than growing it.
 - Original-text archive and retrieval: every message version is kept, chunked and indexed, and
@@ -24,6 +26,9 @@ belongs in Git commits and pull requests.
 - A floor leaves the prompt only while the accepted summary covers every chunk of it; the newest floor
   and the unsummarized tail always stay visible.
 - The extension has one generation entry instead of four layered installers.
+- The retired fact set (memories, slots, hierarchical summaries) moved out of the chat file into the
+  derived record. Measured: 53-188 KB less per chat, and it is rebuildable from the replay log, which
+  stays in the chat file. An install with no derived backend keeps everything as before.
 
 ### Fixed
 
