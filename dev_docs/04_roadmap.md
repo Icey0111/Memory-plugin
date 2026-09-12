@@ -129,6 +129,23 @@ are two messages. The one-span-per-message rule survives as a guard, not as a me
 of recall. Retrieval packs evidence on two thirds to five sixths of turns; what is rare is a question only it
 can answer. Measured by situation, it fires constantly and finds the right earlier floor about half the time.
 
+### The detail a person needs (ADR-0020)
+
+The situation channel recovered things, not people. `profileTargets` now takes the character names the
+summary already tracks and that the last three messages mention, and claims the hidden chunk that describes
+them - the most mentions of the name and the most descriptor words said near it. Measured on a 26-turn run
+where three characters and one place were introduced with distinctive attributes, folded, and brought back:
+
+| observation | measurement |
+| --- | --- |
+| turns with a known character in the situation | 16 |
+| turns where a describing passage was quoted | **15** |
+| contradicted a folded attribute | **0 of 6 checked turns** |
+
+The replies show what that buys. When the innkeeper reappeared, the model said the little finger could not be
+seen through the fog and had a character ask the tea-seller to confirm it instead of asserting a version it
+could not see. Six checked turns are not a contradiction rate, and a guard is not justified by them.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
@@ -154,8 +171,9 @@ can answer. Measured by situation, it fires constantly and finds the right earli
 - The earlier 87% answer-in-context result belongs to its measured question set and provider.
 - Source-id coverage verifies provenance alignment, not whether every necessary fact was summarized.
 - Retrieval fires on most turns. Its situational hit rate was 3 of 6 on the run written to test it and is
-  5 of 6 after ADR-0019, which is one chat and six moments; the automatic metric that replaces the probe table
-  counts n-gram fragments as entities and is an indicator rather than a score.
+  5 of 6 after ADR-0019; its character-profile form quoted a describing passage on 15 of 16 turns where a
+  known character was in the scene. Each of those is one chat. The entity metric counts n-gram fragments and
+  is an indicator rather than a score, and the descriptor lexicon behind the profile channel is hand-written.
 - The state block is stale by up to one cadence by design (ADR-0017); the visible transcript is what covers
   that window.
 

@@ -1,6 +1,6 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
     summaryPrompt, applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
-    mergeKnowledge, completedUserTurns, entityRecall } from './raw-history.js';
+    mergeKnowledge, completedUserTurns, entityRecall, profileRecall } from './raw-history.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -351,8 +351,8 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
     const shortlist = eligible.slice(0, opts.rerankCandidates);
     // Anything the situation channel claimed keeps a seat. That channel exists for the returning character
     // whose introduction ranked late, so the guarantee is worth as many extra documents as it claims terms.
-    const claimed = eligible.filter(row => row.channels.includes('entity') && !shortlist.includes(row))
-        .slice(0, RERANK_ENTITY_EXTRA);
+    const claimed = eligible.filter(row => (row.channels.includes('entity') || row.channels.includes('profile'))
+        && !shortlist.includes(row)).slice(0, RERANK_ENTITY_EXTRA);
     const pick = claimed.length ? [...shortlist, ...claimed] : shortlist;
     try {
         const order = await service.rerank(query, pick.map(row => row.chunk.retrievalText), model);
@@ -408,6 +408,12 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const anchorBlock = fittedAnchors
         ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions' + horizon + ']\n' + fittedAnchors : '';
     const knowledge = Array.isArray(live.narrative_knowledge?.entries) ? live.narrative_knowledge.entries : [];
+    // Who the situation is about. The knowledge block is keyed by character name, so the names are already
+    // extracted and do not need a second model call: a name that the summary tracks and that the last three
+    // messages mention is a character who is in the scene.
+    const knownNames = [...new Set([...knowledge.map(item => String(item.kind || '').split('/')[0]),
+        String(ctx.name1 || '').trim(), String(ctx.name2 || '').trim()])].filter(name => name.length >= 2 && name.length <= 12);
+    const profileNames = knownNames.filter(name => query.includes(name));
     const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
     const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
     const knowledgeBlock = fittedKnowledge
@@ -425,7 +431,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         return { referenceBlock: '', currentStateBlock: '', diagnostics: { summary_error: 'context budget too small; original floors restored' } };
     }
     const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuityBlock)));
-    const fused = rankRawChunks(chunks, query, dense, { visibleSources });
+    const fused = rankRawChunks(chunks, query, dense, { visibleSources, names: profileNames });
     const reranked = evidenceBudget > 0 ? await applyRerank(services, opts, query, fused, visibleSources)
         : { ranked: fused, used: false, error: null };
     // The rerank is a host round-trip, so it needs the same guard every other await here has: a result
@@ -437,6 +443,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     // exist only in hidden floors, how many came back with the evidence that was actually packed.
     const entityState = entityRecall(chunks, history, { query, visibleSources, packed: evidence.sources });
     const entityMissed = entityState.filter(row => !row.recalled);
+    // The second half of the same question: was the character described, not merely mentioned.
+    const profileState = profileRecall(chunks, history, { names: profileNames, visibleSources, packed: evidence.sources });
     let settingText = '';
     if (opts.settingTokens && services.settings) {
         const result = await services.settings(query);
@@ -467,6 +475,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         entity_candidates: entityState.length,
         entity_recalled: entityState.length - entityMissed.length,
         entity_terms: entityState.map(row => ({ term: row.term, first_floor: row.first_floor, recalled: row.recalled })),
+        profile_names: profileNames,
+        profile_terms: profileState.map(row => ({ name: row.name, quoted: row.quoted, detailed: row.detailed, descriptors: row.descriptors })),
         entity_missed: entityMissed.map(row => ({ term: row.term, first_floor: row.first_floor, hidden_floors: row.hidden_floors })),
         knowledge_entries: knowledge.length,
         knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
@@ -578,6 +588,9 @@ export function readNarrativeReport(ctx) {
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
         entity_candidates: store.narrative_diagnostics?.entity_candidates || 0,
+        profile_quoted: (store.narrative_diagnostics?.profile_terms || []).filter(row => row.quoted).length,
+        profile_detailed: (store.narrative_diagnostics?.profile_terms || []).filter(row => row.detailed).length,
+        profile_missing: (store.narrative_diagnostics?.profile_terms || []).filter(row => !row.detailed).map(row => row.name),
         entity_recalled: store.narrative_diagnostics?.entity_recalled || 0,
         entity_missed: (store.narrative_diagnostics?.entity_missed || []).map(row => row.term),
         warnings: warningsFor({ ...pending, summary_failures: failures,

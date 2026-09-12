@@ -107,6 +107,91 @@ export const ENTITY_WEIGHT = 0.5;
 export const ENTITY_DF_RATIO = 0.25;
 
 /**
+ * What a passage has to mention near a name to count as being *about* that person.
+ *
+ * The split this serves: the summary carries the logic - who these people are, what they want, what is
+ * unresolved - and retrieval carries the concrete detail. So when a named character is in the situation,
+ * the passage worth quoting is the one that describes them, not the one that merely scores well against the
+ * last three messages. Co-occurrence is required, within a window around the name, because most of these
+ * words are common enough to appear somewhere in any chunk.
+ */
+export const PROFILE_TERMS = [
+    '眼', '目', '眉', '发', '辫', '须', '疤', '痣', '脸', '皮肤', '肤色', '身', '高', '矮', '瘦', '胖',
+    '年纪', '岁', '声音', '嗓音', '口音', '腔', '手', '指', '缺', '脚', '腿', '背', '肩',
+    '衣', '袍', '衫', '褂', '帽', '鞋', '靴', '佩', '刀', '剑', '杖',
+    '沉默', '寡言', '话少', '多话', '急躁', '暴躁', '温和', '冷淡', '耿直', '谨慎', '咳嗽', '口吃', '习惯', '一向', '总先',
+];
+export const PROFILE_WEIGHT = 0.6;
+export const PROFILE_LIMIT = 4;
+const PROFILE_WINDOW = 60;
+
+/** Is one of the descriptor words said near this name, rather than merely somewhere in the chunk? */
+function describesName(text, name, term) {
+    let from = 0;
+    for (;;) {
+        const at = text.indexOf(name, from);
+        if (at < 0) return false;
+        if (text.slice(Math.max(0, at - PROFILE_WINDOW), at + name.length + PROFILE_WINDOW).includes(term)) return true;
+        from = at + name.length;
+    }
+}
+
+/**
+ * For each named character in the situation, the hidden chunk that is most about them.
+ *
+ * Measured need: a person who walked back into the scene after their floors were folded had their earlier
+ * passage quoted in only three of six such moments, and the passages that were quoted were about the scene
+ * rather than about the person. This picks the chunk with the most mentions of the name and the most
+ * descriptor words said near it, which is the one a reader would call "where this character is described".
+ */
+export function profileTargets(chunks, names, { visibleSources = new Set(), limit = PROFILE_LIMIT } = {}) {
+    const wanted = [...new Set((names || []).map(name => String(name || '').trim()))]
+        .filter(name => name.length >= 2 && name.length <= 12);
+    const out = [];
+    for (const name of wanted) {
+        let best = null;
+        for (const chunk of chunks) {
+            if (visibleSources.has(chunk.source)) continue;
+            const text = chunk.text;
+            let occurrences = 0;
+            for (let from = 0; ;) {
+                const at = text.indexOf(name, from);
+                if (at < 0) break;
+                occurrences++;
+                from = at + name.length;
+            }
+            if (!occurrences) continue;
+            const descriptors = PROFILE_TERMS.filter(term => describesName(text, name, term)).length;
+            const score = occurrences * 2 + descriptors * 3;
+            if (!best || score > best.score || (score === best.score && chunk.index < best.chunk.index)) {
+                best = { chunk, score, occurrences, descriptors };
+            }
+        }
+        if (best) out.push({ name, chunk: best.chunk, score: best.score, occurrences: best.occurrences, descriptors: best.descriptors });
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+/**
+ * Did a character who is in the situation get described back to the model?
+ *
+ * `quoted` is whether any packed passage mentions the name at all; `detailed` is whether one of them says
+ * a descriptor word near it. The second is the number that matters: a scene where the character appears is
+ * not the same as a passage that says what the character looks like or is like.
+ */
+export function profileRecall(chunks, history, { names = [], visibleSources = new Set(), packed = [], limit = PROFILE_LIMIT } = {}) {
+    const rows = packed.map(entry => history.records[entry.source || entry]).filter(Boolean);
+    return profileTargets(chunks, names, { visibleSources, limit }).map(target => ({
+        name: target.name,
+        hidden_chunk: target.chunk.id,
+        descriptors: target.descriptors,
+        quoted: rows.some(row => row.text.includes(target.name)),
+        detailed: rows.some(row => row.text.includes(target.name)
+            && PROFILE_TERMS.some(term => describesName(row.text, target.name, term))),
+    }));
+}
+
+/**
  * The rare terms of the current situation, and the two chunks that matter for each.
  *
  * Recall here is trigger-driven: the query is the recent messages, so an entity that walks back into the
@@ -171,7 +256,8 @@ export function entityRecall(chunks, history, { query = '', visibleSources = new
  */
 export function rankRawChunks(chunks, query, dense = [], options = {}) {
     const { scorer = 'bm25', rrfK = RRF_K, lexicalWeight = 1, denseWeight = DENSE_FUSION_WEIGHT,
-        entityWeight = ENTITY_WEIGHT, entityLimit = ENTITY_TERM_LIMIT, visibleSources = new Set() } = options;
+        entityWeight = ENTITY_WEIGHT, entityLimit = ENTITY_TERM_LIMIT, visibleSources = new Set(),
+        profileWeight = PROFILE_WEIGHT, profileLimit = PROFILE_LIMIT, names = [] } = options;
     const lexical = scoreChunks(chunks, query, { scorer });
     const byHash = new Map(chunks.map(chunk => [String(chunk.hash), chunk]));
     const scores = new Map();
@@ -200,6 +286,14 @@ export function rankRawChunks(chunks, query, dense = [], options = {}) {
                 seen.add(chunk.id);
                 add(chunk, rank++, 'entity', target.df, entityWeight);
             }
+        }
+    }
+    // The fourth channel: the characters who are in the situation. Their passages are what the summary
+    // cannot carry - it says who they are, not what they look like - so the chunk that describes them gets a
+    // vote of its own instead of competing with whatever else matches the last three messages.
+    if (options.profile !== false && names.length) {
+        for (const target of profileTargets(chunks, names, { visibleSources, limit: profileLimit })) {
+            add(target.chunk, 0, 'profile', target.descriptors, profileWeight);
         }
     }
     return [...scores.values()].sort((a, b) => b.score - a.score || b.chunk.index - a.chunk.index);

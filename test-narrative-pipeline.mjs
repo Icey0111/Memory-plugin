@@ -12,7 +12,8 @@
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
     nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
-    RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall } from './raw-history.js';
+    RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall,
+    profileTargets, profileRecall } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
@@ -769,6 +770,34 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const visible = entityRecall(scene, sceneHistory, { query: '老周问起那盏铜灯',
         visibleSources: new Set(['raw_1', 'raw_2', 'raw_3']), packed: [] });
     assert.equal(visible.length, 0, 'a term the transcript still shows is not something to recall');
+}
+
+
+// --- 21. a named character in the situation gets the passage that describes them -------------------
+// The split this serves: the summary carries the logic - who these people are and what they want - and
+// retrieval carries the concrete detail. So the passage worth a slot when a character is in the scene is
+// the one that describes them, not the one that happens to match the last three messages.
+{
+    const makeChunk = (id, source, index, text) => ({ id, source, start: 0, end: text.length, index,
+        role: 'assistant', name: 'A', text, hash: id, retrievalText: 'speaker: A (assistant)\n' + text });
+    const described = '老周左手小指缺了一节，穿灰布褂子，说话总先咳嗽一声。';
+    const scene = [makeChunk('c1', 'raw_1', 1, described),
+        makeChunk('c2', 'raw_2', 3, '老周说药铺后门有一道铁环，敲门要先两下再一下。'),
+        makeChunk('c3', 'raw_3', 5, '雨一直下，雨一直下，我们看着窗外的雨。')];
+    const targets = profileTargets(scene, ['老周'], { visibleSources: new Set(['raw_3']) });
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].chunk.source, 'raw_1', 'the chunk that describes him beats the one that only mentions him');
+    assert.ok(targets[0].descriptors >= 3, 'and the descriptor words near the name are what decided it');
+    assert.equal(profileTargets(scene, ['老周'], { visibleSources: new Set(['raw_1', 'raw_2', 'raw_3']) }).length, 0,
+        'a character with nothing hidden is not a recall target');
+    const history = { records: { raw_1: { id: 'raw_1', text: described } } };
+    assert.equal(profileRecall(scene, history, { names: ['老周'], packed: [] })[0].detailed, false,
+        'quoting nothing about him is not a description');
+    assert.equal(profileRecall(scene, history, { names: ['老周'], packed: [{ source: 'raw_3' }] })[0].quoted, false,
+        'a quoted scene that never mentions him does not count');
+    const hit = profileRecall(scene, history, { names: ['老周'], packed: [{ source: 'raw_1' }] })[0];
+    assert.equal(hit.quoted, true);
+    assert.equal(hit.detailed, true, 'the describing passage counts as described, not merely mentioned');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');
