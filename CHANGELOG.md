@@ -93,6 +93,12 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- The evidence block no longer quotes the same text twice, and no longer quotes text the prompt is
+  already showing under another row id. A 100-floor run whose user turn was always "继续。" spent all five
+  slots on five copies of that same fifty-character row: 366 tokens of filler and none of the story.
+  Replaying the state a prompt is really built from - the chat ending at the user's row - reproduces it on
+  the lexical path alone, and the same replay at floor 50 packs five story passages for 920 tokens. The
+  live block at floor 51 agreed after deploy (ADR-0022).
 - The settings panel now mounts. `parent.prepend` had been moved into the renderer, where the only
   `parent` in scope is the browser's `window.parent`; the panel was never attached and every scheduled
   pass threw, which then replaced the diagnostics with the error. Found by the live acceptance run.
