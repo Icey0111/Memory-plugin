@@ -739,4 +739,70 @@ follow-up rather than guessed at now.
 **Still not verified live.** The fix remains unobserved in the running app for the reason in entry 10.
 `node deploy-live.mjs --apply` is the single command that needs the approval.
 
+---
+
+## 12. Live verification: the change-chain reservation works, and the fix is now observed in the running app
+
+### Problem / Requirement
+
+Entries 10 and 11 recorded the fix as committed and unit-tested but **not verified live**, because copying it
+into the host's extension directory needed a sandbox escalation that had timed out three times. The
+escalation was approved on the fourth attempt (the user had been away, not a harness fault), which unblocked
+the verification.
+
+### Purpose of Change
+
+Close the gap between "79/79 offline" and "observed working in the real app", and record the shape of the
+trade the reservation makes, not just the headline number.
+
+### How It Was Changed
+
+- `node deploy-live.mjs --apply` - 23 files copied into the live extension directory, including
+  `index.js` and `v55-spine.js`.
+- Host reloaded, then
+  [expr-modsrc.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-modsrc.js) confirmed the served
+  source now carries `planSpineReservation` and `SPINE_STATE_FLOOR`, and that a cache-busted
+  `import()` sees the new export (`freshImportHasPlanner: true`).
+- [expr-verify-reserve.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-verify-reserve.js) -
+  re-ran the same budget sweep as the pre-fix measurement, same chat, same caps.
+- No product code changed in this entry.
+
+### Result
+
+**The defect is fixed, measured against the pre-fix sweep on the same chat.**
+
+| state cap | causal before | causal after | chain chars | state before | state after | tokens before | tokens after |
+|---|---|---|---|---|---|---|---|
+| 12000 (live) | 3/3 | 3/3 | 694 | 12/12 | 12/12 | 7707 | 7732 |
+| 7000 | 3/3 | 3/3 | 606 -> **694** | 12/12 | 12/12 | 7627 | 7632 |
+| **6000** | **1/3** | **3/3** | 0 -> **694** | 12/12 | 11/12 | 6888 | **6878** |
+| 5500 | 1/3 | **3/3** | 0 -> **694** | 12/12 | 10/12 | 6497 | 6509 |
+| 4500 | 1/3 | **3/3** | 0 -> **694** | 9/12 | 10/12 | 5755 | 5791 |
+| 3000 | 0/3 | **3/3** | 0 -> **694** | 7/12 | 8/12 | 4636 | 4638 |
+
+The chain now renders **in full, 694 characters, at every cap from 12,000 down to 3,000**, and `causal`
+holds **3/3 across that entire range** where it used to be 1/3 or 0/3 below 7,000. No block exceeds its cap
+at any point (`over: false` throughout), and `commitment` stays **23/23** down to 3,000.
+
+**The trade is explicit, which is the part worth recording.** At caps 6,000 and 5,500 the state block gives
+up one and two slot-bearing memories respectively to keep the causal record whole. That is the intended
+direction - causation is one of the five dimensions the summary exists to preserve, and the certificate
+scored its loss as the larger failure - but it is a real cost, not a free win, and it is smaller in practice
+than the 12/12 -> 10/12 reading suggests: `state` is defined over **12 of 73 active memories** (see entry 10),
+so one slot is roughly 1.4% of the store.
+
+**The cost is nil.** At the live setting the block grew by **25 tokens** (+0.3%). At a 6,000-character cap it
+came out **10 tokens cheaper**, because reallocating inside the cap lets the assembler pack better than an
+append-after-the-cap did.
+
+**The floor guard is exercised live.** At a 900-character cap the block is 863 characters with **no chain
+reserved** (`spineChars: 0`, `causal 0/3`): 900 minus the 800-character floor leaves 100, which is below
+`spinePromptBlock`'s own 120-character render floor, so the reservation steps aside and hands the cap over
+untouched rather than starving the state block. That is exactly the behaviour
+`test-v55-spine-reservation.mjs` pins, now observed rather than only asserted.
+
+**Status: verified.** The fix is committed (`7fa405e`), scripted for deployment (`f399e81`), covered offline
+(79/79), and now measured working in the running app.
+
+
 
