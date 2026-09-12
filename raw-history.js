@@ -92,28 +92,38 @@ export function scoreChunks(chunks, query, { scorer = 'bm25' } = {}) {
     return rows.filter(row => row.score > 0).sort((a, b) => b.score - a.score || b.chunk.index - a.chunk.index);
 }
 
+export const RRF_K = 60;
+// Measured on the 52-question set with the Jina retrieval-task vectors the plugin actually embeds with,
+// sweeping the dense channel's fusion weight: 0 (lexical only) 63%, 0.1 65%, 0.2 62%, 0.35 58%, 1.0 58%
+// - which is the shipped equal-weight setting, the worst point on the curve. Dense alone reached 37%, so
+// an equal vote lets a weak channel demote the strong one's candidates: hybrid raised candidate coverage
+// from 96% to 98% while answer-in-context fell from 63% to 58%. A weak weight keeps the recall the dense
+// channel adds and drops the reordering it should not have. See ADR-0015.
+export const DENSE_FUSION_WEIGHT = 0.1;
+
 /**
  * Fuse the channels into one ranked list.
  *
  * Each row keeps both channel readings - the lexical score and the dense rank - because fusion that
- * only knows ranks cannot tell a confident channel from a weak one, and a later weighting decision
+ * only knows ranks cannot tell a confident channel from a weak one, and the weighting decision above
  * needs the raw quantities.
  */
 export function rankRawChunks(chunks, query, dense = [], options = {}) {
-    const lexical = scoreChunks(chunks, query, options);
+    const { scorer = 'bm25', rrfK = RRF_K, lexicalWeight = 1, denseWeight = DENSE_FUSION_WEIGHT } = options;
+    const lexical = scoreChunks(chunks, query, { scorer });
     const byHash = new Map(chunks.map(chunk => [String(chunk.hash), chunk]));
     const scores = new Map();
-    const add = (chunk, rank, channel, value) => {
+    const add = (chunk, rank, channel, value, weight) => {
         if (!chunk) return;
         const row = scores.get(chunk.id) || { chunk, score: 0, channels: [], lexical: 0, vector: null };
-        row.score += 1 / (60 + rank + 1);
+        row.score += weight / (Math.max(1, rrfK) + rank + 1);
         row.channels.push(channel);
         if (channel === 'lexical') row.lexical = Number(value) || 0;
         else row.vector = { rank, score: Number(value) || 0 };
         scores.set(chunk.id, row);
     };
-    lexical.forEach((row, i) => add(row.chunk, i, 'lexical', row.score));
-    dense.forEach((row, i) => add(byHash.get(String(row.hash)), i, 'vector', row.score));
+    lexical.forEach((row, i) => add(row.chunk, i, 'lexical', row.score, lexicalWeight));
+    dense.forEach((row, i) => add(byHash.get(String(row.hash)), i, 'vector', row.score, denseWeight));
     return [...scores.values()].sort((a, b) => b.score - a.score || b.chunk.index - a.chunk.index);
 }
 
@@ -349,7 +359,10 @@ const renderEvidenceLine = (row, start, end) => '[' + row.id + ':' + start + '-'
 // four, 75% at six - and span precision falls the other way, 32% at two against 13% at six. The slot
 // count is therefore derived from the budget instead of fixed: one slot per 400 tokens, so raising the
 // evidence budget raises coverage rather than shrinking every share.
-export const EVIDENCE_TOKENS_PER_SLOT = 400;
+// Re-measured after the fusion weight was corrected (ADR-0015): with the better ranking a third slot is
+// worth its share at a 1000-token budget, where the old 400-token floor allowed only two. Three slots at
+// 1000 measured 69% against two slots at 65%, and the floor that makes that true is about 333.
+export const EVIDENCE_TOKENS_PER_SLOT = 333;
 export const EVIDENCE_SLOT_CAP = 6;
 
 /** The slot count the evidence budget pays for. */

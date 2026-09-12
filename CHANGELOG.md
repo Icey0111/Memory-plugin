@@ -63,8 +63,18 @@ belongs in Git commits and pull requests.
   frequency saturates and length is normalised. Measured paired on 52 hand-written questions: one question
   moved and none were won, so recall is unchanged; on the probe set the same 100% recall costs 737
   evidence tokens a query instead of 904. The change buys cost, not recall, and is reported that way.
-- The evidence slot count is derived from the evidence budget - one slot per 400 tokens, between one and
-  six - instead of being fixed at four. Swept on 52 hand-written questions: a share below about 400 tokens
+- The dense retrieval channel gets a weak vote instead of an equal one: `rankRawChunks` fused both channels
+  at 1/(60+rank+1), and on 52 hand-written questions that equal vote measured worse than lexical retrieval
+  alone (56% against 60%), because dense alone scores 37%. It raised candidate coverage from 96% to 98% while
+  lowering what survived into the prompt. The dense weight is now 0.1 and the evidence slot floor is 333
+  tokens rather than 400, both measured against the configured embedding backend. End to end on the same set:
+  answer-in-context 56% -> 69%, oblique recall 53% -> 69%, span precision 14% -> 23%, evidence 930 -> 893
+  tokens a query - 7 questions won, none lost, p=0.016 (ADR-0015).
+- `recall-embed.mjs` builds the vector cache the ruler measures the dense channel with, using the same chunk
+  text and retrieval task the plugin embeds with. The key comes from a file or an environment variable and is
+  never written or printed.
+- The evidence slot count is derived from the evidence budget - one slot per 333 tokens, between one and
+  six - instead of being fixed at four. Swept on 52 hand-written questions: a share below about 333 tokens
   cannot cover a merged message envelope, and a share above about 500 buys nothing, so at 1000 tokens four
   slots was quoting twice as much junk for the same answers. Two slots at the shipped budget measures 63%
   answer-in-context against 62%, 886 evidence tokens against 932, and 32% span precision against 15%; a

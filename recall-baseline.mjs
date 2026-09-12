@@ -22,7 +22,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, evidenceSlots } from './raw-history.js';
+import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, evidenceSlots,
+    DENSE_FUSION_WEIGHT } from './raw-history.js';
 import { DERIVED_KEYS } from './v55-derived-store.js';
 import { estimateTokens } from './v55-tokenizer.js';
 
@@ -40,7 +41,7 @@ const word = (name, fallback) => {
 const flagValues = new Set();
 args.forEach((value, index) => {
     if (['--limit', '--probes', '--paraphrases', '--scorer', '--pack', '--dump', '--against',
-        '--evidence', '--entries'].includes(value)) {
+        '--evidence', '--entries', '--embeddings', '--dense-weight', '--embed-top'].includes(value)) {
         flagValues.add(index + 1);
     }
 });
@@ -58,6 +59,31 @@ const EVIDENCE_TOKENS = flag('evidence', 1000);
 const EVIDENCE_ENTRIES = flag('entries', 0) || evidenceSlots(EVIDENCE_TOKENS);
 // Zero is passed through so the library default - the slot count the budget pays for - is what gets tested.
 const SLOTS = flag('entries', 0) || undefined;
+const DENSE_WEIGHT = flag('dense-weight', DENSE_FUSION_WEIGHT);
+const EMBED_TOP = flag('embed-top', 24);
+const embeddingFile = word('embeddings', null);
+const EMBEDDINGS = embeddingFile && fs.existsSync(embeddingFile)
+    ? JSON.parse(fs.readFileSync(embeddingFile, 'utf8')) : null;
+
+/**
+ * The dense channel for one query, read from a vector cache built by recall-embed.mjs.
+ *
+ * The cache holds one vector per chunk under c:<hash> and one per question under q:<question>, and the
+ * chunks are matched back by the hash the archive already computes - the same key the plugin's vector
+ * store returns. Without a cache the ruler is lexical only, which is what it was before.
+ */
+function denseFor(chunks, question) {
+    if (!EMBEDDINGS) return [];
+    const query = EMBEDDINGS.vectors['q:' + question];
+    if (!query) return [];
+    const dot = (a, b) => { let sum = 0; for (let i = 0; i < a.length; i++) sum += a[i] * b[i]; return sum; };
+    const norm = value => Math.sqrt(dot(value, value)) || 1;
+    const queryNorm = norm(query);
+    return chunks.map(chunk => {
+        const vector = EMBEDDINGS.vectors['c:' + chunk.hash];
+        return vector ? { hash: chunk.hash, score: dot(query, vector) / (queryNorm * norm(vector)) } : null;
+    }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, EMBED_TOP);
+}
 
 /**
  * A question set written by hand against a real chat, in two kinds:
@@ -243,7 +269,8 @@ function measure(chat) {
     const entropies = [];
     const margins = [];
     for (const probe of probes) {
-        const ranked = rankRawChunks(chunks, probe.query, [], { scorer: SCORER });
+        const ranked = rankRawChunks(chunks, probe.query, denseFor(chunks, probe.query),
+            { scorer: SCORER, denseWeight: DENSE_WEIGHT });
         const packed = packRawEvidence(ranked, history, { maxTokens: EVIDENCE_TOKENS,
             maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: probe.query });
         if (packed.text.includes(probe.needle)) found += 1;
@@ -315,7 +342,8 @@ function measureParaphrases(chats, entries) {
             // Measure in the chat that carries the needle, not merely the first one searched.
             const chat = searched.find(item => item.chunks.some(chunk => chunk.text.includes(entry.needle)))
                 || searched[0];
-            const ranked = rankRawChunks(chat.chunks, entry.question, [], { scorer: SCORER });
+            const ranked = rankRawChunks(chat.chunks, entry.question, denseFor(chat.chunks, entry.question),
+                { scorer: SCORER, denseWeight: DENSE_WEIGHT });
             const packed = packRawEvidence(ranked, chat.history, { maxTokens: EVIDENCE_TOKENS,
                 maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: entry.question });
             const where = attribute(ranked, packed, entry.needle, chat.history.records, chat.chunks);
@@ -455,6 +483,7 @@ if (!chats.length) {
 const pct = value => value === null ? '  n/a' : (value * 100).toFixed(0).padStart(4) + '%';
 console.log('scorer ' + SCORER + ' | pack ' + POLICY + ' | evidence budget ' + EVIDENCE_TOKENS
     + ' tokens in ' + EVIDENCE_ENTRIES + ' slots' + (SLOTS ? ' (pinned)' : ' (derived from the budget)')
+    + ' | dense ' + (EMBEDDINGS ? 'weight ' + DENSE_WEIGHT + ' of top ' + EMBED_TOP + ' from ' + embeddingFile : 'off')
     + ' | top ' + limit + ' chats by size');
 console.log('chat'.padEnd(40) + 'fileKB  msgs  floors  storeKB  moved  archive  chunks  probes  recall  cand  rank   tok');
 const rows = [];

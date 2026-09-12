@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
     nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
-    RAW_CHUNK_SIZE, evidenceSlots } from './raw-history.js';
+    RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
@@ -557,6 +557,21 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         'a chunk the channel never returned stays null rather than zero');
     assert.ok(fused.every(row => row.lexical > 0), 'and the lexical reading is on every row');
 
+    // The dense channel gets a weak vote, not an equal one. Measured with the Jina retrieval-task vectors
+    // the plugin embeds with: dense alone scored 37% against the lexical channel's 63%, and at equal
+    // weight the hybrid lost five points against lexical alone while raising candidate coverage. Sweeping
+    // the weight gave 63% at 0, 65% at 0.1, 62% at 0.2, 58% at 0.35 and 58% at 1.0 - the shipped setting.
+    const denseInput = [{ hash: 4, score: 0.9 }];
+    const scoreOf = (rows, id) => rows.find(row => row.chunk.id === id).score;
+    const weak = rankRawChunks([short, long], '银针', denseInput, { denseWeight: DENSE_FUSION_WEIGHT });
+    const equal = rankRawChunks([short, long], '银针', denseInput, { denseWeight: 1 });
+    const silent = rankRawChunks([short, long], '银针', denseInput, { denseWeight: 0 });
+    assert.equal(DENSE_FUSION_WEIGHT < 0.5, true, 'the shipped default is a weak vote: ' + DENSE_FUSION_WEIGHT);
+    assert.ok(scoreOf(weak, long.id) < scoreOf(equal, long.id), 'a weak weight moves the fused rank score less');
+    assert.deepEqual(silent.map(row => [row.chunk.id, row.score]), rankRawChunks([short, long], '银针').map(row => [row.chunk.id, row.score]),
+        'weight zero ranks exactly as lexical-only does, whatever the dense channel returned');
+    assert.equal(rankRawChunks([short, long], '银针', [], { denseWeight: 1 }).length, 2, 'and no dense rows is still lexical only');
+
     // The scorer tokenizes exactly as the index does. Two tokenizers would rank different documents.
     const counts = baselineTermCounts('Seraphina 走进钟楼旅店');
     assert.deepEqual([...counts.keys()], tokenizeBaselineText('Seraphina 走进钟楼旅店'));
@@ -606,13 +621,14 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(first.trace.filter(row => row.outcome === 'included').length, first.sources.length,
         'the trace and the quoted spans agree on what was included');
 
-    // The slot count follows the budget: one slot per 400 tokens, capped at six. A share below about 400
+    // The slot count follows the budget: one slot per 333 tokens, capped at six. A share below about 333
     // cannot cover a merged envelope and a share above about 500 buys nothing, so a fixed four slots is
     // wrong at both ends - at 1000 it spends on spans that lose the answer, at 2400 it leaves slots the
-    // budget could pay for unquoted. Measured: 63% at two slots, 69% at four, 75% at six.
-    assert.deepEqual([100, 600, 1000, 1599, 1600, 2400, 9000].map(evidenceSlots), [1, 1, 2, 3, 4, 6, 6]);
+    // budget could pay for unquoted. Measured with the corrected fusion weight: 65% at two slots, 69% at
+    // three, 73% at four with a 1600-token budget.
+    assert.deepEqual([100, 600, 1000, 1599, 1600, 2400, 9000].map(evidenceSlots), [1, 1, 3, 4, 4, 6, 6]);
     const derived = packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set() });
-    assert.equal(derived.sources.length, 2, 'a 1000-token budget pays for two slots');
+    assert.equal(derived.sources.length, 3, 'a 1000-token budget pays for three slots');
     const wide = packRawEvidence(ranked, history, { maxTokens: 2400, visibleSources: new Set() });
     assert.equal(wide.sources.length, 5, 'a 2400-token budget pays for six, and there are five candidates');
     const pinned = packRawEvidence(ranked, history, { maxTokens: 1000, maxEntries: 4, visibleSources: new Set() });

@@ -286,6 +286,47 @@ dev_docs/06_retrieval_research.md v2 (the measurements, the three faults, what t
 left), dev_docs/02_development.md v4 (the switches, the attribution, the paired comparison, the entry's
 chat field), dev_docs/04_roadmap.md v4 (three shipped rows and the restated open items), dev_docs/header.md
 v4. Tests: 32/32, with two new sections pinning the scorer arithmetic and the packer's policy contract.
+## Addendum 2026-09-12 21:18:58 - the dense A/B, run offline, and the weight it decided
+
+The roadmap left this to the owner because it needed a configured backend. The host already had one
+(jina-embeddings-v5-text-small, 1024 dimensions, direct API, key in the SillyTavern secret store), so the
+A/B ran offline against the same 52 questions, with the plugin's own chunk text and retrieval task. 185
+embedding calls.
+
+### The result
+
+| configuration | answer-in-context | oblique | span precision | evidence |
+| --- | --- | --- | --- | --- |
+| lexical only | 60% | 58% | 20% | 887 tokens |
+| dense only | 37% | 31% | - | 884 tokens |
+| equal-weight RRF, four slots (what shipped) | 56% | 53% | 14% | 930 tokens |
+| weak dense (0.1), three slots | 69% | 69% | 23% | 893 tokens |
+
+Paired against the shipped configuration: 29 both, 0 lost, 7 won, p=0.016. The first statistically
+resolvable retrieval result in this document, and it is cheaper and more precise as well.
+
+The weight curve is monotone and the shipped setting was its worst point: 0 -> 60%, 0.1 -> 69%, 0.2 -> 63%,
+0.5 -> 58%, 1.0 -> 58%. Dense alone is 26 points weaker than lexical, and at equal weight it raised
+candidate coverage from 96% to 98% while lowering answer-in-context from 63% to 58% - the intervention
+result the literature gave us, reproduced on our own data. The five questions dense rescues are all oblique
+and all of one shape: the question names the category, the passage names the instance.
+
+### A claim of mine retracted
+
+Half an hour earlier I reported that the plugin embeds symmetrically and therefore throws away Jina's
+retrieval tasks. That was wrong. buildDirectEmbeddingBody has sent retrieval.query and retrieval.passage for
+Jina all along, and insertCollection/queryCollection pass the role. My first measuring script embedded
+symmetrically, which is why it produced dense 25% against the plugin's actual 37%. The measurement was
+fixed; the plugin needed nothing. Reading the code before believing the instrument is the same lesson as the
+three implementation faults in section 9, pointing the other way.
+
+### Shipped
+
+raw-history.js: DENSE_FUSION_WEIGHT = 0.1 with denseWeight/lexicalWeight/rrfK options on rankRawChunks, and
+EVIDENCE_TOKENS_PER_SLOT 400 -> 333 - ADR-0014 derived 400 from a measurement taken with the weak ranking
+this ADR corrects. recall-embed.mjs builds the vector cache; the ruler reads it with --embeddings and
+--dense-weight, so the A/B is reproducible. ADR-0015, dev_docs/06_retrieval_research.md v4 section 13.
+Tests: 32/32, with the weight default and the weight-zero contract pinned in section 17.
 ## Addendum 2026-09-12 21:05:40 - the budget sweep, and the one change that won
 
 With the ruler able to pin the evidence budget and the slot count separately, both were swept on the same
