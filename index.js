@@ -256,6 +256,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     debug: false,
 });
 
+// Settings that shipped and were later removed. Their values survive in installs that predate the
+// removal, and nothing reads them any more, so `getSettings` deletes them instead of leaving a stored
+// blob that advertises a feature the plugin no longer has.
+const REMOVED_SETTINGS_KEYS = ['manage_context_window', 'keep_recent_messages'];
+
 const SUPPORTED_SERVER_VECTOR_SOURCES = new Set([
     'transformers', 'mistral', 'openai', 'palm', 'togetherai', 'nomicai', 'cohere',
     'ollama', 'llamacpp', 'vllm', 'vertexai', 'electronhub', 'openrouter', 'chutes',
@@ -356,6 +361,9 @@ function getSettings(ctx) {
     const current = ctx.extensionSettings[SETTINGS_KEY];
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
         if (current[key] === undefined) current[key] = value;
+    }
+    for (const dead of REMOVED_SETTINGS_KEYS) {
+        if (dead in current) delete current[dead];
     }
     return current;
 }

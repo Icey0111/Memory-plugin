@@ -147,3 +147,45 @@ contract, because there was no behaviour behind it to assert.
 - B2 (relevance-driven selective un-hiding, default off) remains deliberately deferred.
 - Phase E (LongMemEval), D1 (`vector.stale`, needs an embedding provider) and C1 (the remaining
   compression headroom) are untouched by this session.
+
+---
+
+## Second change: the removal was invisible in the running app, and the stale values were still stored
+
+### Problem / Requirement
+
+Two gaps found while verifying the cleanup above, not while writing it.
+
+First: `node deploy-live.mjs --apply` reported `identical: 138, changed: 1  index.js`. It had not copied
+`settings.html` at all. The script's payload filter was `/^(.*\.(js|mjs|json|md))$/`, so the settings page —
+which `manifest.json` declares and the host fetches from the same directory — had been silently drifting
+from the repository for as long as the script has existed. The cleanup was live in name only.
+
+Second: after the redeploy and reload, the two removed keys were still present in the persisted settings
+blob. Removing a key from `DEFAULT_SETTINGS` stops it being written, but does not remove the copy already
+saved into `ctx.extensionSettings`. Inert, since nothing reads them, but exactly the kind of leftover the
+user asked to have cleaned up.
+
+### Purpose of Change
+
+Close both gaps so "removed" means removed in the running app, not just in the repository.
+
+### How It Was Changed
+
+- [deploy-live.mjs L44-L51](file:///D:/memory_plugin/deploy-live.mjs#L44-L51) — `html` added to the payload
+  filter, with a comment saying why the omission was not obvious.
+- [index.js L259-L263](file:///D:/memory_plugin/index.js#L259-L263) — new `REMOVED_SETTINGS_KEYS` list.
+- [index.js L355-L368](file:///D:/memory_plugin/index.js#L355-L368) — `getSettings` deletes any removed
+  key it finds on a stored blob.
+
+### Result
+
+- `node deploy-live.mjs --apply` now reports `changed: 2  deploy-live.mjs, settings.html` and copies both.
+- Live settings DOM, after reload: `document.getElementById('aum-v54-manage-window')` and
+  `aum-v54-keep-recent` both `null`; zero hits for either id in the served `settings.html`.
+- Live settings blob, after reload: both keys already gone **before** the interceptor was invoked, so the
+  extension's own init path prunes them; 139 keys remain and `debug` / `injection_depth` are intact.
+- Live injection re-measured on the finished 42-row chat through the documented interceptor protocol:
+  interceptor returns without error, reference block 2,580 chars, state block 8,115 chars, 44 memories,
+  41 active. The extension is not damaged by the removal.
+- `npm run check` clean; `node run-tests.mjs` **84/84 test files passed**.
