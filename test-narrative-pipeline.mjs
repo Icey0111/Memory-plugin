@@ -14,6 +14,7 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
+import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
 
@@ -639,6 +640,63 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         visibleSources: new Set(), policy: 'magic', query: ask });
     assert.equal(unknown.policy, 'greedy');
     assert.equal(unknown.sources.length, 2);
+}
+
+// --- 19. the rerank stage reorders the shortlist, and fails open when it cannot --------------------
+// Measured offline: reranking the fused shortlist with a cross-encoder raised answer-in-context from 69% to
+// 87% at 52 questions (dev_docs/06_retrieval_research.md section 14). It is also the one stage that can lose
+// the prompt entirely, because it happens after retrieval and before packing, so the contract is that it
+// either reorders real candidates or does nothing at all.
+{
+    const body = buildRerankRequest({ model: 'jina-reranker-v3', query: '问', documents: ['甲', '乙', '丙'], topN: 2 });
+    assert.deepEqual(body, { model: 'jina-reranker-v3', query: '问', documents: ['甲', '乙', '丙'], top_n: 2 });
+    assert.throws(() => buildRerankRequest({ model: '', query: 'q', documents: ['a'] }), /重排模型/);
+    assert.throws(() => buildRerankRequest({ model: 'm', query: '', documents: ['a'] }), /重排查询/);
+    assert.throws(() => buildRerankRequest({ model: 'm', query: 'q', documents: [] }), /重排候选/);
+    assert.throws(() => buildRerankRequest({ model: 'm', query: 'q', documents: [''] }), /重排候选/);
+
+    const order = parseRerankResponse({ results: [{ index: 2, relevance_score: 0.9 },
+        { index: 0, relevance_score: 0.2 }, { index: 1, relevance_score: 0.5 }] }, 3);
+    assert.deepEqual(order.map(row => row.index), [2, 1, 0], 'the order is the score order');
+    // A provider that answers with an index it was never given, the same index twice, or a score that is not
+    // a number would reorder the prompt around nothing. Those rows are dropped instead of trusted.
+    const cleaned = parseRerankResponse({ results: [{ index: 9, relevance_score: 1 }, { index: -1, relevance_score: 1 },
+        { index: 0, relevance_score: 0.4 }, { index: 0, relevance_score: 0.9 }, { index: 1, relevance_score: '快' },
+        { index: 2, relevance_score: 0.3 }] }, 4);
+    assert.deepEqual(cleaned.map(row => row.index), [0, 2], 'out-of-range, duplicate and non-numeric rows are dropped');
+    assert.throws(() => parseRerankResponse({}, 2), /results/);
+    assert.throws(() => parseRerankResponse({ results: [{ index: 7, relevance_score: 1 }] }, 2), /可用候选/);
+
+    const calls = [];
+    const ok = await requestRerank({ baseUrl: 'https://api.jina.ai', apiKey: 'k', model: 'm', query: 'q',
+        documents: ['甲', '乙'],
+        fetchImpl: async (url, init) => { calls.push({ url, auth: init.headers.Authorization, body: JSON.parse(init.body) });
+            return { ok: true, json: async () => ({ results: [{ index: 1, relevance_score: 0.8 },
+                { index: 0, relevance_score: 0.1 }] }) }; } });
+    assert.equal(calls[0].url, 'https://api.jina.ai/v1/rerank', 'the base URL is normalised the same way embeddings are');
+    assert.equal(calls[0].auth, 'Bearer k');
+    assert.equal(calls[0].body.documents.length, 2);
+    assert.deepEqual(ok.map(row => row.index), [1, 0]);
+    await assert.rejects(() => requestRerank({ baseUrl: '', apiKey: 'k', model: 'm', query: 'q', documents: ['a'] }), /重排地址/);
+    await assert.rejects(() => requestRerank({ baseUrl: 'https://x', apiKey: '', model: 'm', query: 'q', documents: ['a'] }), /API Key/);
+    await assert.rejects(() => requestRerank({ baseUrl: 'https://x', apiKey: 'k', model: 'm', query: 'q', documents: ['a'],
+        fetchImpl: async () => ({ ok: false, status: 429, text: async () => 'slow down' }) }), /HTTP 429/);
+
+    // Through the pipeline: a failing reranker must leave the fused order, and it must say so.
+    const host = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600 } });
+    const broken = { ...host.services, rerank: () => ({ supported: true, model: 'test-rerank',
+        rerank: async () => { throw new Error('boom'); } }) };
+    const failed = await buildNarrativeContext(host.ctx, broken, { contextSize: 32768 });
+    assert.equal(failed.diagnostics.rerank_used, false, 'a failing reranker leaves the fused order alone');
+    assert.match(String(failed.diagnostics.rerank_error), /boom/, 'and the reason is reported, not swallowed');
+    const working = { ...host.services, rerank: () => ({ supported: true, model: 'test-rerank',
+        rerank: async (query, documents) => documents.map((_, index) => ({ index, score: 1 - index * 0.01 })) }) };
+    const used = await buildNarrativeContext(host.ctx, working, { contextSize: 32768 });
+    assert.equal(used.diagnostics.rerank_used, true, 'a working reranker is used');
+    assert.equal(used.diagnostics.rerank_error, null);
+    assert.equal(used.diagnostics.rerank_model, 'test-rerank');
+    const off = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });
+    assert.equal(off.diagnostics.rerank_used, false, 'and an install with no model never calls one');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

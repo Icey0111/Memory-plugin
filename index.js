@@ -69,6 +69,8 @@ import { buildCanonicalState, deriveActorIdentity } from './v55-runtime.js';
 import { persistChatStore } from './v55-derived-store.js';
 import { formatMetrics, recordEmbeddingCall, resetMetrics } from './v55-metrics.js';
 import { getV55EmbeddingProfile } from './v55-vector-policy.js';
+import { requestRerank } from './v55-rerank.js';
+import { getTauriVectorApiKey } from './v55-tauri-vector-backend.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -1982,6 +1984,21 @@ export function createNarrativeHostServices(ctx) {
                 remove: hashes => withVectorLock(() => vectorDelete(ctx, provider, collectionId, hashes)),
                 query: (text, topK) => withVectorLock(() => vectorQuery(ctx, provider, collectionId, text, topK, 0)),
             };
+        },
+        // The cross-encoder stage is switched on by its own model name and reuses the embedding
+        // connection's endpoint and key, because a reranker and an embedder behind one provider share
+        // them. Unconfigured means the service reports itself unsupported and the retrieval path keeps
+        // the fused order without an extra call.
+        rerank: () => {
+            const settings = getSettings(ctx);
+            const model = String(settings.narrative_rerank_model || '').trim();
+            if (!model) return { supported: false, reason: '未配置重排模型' };
+            const apiUrl = String(settings.vector_direct_api_url || '').trim();
+            if (!apiUrl) return { supported: false, reason: '未配置 Embedding 直连地址' };
+            const apiKey = getTauriVectorApiKey();
+            if (!apiKey) return { supported: false, reason: '未配置 Aetheria 自有 Embedding API Key' };
+            return { supported: true, model,
+                rerank: (query, documents) => requestRerank({ baseUrl: apiUrl, apiKey, model, query, documents }) };
         },
         settings: async query => filterSettingRowsForActor(
             await retrievePluginSettings(ctx, query, { mode: 'generation' }), deriveActorIdentity(ctx, getStore(ctx))),

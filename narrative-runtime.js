@@ -23,7 +23,10 @@ const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative
     narrative_anchor_tokens: 300, narrative_anchor_unconfirmed_warn: 2,
     // Who knows what. Carried as its own block for the same reason as the anchors: a character
     // silently learning a secret is a story change that no amount of prose quality fixes.
-    narrative_knowledge_tokens: 200 };
+    narrative_knowledge_tokens: 200,
+    // The optional cross-encoder stage. Empty model means off, which is what an install that has not
+    // configured a reranker keeps: the fused order, and no extra call per generation.
+    narrative_rerank_model: '', narrative_rerank_candidates: 24 };
 // Both maps are keyed by the host's chat-metadata object, not by the chat store object: the store
 // projection replaces the store on a persist, so a store-keyed map would lose the running job and the
 // live index on exactly the turns that wrote something. The metadata object is stable for a chat and
@@ -54,7 +57,9 @@ function options(settings) {
         summaryTokens: bound(settings.narrative_summary_tokens, 600, 100, 4000),
         evidenceTokens: bound(settings.narrative_evidence_tokens, 1000, 0, 8000),
         settingTokens: bound(settings.narrative_setting_tokens, 400, 0, 4000),
-        inputChars: bound(settings.narrative_input_chars, 18000, 2000, 100000) };
+        inputChars: bound(settings.narrative_input_chars, 18000, 2000, 100000),
+        rerankModel: String(settings.narrative_rerank_model || '').trim(),
+        rerankCandidates: bound(settings.narrative_rerank_candidates, 24, 0, 64) };
 }
 
 function storeOf(ctx) { return ctx.chatMetadata[NARRATIVE_SETTINGS_KEY] ??= {}; }
@@ -293,6 +298,31 @@ function fitWholeBlocks(blocks, tokens) {
     return text;
 }
 
+/**
+ * The optional cross-encoder stage.
+ *
+ * It reranks the fused shortlist only. It is fail-open on purpose: no model, no transport or a failed call
+ * all leave the fused order exactly as it was, because a prompt with a worse order is still a prompt and a
+ * prompt with no retrieval is not. The shortlist is capped so the cost is a fixed number of documents per
+ * generation rather than a function of the archive size.
+ */
+async function applyRerank(services, opts, query, ranked) {
+    const model = opts.rerankModel;
+    if (!model || !opts.rerankCandidates || ranked.length < 2) return { ranked, used: false, error: null };
+    const service = typeof services.rerank === 'function' ? services.rerank() : null;
+    if (!service || !service.supported) return { ranked, used: false, error: null };
+    const shortlist = ranked.slice(0, opts.rerankCandidates);
+    try {
+        const order = await service.rerank(query, shortlist.map(row => row.chunk.retrievalText), model);
+        const score = new Map(order.map(row => [row.index, row.score]));
+        const head = shortlist.map((row, index) => ({ ...row, rerank: score.has(index) ? score.get(index) : null }))
+            .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.chunk.index - b.chunk.index);
+        return { ranked: [...head, ...ranked.slice(opts.rerankCandidates)], used: true, error: null };
+    } catch (error) {
+        return { ranked, used: false, error: String(error?.message || error) };
+    }
+}
+
 export async function buildNarrativeContext(ctx, services, { contextSize = null } = {}) {
     await updateNarrative(ctx, services);
     if (!services.isCurrent()) return null;
@@ -340,7 +370,12 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         return { referenceBlock: '', currentStateBlock: '', diagnostics: { summary_error: 'context budget too small; original floors restored' } };
     }
     const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuityBlock)));
-    const ranked = rankRawChunks(chunks, query, dense);
+    const fused = rankRawChunks(chunks, query, dense);
+    const reranked = await applyRerank(services, opts, query, fused);
+    // The rerank is a host round-trip, so it needs the same guard every other await here has: a result
+    // that arrives after the user changed chats must not be packed into this prompt.
+    if (!services.isCurrent()) return null;
+    const ranked = reranked.ranked;
     const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources });
     let settingText = '';
     if (opts.settingTokens && services.settings) {
@@ -369,6 +404,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         warnings,
         sources: evidence.sources, candidates: ranked.length,
+        rerank_model: opts.rerankModel || null, rerank_used: reranked.used, rerank_error: reranked.error,
         channels: { lexical: ranked.filter(row => row.channels.includes('lexical')).length,
             vector: ranked.filter(row => row.channels.includes('vector')).length },
         vector_available: Boolean(index?.available && !vectorError),
@@ -496,6 +532,7 @@ export function mountNarrativeSettings(getContext, createServices) {
             ['narrative_anchor_tokens','锚点 token 预算',0,4000],
             ['narrative_pending_warn_tokens','未总结原文告警阈值',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]
             .map(([key,label,min,max]) => `<label>${label}<input type="number" data-key="${key}" min="${min}" max="${max}"></label>`).join('')
+        + '<label>重排模型（留空则关闭，例如 jina-reranker-v3）<input type="text" data-key="narrative_rerank_model" data-text="1"></label>'
         + '<label><input type="checkbox" data-key="narrative_fold">折叠已总结的历史楼层</label>'
         + '<button class="menu_button" data-action="summarize">立即更新摘要</button>'
         + '<button class="menu_button" data-action="restore">恢复原文显示</button>'
@@ -506,7 +543,8 @@ export function mountNarrativeSettings(getContext, createServices) {
         else input.value = settings[input.dataset.key];
         input.addEventListener('change', () => {
             const current = getContext();
-            narrativeSettings(current)[input.dataset.key] = input.type === 'checkbox' ? input.checked : Number(input.value);
+            narrativeSettings(current)[input.dataset.key] = input.type === 'checkbox' ? input.checked
+                : input.dataset.text ? String(input.value).trim() : Number(input.value);
             current.saveSettingsDebounced?.();
             prepare(current);
             syncFloorFoldDom(current);

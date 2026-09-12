@@ -42,8 +42,13 @@ const keyFile = word('key-file', null);
 function readKey() {
     if (keyFile && fs.existsSync(keyFile)) {
         const raw = fs.readFileSync(keyFile, 'utf8');
-        const found = raw.match(/(?:jina_|sk-)[A-Za-z0-9_\-]{16,}/);
-        if (found) return found[0];
+        // A secrets file holds several providers' keys, and the first match wins, so the provider's own
+        // prefix is tried first: matching a generic sk- key here sent the Jina endpoint another service's
+        // credential and came back 401.
+        const jina = raw.match(/jina_[A-Za-z0-9]{40,}/);
+        if (jina) return jina[0];
+        const generic = raw.match(/sk-[A-Za-z0-9_\-]{16,}/);
+        if (generic) return generic[0];
     }
     return process.env.EMBEDDINGS_API_KEY || '';
 }

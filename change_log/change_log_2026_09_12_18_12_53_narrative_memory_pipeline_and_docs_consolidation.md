@@ -327,6 +327,59 @@ EVIDENCE_TOKENS_PER_SLOT 400 -> 333 - ADR-0014 derived 400 from a measurement ta
 this ADR corrects. recall-embed.mjs builds the vector cache; the ruler reads it with --embeddings and
 --dense-weight, so the A/B is reproducible. ADR-0015, dev_docs/06_retrieval_research.md v4 section 13.
 Tests: 32/32, with the weight default and the weight-zero contract pinned in section 17.
+## Addendum 2026-09-12 21:51:03 - the remaining three layers, each measured to a decision
+
+The layer list is now closed: every layer in dev_docs/06_retrieval_research.md section 5 has been built or
+rejected on measurement. Two were rejected this round, and one is the largest single gain of the exercise.
+
+### Layer 2's adaptive half: rejected
+
+Bucketing the 52 questions by lexical margin (17/17/18), the optimum dense weight does vary - 0.1 / 0.05 / 0
+- but taking each bucket's optimum scores 69%, exactly what the single global weight from ADR-0015 scores.
+There is nothing for a gate to fix: at 0.1 the dense channel costs zero losses, so the whole upside is
+already captured. The slot half is contradicted too: widening to six slots at a fixed budget is worse in
+every bucket, and entropy did not separate the questions that wanted more room (median 0.947 against a
+0.904 mean).
+
+### Layer 4: rejected, twice
+
+Expanding the query from the first pass' own terms: 69% -> 52%, 9 lost, 0 won, p=0.004. Capsule-constrained
+expansion on a chat that actually has a capsule: 68% -> 63% (2 lost, 0 won), and 60% -> 55% over lexical
+only. The reason is measurable: none of the 40 answer chunks has half its rare terms already in the capsule,
+so the added words are the story's own but never the answer's. A capsule can say what the story is about; it
+cannot say what a passage says.
+
+Reaching that conclusion needed a chat with a capsule, and the 52-question set is written against one that
+has none - AetheriaS40 carries the old fact keys and no summary or anchors at all, which was itself a
+finding. A second set was written for the only chat that has one, the 40-floor acceptance run: 40 countable
+questions, 40/40 verified unique inside that chat and inside one chunk, lexical 60% and weak-dense 68% - a
+second, independent agreement with the fusion weight. remove/_paraphrases3.json.
+
+### Layer 5: shipped behind a setting (ADR-0016)
+
+| configuration | answer-in-context | oblique | answer in top-2 | evidence |
+| --- | --- | --- | --- | --- |
+| weak dense, no rerank | 69% | 69% | 63% | 893 tokens |
+| + jina-reranker-v3 | 87% | 87% | 87% | 871 tokens |
+| + jina-reranker-v2-base-multilingual | 81% | 80% | 79% | 890 tokens |
+
+Paired: v3 gains 10 and loses 1 (p=0.012), v2-multilingual gains 7 and loses 1 (p=0.070). The stage reranks
+the fused top 24, so it can only reorder what retrieval found; candidate coverage was already 98% and the
+ceiling is 51 of 52, so this closes most of the remaining gap. It is off until narrative_rerank_model is set,
+reuses the embedding connection's endpoint and key, drops any row the provider should not have sent, and is
+fail-open with the reason in the diagnostics. v55-rerank.js, and section 19 of the test pins the contract.
+
+### Also fixed
+
+recall-embed.mjs matched the first API key in a secrets file, which sent the endpoint another provider's
+credential and came back 401; it now tries the provider's own key prefix first. Found by using the script,
+which is the argument for building the instrument rather than hand-rolling the measurement.
+
+### Docs
+
+ADR-0016, dev_docs/06_retrieval_research.md v5 (section 14: the two rejections, the rerank, and the second
+question set), dev_docs/02_development.md v7, dev_docs/04_roadmap.md v7, dev_docs/header.md v7. Tests:
+32/32 with the rerank contract pinned.
 ## Addendum 2026-09-12 21:05:40 - the budget sweep, and the one change that won
 
 With the ruler able to pin the evidence budget and the slot count separately, both were swept on the same

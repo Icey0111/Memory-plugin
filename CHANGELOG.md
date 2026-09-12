@@ -70,6 +70,13 @@ belongs in Git commits and pull requests.
   tokens rather than 400, both measured against the configured embedding backend. End to end on the same set:
   answer-in-context 56% -> 69%, oblique recall 53% -> 69%, span precision 14% -> 23%, evidence 930 -> 893
   tokens a query - 7 questions won, none lost, p=0.016 (ADR-0015).
+- A cross-encoder rerank stage for the original-text candidates, off until a model name is set in
+  `narrative_rerank_model`. It reranks the fused shortlist once per generation, reuses the embedding
+  connection's endpoint and key, and is fail-open: a missing model or a failed call leaves the fused order in
+  place and records the reason in the diagnostics. Measured offline on 52 hand-written questions, reranking
+  raises answer-in-context from 69% to 87% with `jina-reranker-v3` (10 questions gained, 1 lost, p=0.012) and
+  to 81% with `jina-reranker-v2-base-multilingual` (7 gained, 1 lost) - and it is 22 evidence tokens cheaper,
+  because the packer spends its budget on better-ranked spans (ADR-0016).
 - `recall-embed.mjs` builds the vector cache the ruler measures the dense channel with, using the same chunk
   text and retrieval task the plugin embeds with. The key comes from a file or an environment variable and is
   never written or printed.
