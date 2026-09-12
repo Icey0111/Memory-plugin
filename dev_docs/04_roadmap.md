@@ -186,7 +186,8 @@ noticed that the navigator's copper ring was lying on the bench rather than in h
 folded ten turns earlier, and the next turn put it back on the correct ear.
 
 That is the third scenario in a row with no observed contradiction, which is still not a rate: three runs,
-eighteen checked attributes, one model.
+twelve checked attributes across the two runs that check them, one model. An earlier version of this section
+said eighteen; the two check tables hold six each.
 
 ## Validation still worth extending
 
