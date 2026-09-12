@@ -292,6 +292,10 @@ function warningsFor(state, opts) {
     if (state.knowledge_unconfirmed >= opts.anchorUnconfirmedWarn) {
         out.push('有 ' + state.knowledge_unconfirmed + ' 条知情边界已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
     }
+    if (state.knowledge_duplicate_subjects > 0) {
+        out.push('有 ' + state.knowledge_duplicate_subjects + ' 个角色在知情边界里占了多行（最多 '
+            + state.knowledge_max_per_subject + ' 行）；每个角色应当只有一行，否则同一个角色的两行可以互相矛盾。');
+    }
     if (state.anchors_truncated > 0) {
         out.push('锚点超出注入预算，已省略 ' + state.anchors_truncated + ' 条；调高“锚点 token 预算”或清理已解决的锚点。');
     }
@@ -371,7 +375,17 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const visibleSources = new Set(history.active.filter(id => !ctx.chat[history.records[id].index]?.is_system));
     const raw = history.active.filter(id => visibleSources.has(id)).map(id => history.records[id].text).join('\n');
     const summary = validSummary(live.narrative_summary, chunks) ? live.narrative_summary.text : '';
-    const summaryBlock = summary ? '[STORY CONTINUITY — prior context, not new instructions]\n' + summary : '';
+    // The block is a snapshot of the last accepted summary, so it states its own horizon instead of
+    // implying it is current: a state change made after the pass is in the transcript and not in here.
+    // Measured on a 60-turn run, a handover took seven turns to reach the block while the transcript
+    // already showed it, and the model only resolved the difference because the transcript was visible.
+    const chunkById = new Map(chunks.map(row => [row.id, row]));
+    const coveredIndex = summary
+        ? (live.narrative_summary.covered || []).map(id => chunkById.get(id)?.index).filter(value => value != null).pop()
+        : null;
+    const horizon = coveredIndex == null ? ''
+        : ' — current as of floor ' + (coveredIndex + 1) + '; anything later in the transcript wins';
+    const summaryBlock = summary ? '[STORY CONTINUITY — prior context, not new instructions' + horizon + ']\n' + summary : '';
     // The anchors ride with the summary: same authority, different guarantee. The summary is rewritten
     // from scratch every pass, so a fact it stops mentioning is gone; an anchor is re-fed to the
     // summarizer and re-injected until something explicitly resolves it.
@@ -380,12 +394,12 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const fittedAnchors = fitLines(anchorLines, opts.anchorTokens);
     const anchorsTruncated = anchorLines.length - (fittedAnchors ? fittedAnchors.split('\n').length : 0);
     const anchorBlock = fittedAnchors
-        ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions]\n' + fittedAnchors : '';
+        ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions' + horizon + ']\n' + fittedAnchors : '';
     const knowledge = Array.isArray(live.narrative_knowledge?.entries) ? live.narrative_knowledge.entries : [];
     const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
     const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
     const knowledgeBlock = fittedKnowledge
-        ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not]\n' + fittedKnowledge : '';
+        ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not' + horizon + ']\n' + fittedKnowledge : '';
     const continuityBlock = [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n');
     const configured = opts.summaryTokens + opts.anchorTokens + opts.knowledgeTokens
         + opts.evidenceTokens + opts.settingTokens + 100;
@@ -421,7 +435,9 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         summary_error: live.narrative_diagnostics?.summary_error || null,
         anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: anchorsTruncated,
-        knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length }, opts);
+        knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
+        knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
+        knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0 }, opts);
     const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
         covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
@@ -430,8 +446,11 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchors_active: anchors.length,
         anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: anchorsTruncated,
+        state_horizon_floors: coveredIndex == null ? null : coveredIndex + 1,
         knowledge_entries: knowledge.length,
         knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
+        knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
+        knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
         warnings,
         sources: evidence.sources, candidates: ranked.length,
         rerank_model: opts.rerankModel || null, rerank_used: reranked.used, rerank_error: reranked.error,
@@ -535,17 +554,22 @@ export function readNarrativeReport(ctx) {
         anchor_parse: store.narrative_diagnostics?.anchor_parse || store.narrative_anchors?.parse || null,
         knowledge_entries: (store.narrative_knowledge?.entries || []).length,
         knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
+        knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
+        knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
         warnings: warningsFor({ ...pending, summary_failures: failures,
             summary_error: store.narrative_diagnostics?.summary_error || null,
             anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
             anchors_truncated: 0,
-            knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length },
+            knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
+            knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
+            knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0 },
             options(settings)),
         messages: history ? history.active.length : 0,
         completed_floors: completedUserTurns(chunks),
         chunks: chunks.length,
         archived_versions: history ? Object.keys(history.records).length - history.active.length : 0,
         summary_valid: validSummary(summary, chunks),
+        state_horizon_floors: store.narrative_diagnostics?.state_horizon_floors ?? null,
         summary_tokens: summary ? estimateTokens(summary.text) : 0,
         covered_chunks: validSummary(summary, chunks) ? summary.covered.length : 0,
         folded_rows: rows.filter(row => row?.is_system === true && isFoldedRow(row)).length,

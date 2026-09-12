@@ -303,8 +303,22 @@ export function mergeKnowledge(previous, parsed, at = Date.now()) {
     }
     const current = entries;
     const overflow = Math.max(0, current.length - MAX_KNOWLEDGE);
+    // The protocol asks for one line per character, because a character's line is that character's whole
+    // current state and two lines for one character can contradict each other. Measured on a 60-turn live
+    // run: the model wrote one line per statement instead, reaching six lines for one character and both
+    // "不知道 账本存在" and "知道 账本在林昭手中" for another. The host reports that shape rather than
+    // guessing at a merge, because only the model knows which of the two statements is still current.
+    const perSubject = new Map();
+    for (const item of entries) {
+        const key = subject(item);
+        perSubject.set(key, (perSubject.get(key) || 0) + 1);
+    }
+    const duplicateSubjects = [...perSubject.values()].filter(count => count > 1).length;
+    const maxPerSubject = perSubject.size ? Math.max(...perSubject.values()) : 0;
     // Freshly confirmed boundaries precede unrepeated old ones. Keep that priority at the cap.
-    return { version: 1, entries: current.slice(0, MAX_KNOWLEDGE), overflow, parse: parsed.sections, updated_at: at };
+    return { version: 1, entries: current.slice(0, MAX_KNOWLEDGE), overflow,
+        duplicate_subjects: duplicateSubjects, max_per_subject: maxPerSubject,
+        parse: parsed.sections, updated_at: at };
 }
 
 export function summaryPrompt(previous, batch, maxTokens, anchors, knowledge) {
@@ -320,8 +334,10 @@ export function summaryPrompt(previous, batch, maxTokens, anchors, knowledge) {
         + '没有就写“无”。格式：- 类型 | 一句陈述\n'
         + RESOLVED_SECTION + '：只列出本轮原文明确解决、失效或被推翻的锚点与知情边界。用原条目的类型和正文。没有就写“无”。\n'
         + KNOWLEDGE_SECTION + '：列出当前仍然成立的知情边界——谁知道什么、谁明确不知道什么，'
-        + '尤其是秘密、隐瞒和误解。输入列表里仍有效的条目逐条原样照抄；知情状态改变时只写当前状态，旧条目列入已解决。新出现的用同样格式追加。'
-        + '没有就写“无”。格式：- 角色 | 知道或不知道 | 事实\n\n'
+        + '尤其是秘密、隐瞒和误解。每个角色只能有一行：把该角色当前知道与不知道的事实合并写进这一行，'
+        + '用“；”分隔，不要为同一个角色新增第二行。输入列表里仍有效的条目照抄进那一行；'
+        + '学到新事实时改写该角色那一行，被取代的说法不要保留。新出现的角色用同样格式追加。'
+        + '没有就写“无”。格式：- 角色 | 知道或不知道 | 事实；事实\n\n'
         + `【旧摘要】\n${previous || '无'}\n\n【当前锚点】\n${current || '无'}\n\n`
         + `【当前知情边界】\n${formatAnchors(knowledge) || '无'}\n\n【新增原文】\n`
         + batch.map(row => `[${row.id}] ${row.retrievalText}`).join('\n\n');

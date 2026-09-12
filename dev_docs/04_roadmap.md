@@ -12,9 +12,9 @@ diagnostics. Default cadence is 10 completed user turns, normally 20 message flo
 is source coverage, not proof of semantic fidelity.
 
 Anchors and knowledge boundaries are re-stated by the summary rather than updated between passes, so the
-injected block is a snapshot of the last accepted summary (ADR-0017). A fresh knowledge line retires that
-subject's carried line, and only a subject the summary did not mention at all survives as unconfirmed -
-it does not collapse several lines the summary writes for one subject in a single pass.
+injected block is a snapshot of the last accepted summary (ADR-0017), and it states the floor it is current
+as of. Knowledge is one line per character, bundling what that character knows and does not know (ADR-0018);
+the host counts any character that takes more than one line and warns.
 
 ## Measured on a 60-turn live run
 
@@ -30,8 +30,8 @@ What the run exposed is over-keeping and staleness, not forgetting.
 | knowledge lines on the busiest subject | 1 | 2 | 2 | 3 | 4 | 6 |
 
 At turn 60 the knowledge block spends its 20 entries on eight subjects, six of them on one character, and
-韩铮 holds both `不知道 账本存在` and `知道 账本在林昭手中`. The prompt asks for one line per statement;
-the model is not writing one line per character.
+韩铮 holds both `不知道 账本存在` and `知道 账本在林昭手中`. The prompt asked for one line per statement;
+the model was not writing one line per character.
 
 State changes reached the injected block after 7, 6 and 4 turns, and two changes made at turns 52 and 54
 never reached a block inside the window. The only contradiction observed was that window: for turns 15-20
@@ -44,15 +44,37 @@ retrieved and answered from the quotation. Of the eight probes whose source floo
 floor packed into the evidence block; the other six were already carried by the state block, so retrieval
 was not what answered them.
 
+### After the protocol change (ADR-0018)
+
+The knowledge section now asks for one line per character that bundles what that character knows and does
+not know, every injected block states the floor it is current as of, and the host counts subjects that took
+more than one line. Verified on a fresh 30 user turns (60 floors), same cadence, model and reranker, three
+summary passes, 0 summary failures and 3 generator retries:
+
+| observation at turn 30 | 60-turn run | verification |
+| --- | --- | --- |
+| knowledge entries | 9 | 7 |
+| most lines on one subject | 2 | 1 |
+| subjects with more than one line | 1 | 0 |
+| probes answered | 10 of 11 over the whole run | 6 of 6 |
+
+The verified form keeps one line per character and puts what the character does *not* know in that same
+line, which is what the merge rule always assumed. The stale window is unchanged: the key handover on turn
+12 stayed wrong in the block until the turn-20 pass, a lag of 9 turns.
+
 ## Validation still worth extending
 
-1. Repeat the long run with other summary models and cadences. One model at one cadence cannot separate
-   "the model over-keeps" from "the protocol invites it".
-2. Measure whether a per-turn state refresh costs less than the contradictions it would remove. The current
+1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
+   instruction, and one model at one cadence is all that has been measured; the host-side counter exists so a
+   model that does not follow it is detected rather than argued about.
+2. Isolate the effect of the horizon header. Both the 60-turn run and the verification answered the
+   stale-window probes correctly, so the header's benefit is unmeasured; it is kept because it removes an
+   ambiguity for about a dozen tokens per block, not because a measurement showed a gain.
+3. Measure whether a per-turn state refresh costs less than the contradictions it would remove. The current
    block is free but stale by up to one cadence, and a contradiction inside it is now a known shape.
-3. Evaluate live recent-message queries on held-out stories; offline explicit-question recall is a different
+4. Evaluate live recent-message queries on held-out stories; offline explicit-question recall is a different
    task. Keep optional reranking optional until its latency and cost are justified there.
-4. Measure archive growth with edits and branches over hundreds of turns. Earlier near-zero numbers of
+5. Measure archive growth with edits and branches over hundreds of turns. Earlier near-zero numbers of
    superseded versions are observations from those chats, not a bound on future storage.
 
 ## Constraints
@@ -65,6 +87,7 @@ was not what answered them.
 - The state block is stale by up to one cadence by design (ADR-0017); the visible transcript is what covers
   that window.
 
-A measured failure now exists for the state block - over-keeping up to the knowledge cap, and staleness of
-up to one cadence. Any fix is expected to be a change to the restatement protocol or to the projection, not
-a new memory hierarchy or a per-floor summarizer.
+A measured failure exists for the state block - over-keeping and staleness of up to one cadence - and the
+first of the two has been fixed by changing the restatement protocol rather than by adding a model call
+(ADR-0018). The remaining work is a change to the projection, not a new memory hierarchy or a per-floor
+summarizer.

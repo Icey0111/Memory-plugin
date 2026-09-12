@@ -60,7 +60,7 @@ flowchart TD
 | May this floor leave the prompt? | Only if every chunk of it is covered, and it is not the newest floor | raw-history.js, applyNarrativeFolds |
 | What if the summary cannot be injected? | Every floor it covered comes back, and the reason is recorded | narrative-runtime.js, buildNarrativeContext |
 | What if the history changed under the summary? | The summary is dropped, the invalidation is reported, and the floors come back | narrative-runtime.js, prepare |
-| How current is the injected state block? | It is the projection of the last accepted summary; a change made after that pass is invisible to it until the next one | narrative-runtime.js, raw-history.js |
+| How current is the injected state block? | It is the projection of the last accepted summary, and it says so: "current as of floor N; anything later in the transcript wins" | narrative-runtime.js, raw-history.js |
 | Who writes the transcript styling? | Only the projection of the markers; it never writes chat state | v55-floor-fold.js |
 
 ### 4. Modules
@@ -112,10 +112,13 @@ the chat file keeps (ADR-0004).
 - Knowledge boundaries are text, not enforcement: a character cannot be prevented from acting on a
   fact that appears in the summary.
 - The injected state block is a snapshot of the last accepted summary (N8). A state change reaches it only
-  at the next pass - measured lag 4 to 7 turns, and two changes in a measured 60-turn run never reached one
-  inside the window - and the summary re-states rather than collapses, so the bounded knowledge list spends
-  its 20 entries on several lines per character (ADR-0017). Folding is what keeps the window safe: it never
-  hides a floor the summary does not cover, so the change is still in the prompt (N1, N2).
+  at the next pass - measured lags of 4 to 9 turns across two runs, and changes made near the end never
+  reached a block at all - so every block header names its horizon rather than implying it is current
+  (ADR-0018). Folding is what keeps the window safe: it never hides a floor the summary does not cover, so
+  the change is still in the prompt (N1, N2).
+- Knowledge is one line per character, bundling what that character knows and does not know (ADR-0018). The
+  host counts characters that take more than one line and warns instead of merging them, because only the
+  summary knows which of two statements is current.
 - v55-spine.js survives because the live memory-core.js uses it for the fact model spine bookkeeping,
   and applyMemoryOps is the migration path for old chats. Retiring it is a data decision, not a
   dead-code one (ADR-0009).

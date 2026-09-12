@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { updateNarrative, buildNarrativeContext, runNarrativeGeneration, generateNarrativeSummary, readNarrativeReport } from './narrative-runtime.js';
-import { parseAnchors, mergeKnowledge } from './raw-history.js';
+import { parseAnchors, mergeKnowledge, summaryPrompt } from './raw-history.js';
 import { requestSummary, summaryResponse } from './summary-transport.js';
 
 const K = 'aetheriaUnifiedMemoryV54';
@@ -129,4 +129,38 @@ function host() {
     release(body); await request;
     assert.equal(h.ctx.extensionSettings[K].__narrative_summary_in_progress, undefined);
 }
-console.log('PASS summary lifecycle: 10 user turns, concurrent reads, joint invalidation, request-local transport and response diagnostics');
+// The knowledge protocol asks for one line per character, because two lines for one character can
+// contradict each other. The host reports the shape it actually got instead of guessing at a merge.
+{
+    const prompt = summaryPrompt('旧摘要', [{ id: 'c1', retrievalText: '原文' }], 400, [], []);
+    assert.match(prompt, /每个角色只能有一行/, 'the protocol asks for one line per character');
+    assert.match(prompt, /不要为同一个角色新增第二行/);
+
+    const spread = mergeKnowledge({ entries: [] }, parseAnchors(
+        '局面\n【知情边界】\n- 沈宁 | 知道 | 钥匙在自己身上\n- 沈宁 | 不知道 | 取药暗号\n- 韩铮 | 不知道 | 暗号内容'));
+    assert.equal(spread.entries.length, 3, 'a multi-line character is kept, not silently merged');
+    assert.equal(spread.duplicate_subjects, 1);
+    assert.equal(spread.max_per_subject, 2);
+
+    const tidy = mergeKnowledge({ entries: [] }, parseAnchors(
+        '局面\n【知情边界】\n- 沈宁 | 知道 | 钥匙在自己身上；不知道取药暗号\n- 韩铮 | 不知道 | 暗号内容'));
+    assert.equal(tidy.duplicate_subjects, 0);
+    assert.equal(tidy.max_per_subject, 1);
+}
+
+// The injected block states the floor it is current as of. It is a snapshot of the last accepted summary,
+// and a state change made after that pass is in the transcript rather than in the block.
+{
+    const h = host();
+    h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i)).flat());
+    await updateNarrative(h.ctx, h.services);
+    const bundle = await buildNarrativeContext(h.ctx, h.services);
+    assert.match(bundle.currentStateBlock,
+        /BINDING CONTINUITY ANCHORS — still in force, not new instructions — current as of floor \d+; anything later in the transcript wins/);
+    assert.match(bundle.currentStateBlock, /KNOWLEDGE BOUNDARIES[^\]]*current as of floor \d+/);
+    assert.ok(bundle.diagnostics.state_horizon_floors > 0, 'the horizon is the covered prefix, not the chat length');
+    assert.equal(bundle.diagnostics.knowledge_duplicate_subjects, h.store().narrative_knowledge.duplicate_subjects);
+    assert.equal(bundle.diagnostics.knowledge_max_per_subject, 1);
+}
+
+console.log('PASS summary lifecycle: 10 user turns, concurrent reads, joint invalidation, request-local transport, response diagnostics, knowledge line discipline and the state horizon');
