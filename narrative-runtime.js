@@ -434,7 +434,16 @@ export async function runNarrativeGeneration(ctx, services, args) {
 export function installNarrativeRuntime(getContext, createServices) {
     const ctx = getContext();
     if (!ctx) return false;
-    narrativeSettings(ctx);
+    const settings = narrativeSettings(ctx);
+    // A summary pass clears these in a finally block, which does not run when the page is torn down
+    // mid-call - a reload, an app close. Because they live on the settings object they were persisted
+    // with it, and a stale flag is poison: quiet() then skips every injection and schedule() skips every
+    // capture, so the whole pipeline stops without a single warning. Nothing can legitimately be in
+    // flight during a fresh install, so whatever is here is stale and is cleared. Found by running the
+    // acceptance scenario twice in a row: the second run wrote twenty floors and produced no archive,
+    // no summary, no anchors and no diagnostics at all.
+    delete settings.__narrative_summary_in_progress;
+    delete settings.__quiet_extraction_in_progress;
     globalThis.aetheriaUnifiedMemoryV54Interceptor = (...args) => {
         const current = getContext();
         return current ? runNarrativeGeneration(current, createServices(current), args) : undefined;

@@ -109,6 +109,22 @@ assert.equal((await run('quiet')).ref?.[1], '', 'our own background summary neve
 delete settings.__narrative_summary_in_progress;
 settings.quiet_allow_third_party_injection = false;
 
+// --- a flag a torn-down pass left behind cannot poison the next page -------------------------------
+// Found on a live host by running the acceptance scenario twice in a row: the second run wrote twenty
+// floors and produced no archive, no summary, no anchors and no diagnostics. The first run had been
+// reloaded mid-summary, and the finally block that clears this flag lives on the settings object, so the
+// stale true was persisted with them. While it is set, quiet() skips every injection and schedule()
+// skips every capture - the whole pipeline stops and nothing says so.
+const { installNarrativeRuntime } = await import('./narrative-runtime.js');
+const { createNarrativeHostServices } = await import('./index.js');
+settings.__narrative_summary_in_progress = true;
+settings.__quiet_extraction_in_progress = true;
+installNarrativeRuntime(() => ctx, () => createNarrativeHostServices(ctx));
+assert.equal(settings.__narrative_summary_in_progress, undefined,
+    'installing clears the in-progress flag a torn-down summary left behind');
+assert.equal(settings.__quiet_extraction_in_progress, undefined, 'and the quiet-extraction flag with it');
+assert.ok((await run('normal')).cur?.[1], 'so the pipeline runs again instead of returning early forever');
+
 // --- disabling restores the original text and clears the channels --------------------------------
 settings.enabled = false;
 const disabled = await run('normal');
