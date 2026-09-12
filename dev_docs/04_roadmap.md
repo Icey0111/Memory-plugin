@@ -96,8 +96,10 @@ drops. The cost of the arrangement is the prompt budget the block occupies, not 
    ambiguity for about a dozen tokens per block, not because a measurement showed a gain.
 3. Measure whether a per-turn state refresh costs less than the contradictions it would remove. The current
    block is free but stale by up to one cadence, and a contradiction inside it is now a known shape.
-4. Evaluate live recent-message queries on held-out stories; offline explicit-question recall is a different
-   task. Keep optional reranking optional until its latency and cost are justified there.
+4. Evaluate live recent-message queries on held-out stories. Four runs did that and the question moved: at
+   this scale live play almost never makes retrieval the only source, so the same runs cannot justify reranking
+   either. Revisit with a corpus the summary cannot hold, or where a whole cadence is summarised into a budget
+   far below what it now uses.
 5. Measure archive growth with edits and branches over hundreds of turns. Earlier near-zero numbers of
    superseded versions are observations from those chats, not a bound on future storage.
 
