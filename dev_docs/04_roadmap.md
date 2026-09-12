@@ -221,6 +221,25 @@ character n-grams (`她的指`, `喝了两`, `回来了`). It fired on the right
 at nothing a user could act on. A metric that counts fragments cannot report "the thing you were asked about
 was described in a floor that was not quoted".
 
+### What the retrieval query is actually made of
+
+Direction two was measured on the same turn. The query is the last three captured rows, capped at 5000
+characters, and on that turn those rows are the previous user message (9 characters), the assistant's reply
+(694), and the question (26). **The assistant's own prose is 95% of what retrieval searches for.** Replaying
+the turn under different constructions:
+
+| query construction | rank of the descriptive floor, of 49 | quoted by the greedy packer |
+| --- | --- | --- |
+| last three rows (live) | 16 | no |
+| each row capped at 300 / 150 / 80 characters | 14 / 9 / 10 | no |
+| the current user message only | **6** | **yes** |
+
+So the composition does mislead the ranking, capping only helps a little, and only dropping the newest
+assistant reply moves that floor into the selection. It is **not shipped**: this is one turn, and the
+three-message query is also what triggers situational recall (ADR-0019), which has not been measured under the
+alternative. Direction one - a seat for the floor that describes a term named in the query - is the other
+candidate.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
