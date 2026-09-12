@@ -53,6 +53,12 @@ remove/. Their measurements are still in Git history and in the snapshots.
 
 ### Retired modules (in Git and remove/, not on disk)
 
-v55-boundary.js, v55-compression.js, v55-consistency.js, v55-digest.js, v55-finalizer.js,
-v55-privacy.js, v55-provenance.js, v55-summary-runtime.js - see ADR-0002. Nothing on disk imports
-them, and test-extension-frontend-contract.mjs fails if one comes back.
+First wave (ADR-0002): v55-boundary.js, v55-compression.js, v55-consistency.js, v55-digest.js,
+v55-finalizer.js, v55-privacy.js, v55-provenance.js, v55-summary-runtime.js. The frontend contract
+test fails if one comes back.
+
+Second wave (ADR-0009, the fact subsystem): v55-evidence.js, v55-forget.js, v55-quality-metrics.js,
+v55-certificate.js, v55-tcausal.js, memory-extractor.js, context-assembler.js, v55-rerank.js,
+retrieval-eval.js, v55-selfcheck.js, baseline-host.js, with the 33 test files that pinned them.
+index.js went from 3444 to 2055 lines, the source set from 111 files to 67 and the suite from 64 to
+31. v55-spine.js survives because the live memory-core.js uses it (ADR-0009).

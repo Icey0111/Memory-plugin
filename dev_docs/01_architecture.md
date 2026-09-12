@@ -190,17 +190,17 @@ Live path, reachable from index-v55-bootstrap.js:
 | Chat store, replay, operations, tokenizer | memory-core.js, v55-store-integrity.js, v55-store-compact.js, v55-derived-store.js, v55-tokenizer.js |
 | Vector transport and space identity | v55-vector-policy.js, v55-private-vector-transport.js, v55-tauri-vector-backend.js, v55-tauri-native-http-bridge.js, v55-rerank.js |
 | Setting plane | setting-schema.js, setting-store.js, setting-importer.js, setting-index.js, setting-retriever.js, source-adapters/ |
-| Baseline plane | baseline-index.js, baseline-host.js |
-| Measurement | v55-metrics.js, v55-selfcheck.js, v55-quality-metrics.js |
+| Baseline plane | baseline-index.js (the tokenizer and lexical floor the ranking uses) |
+| Measurement | v55-metrics.js |
 
-Retained legacy (reachable through index.js, inert while the narrative pipeline is on): the v5.4
-fact store, its recall/prefetch, the context assembler, the memory spine, evidence cold snapshots
-and the length certificate. They keep old chats readable and replayable; they no longer decide what
-the prompt contains. Removing them is roadmap work, not a silent deletion.
+Retired (ADR-0007, ADR-0009): the v5.4 extraction pipeline, the prompt assembler, the recall path,
+the cold-snapshot cache, the length certificate, the quality metrics, the reranker, the retrieval
+self-check and the baseline builder - with the tests that pinned them. index.js keeps the host
+adapters, the chat store, the setting plane and the migration of old chats.
 
-The fact set itself no longer lives in the chat file: memories, slots and hierarchical_summaries are
-derived keys now, written to the external record and rebuildable from the canonical replay log
-(ADR-0004). The chat file keeps the replay log, which is what the projection is rebuilt from.
+The fact set itself no longer lives in the chat file either: memories, slots and hierarchical_summaries
+are derived keys, written to the external record and rebuildable from the canonical replay log, which
+the chat file keeps (ADR-0004).
 
 ### 5. Invariants
 
@@ -218,10 +218,11 @@ derived keys now, written to the external record and rebuildable from the canoni
 
 - Dense retrieval over original text needs a configured embedding backend; without one the pipeline
   is lexical-only and says so in its diagnostics.
-- The archive keeps every superseded version, and nothing prunes it. The cost is visible in the chat
-  about one copy of the conversation text, measured at 41-351 KB per chat, or 4-33% of the file,
-  which is why it stays lossless (ADR-0004). Growth on very long chats is still unmeasured.
+- The archive keeps every superseded version, and nothing prunes it. Measured at about one copy of the
+  conversation text (41-351 KB per chat, 4-33% of the file), which is why it stays lossless (ADR-0004).
+  Growth on very long chats is still unmeasured.
 - Knowledge boundaries are text, not enforcement: a character cannot be prevented from acting on a
   fact that appears in the summary.
-- The legacy fact pipeline is still in the tree. It is unreachable at runtime, but it is still
-  thousands of lines that a reader has to step over.
+- v55-spine.js survives because the live memory-core.js uses it for the fact model spine bookkeeping,
+  and applyMemoryOps is the migration path for old chats. Retiring it is a data decision, not a
+  dead-code one (ADR-0009).

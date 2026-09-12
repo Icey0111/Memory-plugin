@@ -16,6 +16,10 @@ belongs in Git commits and pull requests.
 - Knowledge boundaries: who knows what, and who explicitly does not, is its own section of the
   summary - stored, fed back to the summarizer verbatim, and re-injected every generation with its own
   budget. It is a record the panel can show and a test can assert, not enforcement.
+- The fact subsystem is retired with it: the extraction pipeline, the prompt assembler, the recall
+  path, the cold-snapshot cache, the length certificate, the quality metrics, the reranker, the
+  retrieval self-check and the baseline builder, plus the 33 test files that pinned them. index.js went
+  from 3444 to 2055 lines; the repository carries 67 source files where it carried 111.
 - The legacy generation runtime is retired rather than gated: the v5.4 interceptor, its prompt
   assembly, the extraction and recall-prefetch events, the startup reconciliation, and six settings
   controls that no longer had a handler are gone.

@@ -30,12 +30,6 @@ import {
     validateMemoryOp,
 } from './memory-core.js';
 
-import {
-    EXTRACTION_JSON_SCHEMA,
-    buildAutonomousExtractionPrompt,
-    parseExtractionResult,
-    planExtractionPromptBudget,
-} from './memory-extractor.js';
 
 // A8: the quality side of the measurement story. v55-metrics.js meters cost; this meters whether
 // memory stayed good. Pure module, no host globals, so it is fully offline-testable.
@@ -49,7 +43,6 @@ import {
     isBaselineGateEligible,
 } from './baseline-index.js';
 
-import { collectSemanticBaselineSources } from './baseline-host.js';
 import { migrateSettingStore } from './setting-schema.js';
 import { listRevisionsForWorld, listWorlds } from './setting-store.js';
 import { commitImport, findDuplicateSources, previewImport } from './setting-importer.js';
@@ -73,11 +66,8 @@ import {
     settingChunksToBaselineRecords,
 } from './setting-retriever.js';
 import { buildCanonicalState, deriveActorIdentity } from './v55-runtime.js';
-import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
 import { persistChatStore } from './v55-derived-store.js';
-import { rerankCandidates } from './v55-rerank.js';
-import { formatMetrics, recordEmbeddingCall, recordModelCall, resetMetrics } from './v55-metrics.js';
-import { formatSelfCheck, runRetrievalSelfCheck } from './v55-selfcheck.js';
+import { formatMetrics, recordEmbeddingCall, resetMetrics } from './v55-metrics.js';
 import { getV55EmbeddingProfile } from './v55-vector-policy.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
@@ -635,315 +625,16 @@ async function purgeAllAetheriaCollections(ctx) {
     return purged;
 }
 
-function computeBaselineVectorHash(record) {
-    return fnv1a32Baseline(`baseline-v54|${record?.id || ''}|${record?.normalized || record?.text || ''}`);
-}
-
-function summarizeBaselineSources(sources) {
-    return (Array.isArray(sources) ? sources : []).map(s => ({
-        type: String(s?.source_type || 'unknown'),
-        id: String(s?.source_id || ''),
-        title: String(s?.title || ''),
-        chars: String(s?.text || '').length,
-    }));
-}
-
-async function ensureSemanticBaseline(ctx, { force = false, silent = true } = {}) {
-    const settings = getSettings(ctx);
-    const sources = await collectSemanticBaselineSources(ctx, {
-        includeActiveWorldInfo: Boolean(settings.baseline_include_active_world_info),
-    });
-    const records = buildBaselineRecords(sources, { maxChars: settings.baseline_chunk_chars });
-    const fingerprint = computeBaselineFingerprint(records);
-    // Activated World Info can change from turn to turn as keyword/selective entries fire.
-    // Keep it in the lexical hard gate + extractor hint, but do not force a full vector rebuild
-    // every time that volatile activation set changes. Stable bound sources form the vector corpus.
-    const vectorRecords = records.filter(record => record.source_type !== 'active_world_info');
-    const vectorFingerprint = computeBaselineFingerprint(vectorRecords);
-    let store = getStore(ctx);
-    const provider = getVectorProvider(ctx);
-    const collectionId = getBaselineCollectionId(ctx);
-    const previous = store.baseline || createEmptyStore().baseline;
-    const fingerprintChanged = previous.vector?.fingerprint !== vectorFingerprint;
-    const providerChanged = Boolean(previous.vector?.provider_fingerprint && previous.vector.provider_fingerprint !== provider.fingerprint);
-
-    store.baseline = {
-        ...previous,
-        fingerprint,
-        record_count: records.length,
-        vector_record_count: vectorRecords.length,
-        source_count: sources.length,
-        source_labels: summarizeBaselineSources(sources),
-        last_built_at: Date.now(),
-        vector: {
-            ...previous.vector,
-            collection_id: collectionId,
-        },
-    };
-
-    if (!records.length) {
-        store.baseline.vector.stale = false;
-        store.baseline.vector.fingerprint = vectorFingerprint;
-        store.baseline.vector.provider_fingerprint = provider.fingerprint;
-        store.baseline.vector.last_error = null;
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    if (!settings.semantic_baseline_gate) {
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = 'Semantic Baseline Gate 已关闭。';
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    if (!settings.baseline_use_vector) {
-        store.baseline.vector.stale = false;
-        store.baseline.vector.last_error = null;
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    if (!collectionId) {
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = '当前没有聊天ID，Baseline向量索引不可用；仍使用本地词法硬过滤。';
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-    if (!provider.supported) {
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = `${provider.reason || 'Embedding provider不可用'}；仍使用本地词法硬过滤。`;
-        setStore(ctx, store);
-        return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady: false, provider, collectionId };
-    }
-
-    const needsRebuild = force || fingerprintChanged || providerChanged
-        || previous.vector?.stale !== false
-        || previous.vector?.fingerprint !== vectorFingerprint
-        || previous.vector?.provider_fingerprint !== provider.fingerprint;
-
-    if (needsRebuild && settings.baseline_auto_rebuild) {
-        try {
-            const items = vectorRecords.map((record, index) => ({
-                hash: computeBaselineVectorHash(record),
-                text: `[${record.source_type}:${record.title}] ${record.text}`,
-                index,
-            }));
-            await withVectorLock(async () => {
-                await purgeVectorCollection(ctx, collectionId);
-                const batchSize = 40;
-                for (let i = 0; i < items.length; i += batchSize) {
-                    await vectorInsert(ctx, provider, collectionId, items.slice(i, i + batchSize));
-                }
-            });
-            store = getStore(ctx);
-            store.baseline = {
-                ...(store.baseline || {}),
-                fingerprint,
-                record_count: records.length,
-                vector_record_count: vectorRecords.length,
-                source_count: sources.length,
-                source_labels: summarizeBaselineSources(sources),
-                last_built_at: Date.now(),
-                vector: {
-                    ...(store.baseline?.vector || {}),
-                    collection_id: collectionId,
-                    fingerprint: vectorFingerprint,
-                    provider_fingerprint: provider.fingerprint,
-                    stale: false,
-                    last_error: null,
-                    last_sync_at: Date.now(),
-                },
-            };
-            setStore(ctx, store);
-            if (!silent) notify('success', `Semantic Baseline 已重建：${records.length} 个分块。`, 'Baseline Index');
-        } catch (error) {
-            store = getStore(ctx);
-            store.baseline.vector = {
-                ...(store.baseline?.vector || {}),
-                collection_id: collectionId,
-                fingerprint: vectorFingerprint,
-                provider_fingerprint: provider.fingerprint,
-                stale: true,
-                last_error: String(error?.message || error),
-            };
-            setStore(ctx, store);
-            if (!silent) notify('warning', `Baseline向量重建失败，将退化到词法过滤：${store.baseline.vector.last_error}`, 'Baseline Index');
-        }
-    } else {
-        if (needsRebuild) {
-            store.baseline.vector.stale = true;
-            store.baseline.vector.last_error = 'Baseline来源或Embedding provider已变化，需要重建。';
-        }
-        setStore(ctx, store);
-    }
-
-    const current = getStore(ctx);
-    const vectorReady = Boolean(
-        settings.baseline_use_vector
-        && provider.supported
-        && collectionId
-        && current.baseline?.vector?.stale === false
-        && current.baseline?.vector?.fingerprint === vectorFingerprint
-        && current.baseline?.vector?.provider_fingerprint === provider.fingerprint
-    );
-    return { sources, records, vectorRecords, fingerprint, vectorFingerprint, vectorReady, provider, collectionId };
-}
-
-async function getSemanticBaselineMatches(ctx, op, prepared) {
-    const settings = getSettings(ctx);
-    if (!prepared?.vectorReady || !isBaselineGateEligible(op)) return [];
-    const threshold = Math.max(0, Math.min(1, Number(settings.baseline_similarity_threshold) || 0.84));
-    try {
-        const result = await withVectorLock(() => vectorQuery(
-            ctx,
-            prepared.provider,
-            prepared.collectionId,
-            String(op.text || ''),
-            5,
-            threshold,
-        ));
-        return (Array.isArray(result?.metadata) ? result.metadata : []).map(row => {
-            const index = Number(row?.index);
-            return {
-                index,
-                record: Number.isInteger(index) ? prepared.vectorRecords?.[index] || prepared.records[index] : null,
-                // ST's /api/vector/query threshold-filtered metadata does not guarantee score exposure.
-                score: Number.isFinite(Number(row?.score)) ? Number(row.score) : threshold,
-            };
-        }).filter(x => x.record);
-    } catch (error) {
-        const store = getStore(ctx);
-        store.baseline.vector.stale = true;
-        store.baseline.vector.last_error = `Baseline query failed: ${String(error?.message || error)}`;
-        setStore(ctx, store);
-        return [];
-    }
-}
-
-async function filterOperationsAgainstBaseline(ctx, ops, preparedHost, pluginDeduper = null) {
-    const settings = getSettings(ctx);
-    if (!settings.semantic_baseline_gate) return { accepted: [...ops], rejected: [] };
-    const hostRecords = Array.isArray(preparedHost?.records) ? preparedHost.records : [];
-    const hasPluginRecords = Boolean(pluginDeduper?.records?.length);
-    if (!hostRecords.length && !hasPluginRecords) return { accepted: [...ops], rejected: [] };
-
-    const accepted = [];
-    const rejected = [];
-    for (const op of ops) {
-        if (!isBaselineGateEligible(op)) {
-            accepted.push(op);
-            continue;
-        }
-
-        let decision = { blocked: false, reason: 'no-baseline-duplicate' };
-        let source = null;
-        if (hostRecords.length) {
-            decision = evaluateBaselineDuplicate(op, hostRecords, {
-                lexicalThreshold: settings.baseline_lexical_threshold,
-                semanticThreshold: settings.baseline_similarity_threshold,
-                semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-            });
-            if (!decision.blocked && preparedHost?.vectorReady) {
-                const semanticMatches = await getSemanticBaselineMatches(ctx, op, preparedHost);
-                decision = evaluateBaselineDuplicate(op, hostRecords, {
-                    lexicalThreshold: settings.baseline_lexical_threshold,
-                    semanticMatches,
-                    semanticThreshold: settings.baseline_similarity_threshold,
-                    semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-                });
-            }
-            if (decision.blocked) source = 'host_baseline';
-        }
-
-        if (!decision.blocked && pluginDeduper?.records?.length) {
-            const pluginDecision = await pluginDeduper.findPossibleMatches(op);
-            if (pluginDecision?.blocked) {
-                decision = pluginDecision;
-                source = 'plugin_setting';
-            }
-        }
-
-        if (decision.blocked) {
-            rejected.push({
-                op,
-                reason: decision.reason,
-                baseline_source_kind: source,
-                baseline_id: decision.match?.id || null,
-                baseline_source: decision.match ? `${decision.match.source_type}:${decision.match.title}` : null,
-                baseline_preview: String(decision.match?.text || '').slice(0, 300),
-                lexical_score: decision.lexical_score ?? decision.best_lexical ?? null,
-                semantic_score: decision.semantic_score ?? null,
-            });
-        } else accepted.push(op);
-    }
-    return { accepted, rejected };
-}
-
-function buildRecentContextForExtraction(chat, assistantIndex, maxMessages = 4) {
-    const rows = Array.isArray(chat) ? chat : [];
-    const count = Math.max(0, Math.min(12, Number(maxMessages) || 0));
-    if (!count) return '';
-    const start = Math.max(0, Number(assistantIndex) - count - 1);
-    const lines = [];
-    for (let i = start; i < assistantIndex - 1; i++) {
-        const msg = rows[i];
-        if (!msg || !isDialogueRow(msg)) continue;
-        const text = stripSummaryForQuery(String(msg.mes ?? '')).trim();
-        if (!text) continue;
-        lines.push(`${msg.is_user ? '[USER]' : '[ASSISTANT]'} ${text}`);
-    }
-    return lines.join('\n\n').slice(-16000);
-}
-
-function formatCanonicalStateForExtraction(storeInput) {
-    const store = normalizeStore(storeInput);
-    const active = Object.values(store.memories)
-        .filter(m => m.status === 'active')
-        .sort((a, b) => Number(b.source_message ?? -1) - Number(a.source_message ?? -1))
-        .slice(0, 28)
-        .map(m => {
-            const slot = m.slot ? ` slot=${m.slot}` : '';
-            const known = Array.isArray(m.known_by) && m.known_by.length ? ` known_by=${m.known_by.join(',')}` : '';
-            return `- [${m.kind}${slot}${known}] ${m.text}`;
-        });
-    const recentClosed = Object.values(store.memories)
-        .filter(m => m.status === 'closed' && ['high', 'critical'].includes(m.importance || 'medium'))
-        .sort((a, b) => Number(b.source_message ?? -1) - Number(a.source_message ?? -1))
-        .slice(0, 8)
-        .map(m => `- [past:${m.kind}] ${m.text}`);
-    return [...active, ...recentClosed].join('\n').slice(0, 12000);
-}
-
-function pruneStaleExtractionRecords(storeInput, chat) {
-    const store = normalizeStore(storeInput);
-    const valid = new Set();
-    for (let i = 0; i < (Array.isArray(chat) ? chat.length : 0); i++) {
-        const pair = computeDialoguePairFingerprint(chat, i);
-        if (pair) valid.add(pair.key);
-    }
-    for (const key of Object.keys(store.extractions || {})) {
-        if (!valid.has(key)) delete store.extractions[key];
-    }
-    return store;
-}
-
 // A quiet generation is not a safe carrier for the extraction prompt in TauriTavern: the request
 // that reached the provider carried the character card as the user message and none of the extraction
 // instructions, so the model answered with roleplay prose or raw reasoning and the JSON parse always
 // failed. generateRaw delivered the exact prompt and returned clean JSON against the same host, which
 // is also why the summary path works (it goes through a different host service). generateQuietPrompt
 // stays as the fallback for hosts without generateRaw.
-const EXTRACTION_SYSTEM_PROMPT = '你是记忆抽取器。只输出严格 JSON，不要解释、标题或代码围栏。';
 
 // A reasoning model spends part of the budget on hidden reasoning before it emits any visible text, so
 // a completion that starts like JSON and stops mid-string is a starved generation rather than a
 // formatting mistake. That is worth one retry with a doubled budget instead of another prompt variant.
-function looksLikeStarvedJson(raw) {
-    const text = String(raw ?? '').trim();
-    if (!text.startsWith('{')) return false;
-    try { JSON.parse(text); return false; } catch { return true; }
-}
 
 // Sticky: set once the provider has refused response_format, so later extractions go straight to the
 // plain-text path instead of paying for a request that is already known to be rejected every turn.
@@ -959,360 +650,6 @@ let structuredOutputRefused = false;
  * with half of it. That is the shape of a retry that cannot succeed, and it is why a live 40-turn run
  * ended with 9 of 40 extractions.
  */
-export function extractionBudgetLadder(configuredBudget) {
-    const base = Math.max(128, Math.min(8192, Number(configuredBudget) || 2048));
-    return {
-        first: base,
-        retry: Math.min(8192, base * 2),
-        plain: Math.min(8192, base * 4),
-    };
-}
-
-export function __testExtractionBudgetLadder(configuredBudget) {
-    return extractionBudgetLadder(configuredBudget);
-}
-
-async function runQuietExtraction(ctx, prompt, useStructured = true, budgetOverride = null) {
-    if (typeof ctx.generateRaw !== 'function' && typeof ctx.generateQuietPrompt !== 'function') {
-        throw new Error('当前 SillyTavern Context 未提供 generateRaw / generateQuietPrompt，无法执行自动记忆抽取。');
-    }
-    const settings = getSettings(ctx);
-    // Never inherit the chat preset's max_tokens: see extraction_response_tokens in DEFAULT_SETTINGS.
-    const configured = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
-    const budget = Math.max(128, Math.min(8192, Number(budgetOverride) || configured));
-    const schema = useStructured ? EXTRACTION_JSON_SCHEMA : null;
-    // Mark the plugin's own call so the interceptor/wrappers can keep it cleared even when third-party
-    // quiet injection is opted in.
-    settings.__quiet_extraction_in_progress = true;
-    runQuietExtraction.lastBudget = budget;
-    try {
-        const result = typeof ctx.generateRaw === 'function'
-            ? await ctx.generateRaw({ prompt, systemPrompt: EXTRACTION_SYSTEM_PROMPT, responseLength: budget, jsonSchema: schema })
-            : await ctx.generateQuietPrompt({ quietPrompt: prompt, responseLength: budget, ...(schema ? { jsonSchema: schema } : {}) });
-        if (settings.metrics_enabled !== false) {
-            const raw = typeof result === 'string' ? result : (result?.content ?? '');
-            recordModelCall(ctx, {
-                kind: 'extraction',
-                promptChars: String(prompt ?? '').length,
-                completionChars: String(raw ?? '').length,
-                // Pass the text as well: the token estimate is script-aware, so a Chinese prompt is
-                // no longer charged at the Latin characters / 4 rate.
-                promptText: String(prompt ?? ''),
-                completionText: String(raw ?? ''),
-            });
-        }
-        return result;
-    } finally {
-        delete settings.__quiet_extraction_in_progress;
-    }
-}
-
-async function extractMemoryForAssistant(ctx, assistantIndex, { force = false } = {}) {
-    const settings = getSettings(ctx);
-    if (!settings.enabled || !settings.auto_extract) return { skipped: 'disabled' };
-    const rows = ctx.chat || [];
-    const pair = computeDialoguePairFingerprint(rows, assistantIndex);
-    if (!pair) return { skipped: 'not-assistant' };
-    const chatIdentity = getChatIdentity(ctx);
-    if (!chatIdentity) return { skipped: 'no-chat' };
-
-    let store = getStore(ctx);
-    const existing = store.extractions?.[pair.key];
-    if (!force && existing && Number(existing.source_hash) === Number(pair.hash)) {
-        return { skipped: 'already-extracted', record: existing };
-    }
-    const replacingExistingRecord = Boolean(force && existing && Number(existing.source_hash) === Number(pair.hash));
-    // v5/v5.1/v5.2 already embedded machine operations in assistant replies.
-    // During migration, replay those operations instead of paying for a duplicate quiet extraction.
-    if (!force && settings.parse_ops && /<memory_ops\b[^>]*>/i.test(String(rows[assistantIndex]?.mes ?? ''))) {
-        return { skipped: 'legacy-inline-ops' };
-    }
-
-    let preparedBaseline = await ensureSemanticBaseline(ctx, { silent: true });
-    let preparedSettingIndex = await ensurePluginSettingIndex(ctx, { silent: true });
-    const extractionSettingRetrieval = await retrieveExtractionSettings(ctx, pair, store, preparedSettingIndex);
-    const relevantSettingContext = formatRelevantSettingContext(extractionSettingRetrieval, {
-        maxChars: settings.setting_extraction_max_chars,
-        constantLimit: settings.setting_retrieval_constant_limit,
-        includeConstants: true,
-    });
-    const relevantHostBaseline = buildRelevantHostBaselineContext(
-        preparedBaseline,
-        extractionSettingRetrieval.query?.text || `${pair.userText}
-${pair.assistantText}`,
-        Math.min(4500, Math.max(1200, Math.floor(settings.setting_extraction_max_chars * 0.55))),
-    );
-    const promptLayers = {
-        recentContext: buildRecentContextForExtraction(rows, assistantIndex, extractionContextMessages(settings)),
-        canonicalState: formatCanonicalStateForExtraction(store),
-        relevantSettingContext,
-        hostBaselineContext: relevantHostBaseline,
-    };
-    const promptPlan = planExtractionPromptBudget({
-        limit: settings.extraction_prompt_max_chars,
-        pairChars: String(pair.userText || '').length + String(pair.assistantText || '').length,
-        layerChars: Object.fromEntries(Object.entries(promptLayers).map(([key, value]) => [key, String(value || '').length])),
-    });
-    const prompt = buildAutonomousExtractionPrompt({
-        userText: pair.userText,
-        assistantText: pair.assistantText,
-        ...promptLayers,
-        optionalCeilings: promptPlan.ceilings,
-    });
-
-    const started = performance.now?.() ?? Date.now();
-    let raw = '';
-    let parsed = null;
-    let mode = 'structured';
-    // Every provider round-trip is recorded, failures included. Without this a truncated attempt and
-    // a skipped retry look identical from the outside: both end in the same parse error, and the only
-    // way to tell them apart was to correlate host-side request logs by hand.
-    const attempts = [];
-    const noteAttempt = (phase, value, ok) => attempts.push({
-        phase,
-        budget: runQuietExtraction.lastBudget ?? null,
-        type: typeof value,
-        chars: typeof value === 'string' ? value.length : null,
-        parsed: Boolean(ok),
-        starved: looksLikeStarvedJson(value),
-    });
-    // A provider that refuses response_format rejects the WHOLE request ("This response_format type
-    // is unavailable now" on the proxy this ran against live), so each attempt is contained here and
-    // a turn falls through to the plain-text path instead of losing its extraction outright.
-    const configuredBudget = Math.max(128, Math.min(8192, Number(settings.extraction_response_tokens) || 2048));
-    const wantsStructured = Boolean(settings.extraction_structured_output) && !structuredOutputRefused;
-    const attemptExtraction = async (phase, useStructured, budget, text) => {
-        try {
-            const value = await runQuietExtraction(ctx, text, useStructured, budget);
-            const result = parseExtractionResult(value);
-            noteAttempt(phase, value, result.ok);
-            return { value, result };
-        } catch (error) {
-            const message = String(error?.message || error);
-            // A provider that cannot accept response_format refuses it on every single turn. Remember
-            // that, so the next extraction does not pay for two requests that are known to be rejected.
-            if (useStructured && /response_format|json_schema|json_object|unavailable now/i.test(message)) {
-                structuredOutputRefused = true;
-            }
-            noteAttempt(phase, message, false);
-            return { value: '', result: { ok: false, error: message } };
-        }
-    };
-    try {
-        let step = await attemptExtraction('structured', wantsStructured, null, prompt);
-        raw = step.value;
-        parsed = step.result;
-        // Retry on any parse failure with budget headroom, not only on "looks truncated" output: a
-        // reasoning model can also spend the whole budget before it emits its first brace, and that
-        // shape is indistinguishable from a formatting mistake. The doubled budget is the fix for
-        // both, so the gate is deliberately just "did not parse".
-        const ladder = extractionBudgetLadder(configuredBudget);
-        if (!parsed.ok && configuredBudget < 8192) {
-            mode = 'budget-retry';
-            step = await attemptExtraction('budget-retry', wantsStructured && !structuredOutputRefused, ladder.retry, prompt);
-            raw = step.value;
-            parsed = step.result;
-        }
-        if ((!parsed.ok || (typeof raw === 'string' && raw.trim() === '{}' && !parsed.eventSummary)) && settings.extraction_retry_plain_json !== false) {
-            mode = 'plain-json-retry';
-            // The plain-text rung keeps the escalated budget. Passing no override here made the last
-            // attempt smaller than the one that had already failed.
-            step = await attemptExtraction('plain-json-retry', false, ladder.plain, prompt + '\n\n严格只输出JSON，不要代码围栏。');
-            raw = step.value;
-            parsed = step.result;
-        }
-    } catch (error) {
-        store.last_extraction_debug = {
-            status: 'error', message_index: assistantIndex, source_key: pair.key,
-            error: String(error?.message || error), at: Date.now(),
-        };
-        setStore(ctx, store);
-        throw error;
-    }
-    if (!parsed?.ok) {
-        const rawText = String(raw || '');
-        const error = new Error(`记忆抽取JSON解析失败：${parsed?.error || 'unknown error'}`);
-        store.last_extraction_debug = {
-            status: 'parse-error', message_index: assistantIndex, source_key: pair.key,
-            raw_preview: rawText.slice(0, 1200), error: error.message, at: Date.now(),
-            raw_length: rawText.length,
-            response_tokens_budget: runQuietExtraction.lastBudget ?? null,
-            mode,
-            attempts,
-            // A completion that carries no JSON delimiter at all is almost always a starved or
-            // reasoning-dominated generation rather than a formatting mistake, so say which.
-            truncated_hint: !rawText.includes('{')
-                ? '响应中没有 JSON（疑似被 max_tokens 截断或全部消耗在推理内容上）；可提高 extraction_response_tokens。'
-                : (looksLikeStarvedJson(rawText) ? 'JSON 未闭合（疑似被 max_tokens 截断，推理内容吃掉了预算）；可提高 extraction_response_tokens。' : null),
-        };
-        setStore(ctx, store);
-        throw error;
-    }
-
-    // Do not commit a result produced for a chat/branch that changed while the quiet LLM call was running.
-    const current = getContext();
-    const currentPair = current && getChatIdentity(current) === chatIdentity
-        ? computeDialoguePairFingerprint(current.chat || [], assistantIndex)
-        : null;
-    if (!currentPair || currentPair.key !== pair.key || Number(currentPair.hash) !== Number(pair.hash)) {
-        return { skipped: 'source-changed-during-extraction' };
-    }
-
-    const validatedOps = [];
-    const validationErrors = [];
-    for (const op of parsed.operations) {
-        const validationErrorsForOp = validateMemoryOp(op);
-        // An operation with no text is a hole in the record: it cannot become a memory, cannot be
-        // replayed into one, and only inflates the canonical transaction log (measured at 18-443% of
-        // the raw dialogue). Measured live: 0-7 such operations per chat.
-        if (!validationErrorsForOp.length && String(op?.text || '').trim()) validatedOps.push(op);
-        else validationErrors.push(...validationErrorsForOp);
-    }
-
-    // Refresh both host baseline and plugin-owned active Setting scope after the quiet call.
-    // The write gate must use the current canonical sources, not the snapshot from before generation.
-    preparedBaseline = await ensureSemanticBaseline(current, { silent: true });
-    preparedSettingIndex = await ensurePluginSettingIndex(current, { silent: true });
-    const pluginBaselineDeduper = createPluginBaselineDeduper(current, preparedSettingIndex);
-    const baselineFiltered = await filterOperationsAgainstBaseline(current, validatedOps, preparedBaseline, pluginBaselineDeduper);
-    const validOps = baselineFiltered.accepted;
-    const baselineRejections = baselineFiltered.rejected;
-    if (!validOps.length) {
-        validOps.push({
-            op: 'noop',
-            reason: baselineRejections.length
-                ? '候选操作均与Host Baseline或插件自有世界设定重复，已由写入层拦截。'
-                : '抽取器未返回可提交的记忆操作。',
-        });
-    }
-
-    store = getStore(current);
-    store = pruneStaleExtractionRecords(store, current.chat || []);
-    const record = {
-        version: '5.4',
-        source_hash: pair.hash,
-        source_key: pair.key,
-        assistant_index_at_creation: assistantIndex,
-        user_index_at_creation: pair.userIndex,
-        event_summary: parsed.eventSummary,
-        active_state: parsed.activeState,
-        operations: validOps,
-        baseline_fingerprint: preparedBaseline.fingerprint,
-        setting_scope_key: preparedSettingIndex.scope?.scope_key || null,
-        setting_index_fingerprint: preparedSettingIndex.fingerprint || null,
-        relevant_setting_ids: extractionSettingRetrieval.results.map(row => row.entry_id),
-        baseline_rejections: baselineRejections,
-        prompt_plan: promptPlan,
-        generated_at: Date.now(),
-        generation_mode: mode,
-    };
-    store.extractions[pair.key] = record;
-    // Cold原文 snapshot: the live chat is the only other copy, and an edit or delete would
-    // destroy it. Snapshot the pair under the same fingerprint the memory points at.
-    // This is an EVIDENCE CACHE, not memory: memory-core.js never reads cold_turns, and the extractor
-    // stays correct with the switch off. It exists so 【查阅记忆】 can still show original wording
-    // after the host text changed — which is why it is a copy of the transcript and not a fact store.
-    if (settings.cold_turn_snapshot_enabled === false) {
-        pruneColdTurns(store, settings.cold_turn_max_chars);
-    } else {
-        recordColdTurn(store, {
-            source_key: pair.key,
-            fingerprint: pair.hash,
-            assistantIndex,
-            userIndex: pair.userIndex,
-            userText: pair.userText,
-            assistantText: pair.assistantText,
-        }, { maxChars: settings.cold_turn_max_chars });
-    }
-
-    let changedIds = [];
-    let applyErrors = [];
-    if (replacingExistingRecord) {
-        // A forced re-extraction replaces one transaction. Replay all autonomous records so
-        // memories emitted by the old transaction cannot survive as ghosts.
-        const previousVector = store.vector;
-        const previousBaseline = store.baseline;
-        const replayed = replayStoreFromExtractions(current.chat || [], store.extractions || {}, {
-            includeLegacyMessageOps: Boolean(settings.parse_ops),
-        });
-        store = replayed.store;
-        store.baseline = previousBaseline || createEmptyStore().baseline;
-        store.vector = {
-            ...previousVector,
-            stale: true,
-            last_error: '记忆抽取记录被替换，需要安全重建向量。',
-        };
-        changedIds = Object.keys(store.memories);
-        applyErrors = replayed.errors;
-    } else {
-        const applied = applyMemoryOps(store, validOps, {
-            sourceMessageIndex: assistantIndex,
-            sourceHash: pair.hash,
-            sourceMessageText: `${pair.userText}\n${pair.assistantText}`,
-        });
-        store = applied.store;
-        store.extractions[pair.key] = record;
-        if (parsed.activeState) store.last_active_state = parsed.activeState;
-        store.last_active_state_source = assistantIndex;
-        if (parsed.eventSummary) store.last_event_summary = parsed.eventSummary;
-        store.source_fingerprints = collectAutonomousExtractionSources(current.chat || [], store.extractions)
-            .map(x => ({ index: x.assistantIndex, hash: x.hash }));
-        changedIds = applied.changedIds;
-        applyErrors = applied.errors;
-    }
-    const elapsed = (performance.now?.() ?? Date.now()) - started;
-    store.last_extraction_debug = {
-        status: applyErrors.length ? 'partial' : 'ok', message_index: assistantIndex, source_key: pair.key,
-        elapsed_ms: Math.round(elapsed * 10) / 10,
-        op_count: validOps.filter(op => op.op !== 'noop').length,
-        baseline_input_count: validatedOps.length,
-        baseline_rejected_count: baselineRejections.length,
-        baseline_rejections: baselineRejections,
-        baseline_fingerprint: preparedBaseline.fingerprint,
-        setting_scope_key: preparedSettingIndex.scope?.scope_key || null,
-        relevant_setting_ids: extractionSettingRetrieval.results.map(row => row.entry_id),
-        setting_retrieval: extractionSettingRetrieval.debug,
-        changed_ids: changedIds,
-        validation_errors: validationErrors,
-        apply_errors: applyErrors,
-        mode,
-        attempts,
-        replaced_existing: replacingExistingRecord,
-        at: Date.now(),
-    };
-    store.baseline.last_gate_debug = {
-        source_key: pair.key,
-        input_count: validatedOps.length,
-        accepted_count: validOps.filter(op => op.op !== 'noop').length,
-        rejected_count: baselineRejections.length,
-        rejections: baselineRejections,
-        fingerprint: preparedBaseline.fingerprint,
-        at: Date.now(),
-    };
-    store.last_errors = [
-        ...(store.last_errors || []),
-        ...validationErrors.map(e => `extract message ${assistantIndex}: ${e}`),
-        ...applyErrors.map(e => `extract message ${assistantIndex}: ${e}`),
-    ].slice(-100);
-    setStore(current, store);
-    if (replacingExistingRecord && settings.vector_recall) await rebuildVectorIndex(current, { silent: true });
-    else await syncChangedVectors(current, [...new Set(changedIds)]);
-    if (settings.extraction_notifications) {
-        const committedOps = validOps.filter(op => op.op !== 'noop').length;
-        if (applyErrors.length || validationErrors.length) notify('warning', `记忆抽取部分失败：提交 ${committedOps} 个，错误 ${applyErrors.length + validationErrors.length} 条。`, '自动记忆');
-        else notify('success', `已提交记忆操作 ${committedOps} 个；Baseline拦截 ${baselineRejections.length} 个。`, '自动记忆');
-    }
-    log('autonomous extraction complete', store.last_extraction_debug);
-    return { record, changedIds, baselineRejections, errors: [...validationErrors, ...applyErrors] };
-}
-
-function extractionContextMessages(settings) {
-    const base = Math.max(0, Math.min(12, Number(settings.extraction_context_messages) || 0));
-    const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
-    // A batch of N samples the extractor every N-th turn; widen the recent-context window so the
-    // skipped span is still visible to the model instead of being silently dropped.
-    return Math.min(12, base + (batch - 1) * 2);
-}
 
 function getVectorProvider(ctx) {
     const settings = getSettings(ctx);
@@ -1853,39 +1190,6 @@ function searchPluginSettingsLexical(ctx, query, options = {}) {
     return { snapshot, results };
 }
 
-function buildRelevantHostBaselineContext(preparedBaseline, queryText, maxChars = 4500) {
-    const records = Array.isArray(preparedBaseline?.records) ? preparedBaseline.records : [];
-    if (!records.length) return '';
-    const coreTypes = new Set(['persona', 'character_description', 'character_personality', 'character_scenario']);
-    const coreReserve = records.filter(record => coreTypes.has(record.source_type)).slice(0, 6);
-    const ranked = String(queryText || '').trim()
-        ? records
-            .map(record => ({ record, score: baselineLexicalSimilarity(queryText, record.text || '') }))
-            .filter(row => row.score > 0)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 10)
-            .map(row => row.record)
-        : [];
-    const selected = [];
-    const seen = new Set();
-    for (const record of [...coreReserve, ...ranked]) {
-        const key = record.id || `${record.source_type}:${record.source_id}:${record.title}:${record.text}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        selected.push(record);
-    }
-    const cap = Math.max(1000, Math.min(12000, Number(maxChars) || 4500));
-    const lines = ['[RELEVANT HOST BASELINE — PERSONA / CHARACTER / HOST WORLD INFO]'];
-    let used = lines[0].length;
-    for (const record of selected) {
-        const line = `- [${record.source_type}:${record.title}] ${record.text}`;
-        if (used + line.length + 1 > cap) break;
-        lines.push(line);
-        used += line.length + 1;
-    }
-    return lines.length > 1 ? lines.join('\n') : '';
-}
-
 async function retrievePluginSettings(ctx, queryInput, options = {}) {
     const settings = getSettings(ctx);
     const query = typeof queryInput === 'string' ? { mode: options.mode || 'generic', text: queryInput, components: {} } : (queryInput || {});
@@ -1997,83 +1301,6 @@ async function retrieveGenerationSettings(ctx, interceptorChat, storeInput = nul
     return visible;
 }
 
-async function retrieveExtractionSettings(ctx, pair, storeInput, prepared = null) {
-    const settings = getSettings(ctx);
-    const store = normalizeStore(storeInput || getStore(ctx));
-    const pairSeed = `${pair?.userText || ''}
-${pair?.assistantText || ''}`;
-    const activeMemories = settings.setting_query_seed_from_memories === false
-        ? []
-        : getActiveMemories(store, pairSeed, Math.max(settings.max_active_items, 18));
-    const query = buildExtractionSettingQuery({
-        userText: pair?.userText || '',
-        assistantText: pair?.assistantText || '',
-        activeMemories,
-        currentState: store.last_active_state,
-    });
-    lastSettingSeedDebug = { scope: 'extraction', from_memories: settings.setting_query_seed_from_memories !== false, memory_seed_count: activeMemories.length, at: Date.now() };
-    const retrieval = await retrievePluginSettings(ctx, query, {
-        mode: 'extraction',
-        prepared,
-        topEntries: settings.setting_retrieval_final_count,
-        maxChars: settings.setting_extraction_max_chars,
-    });
-    // Keep role-private entries out of the extraction prompt as well; the extractor must not turn
-    // a world secret into "the active character already knows it". Dedup still sees the full index.
-    return filterSettingRowsForActor(retrieval, deriveActorIdentity(ctx, store));
-}
-
-function createPluginBaselineDeduper(ctx, preparedSettingIndex) {
-    const settings = getSettings(ctx);
-    const prepared = preparedSettingIndex || buildSettingIndexSnapshot(getSettingStore(ctx), { maxChars: settings.setting_index_chunk_chars });
-    const records = settingChunksToBaselineRecords(prepared);
-    return {
-        snapshot: prepared,
-        records,
-        async findPossibleMatches(candidateOperation) {
-            if (settings.setting_baseline_veto_enabled === false) {
-                return { blocked: false, reason: 'setting-veto-disabled', source: 'plugin_setting', records, semanticMatches: [] };
-            }
-            if (!settings.semantic_baseline_gate || !isBaselineGateEligible(candidateOperation) || !records.length) {
-                return { blocked: false, reason: 'ineligible-or-empty', source: 'plugin_setting', records, semanticMatches: [] };
-            }
-            let decision = evaluateBaselineDuplicate(candidateOperation, records, {
-                lexicalThreshold: settings.baseline_lexical_threshold,
-                semanticThreshold: settings.baseline_similarity_threshold,
-                semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-            });
-            let semanticMatches = [];
-            if (!decision.blocked && prepared.vectorReady && prepared.collection_id && prepared.provider?.supported) {
-                try {
-                    const response = await withVectorLock(() => vectorQuery(
-                        ctx,
-                        prepared.provider,
-                        prepared.collection_id,
-                        String(candidateOperation.text || ''),
-                        6,
-                        Math.max(0, Math.min(1, Number(settings.baseline_similarity_threshold) || 0.84)),
-                    ));
-                    const denseRows = mapDenseSettingMetadata(prepared, response?.metadata || []);
-                    const recordByChunkId = new Map(records.map((record, index) => [prepared.chunks[index]?.chunk_id, record]));
-                    semanticMatches = denseRows.map(row => ({
-                        record: recordByChunkId.get(row.chunk.chunk_id),
-                        score: Number.isFinite(Number(row.score)) ? Number(row.score) : settings.baseline_similarity_threshold,
-                    })).filter(row => row.record);
-                    decision = evaluateBaselineDuplicate(candidateOperation, records, {
-                        lexicalThreshold: settings.baseline_lexical_threshold,
-                        semanticMatches,
-                        semanticThreshold: settings.baseline_similarity_threshold,
-                        semanticLexicalFloor: settings.baseline_semantic_lexical_floor,
-                    });
-                } catch (error) {
-                    log('plugin setting baseline semantic query failed', error);
-                }
-            }
-            return { ...decision, source: 'plugin_setting', records, semanticMatches };
-        },
-    };
-}
-
 async function rebuildVectorIndex(ctx, { silent = false } = {}) {
     const settings = getSettings(ctx);
     const store = getStore(ctx);
@@ -2132,95 +1359,6 @@ async function rebuildVectorIndex(ctx, { silent = false } = {}) {
     }
 }
 
-async function syncChangedVectors(ctx, changedIds = []) {
-    const settings = getSettings(ctx);
-    if (!settings.vector_recall) return;
-    const store = getStore(ctx);
-    const idsToSync = new Set(changedIds);
-    for (const memory of Object.values(store.memories)) {
-        if (shouldIndexMemory(memory)
-            && memory.vector_hash == null
-            && isMemorySettled(memory, ctx.chat?.length || 0, settings.vector_settle_messages)) {
-            idsToSync.add(memory.id);
-        }
-    }
-    if (!idsToSync.size) return;
-    const provider = getVectorProvider(ctx);
-    const collectionId = getCollectionId(ctx);
-    store.vector.collection_id = collectionId;
-
-    if (!collectionId) {
-        store.vector.stale = true;
-        store.vector.last_error = '当前没有选中的聊天，无法同步向量。';
-        setStore(ctx, store);
-        return;
-    }
-
-    if (!provider.supported) {
-        store.vector.stale = true;
-        store.vector.last_error = provider.reason;
-        setStore(ctx, store);
-        return;
-    }
-
-    const hasExistingIndexable = Object.values(store.memories).some(m => m.vector_hash != null);
-    if (store.vector.fingerprint && store.vector.fingerprint !== provider.fingerprint) {
-        store.vector.stale = true;
-        store.vector.last_error = 'Embedding source/model 已变化，需要重建向量索引。';
-        setStore(ctx, store);
-        return;
-    }
-    if (!store.vector.fingerprint && hasExistingIndexable) {
-        store.vector.stale = true;
-        store.vector.last_error = '检测到已有记忆但没有 provider 指纹，请执行一次“重建向量索引”。';
-        setStore(ctx, store);
-        return;
-    }
-    if (!store.vector.fingerprint) store.vector.fingerprint = provider.fingerprint;
-
-    try {
-        const deleteHashes = [];
-        const insertItems = [];
-        let insertIndex = 0;
-        const pendingHashes = new Map();
-        for (const id of idsToSync) {
-            const memory = store.memories[id];
-            if (!memory) continue;
-            const oldHash = memory.vector_hash == null ? null : Number(memory.vector_hash);
-            if (!shouldIndexMemory(memory) || !isMemorySettled(memory, ctx.chat?.length || 0, settings.vector_settle_messages)) {
-                if (Number.isFinite(oldHash)) deleteHashes.push(oldHash);
-                pendingHashes.set(id, null);
-                continue;
-            }
-            const newHash = computeVectorHash(memory);
-            if (Number.isFinite(oldHash) && oldHash !== newHash) deleteHashes.push(oldHash);
-            if (!Number.isFinite(oldHash) || oldHash !== newHash) {
-                insertItems.push({ hash: newHash, text: buildRetrievalText(memory), index: insertIndex++ });
-            }
-            pendingHashes.set(id, newHash);
-        }
-        // Vectors must land before the local hash pointers move: on transport failure we keep the
-        // previous hashes so the same memories are retried instead of being treated as indexed.
-        await withVectorLock(async () => {
-            await vectorInsert(ctx, provider, collectionId, insertItems);
-            await vectorDelete(ctx, provider, collectionId, deleteHashes);
-        });
-        for (const [id, hash] of pendingHashes) {
-            const memory = store.memories[id];
-            if (memory) memory.vector_hash = hash;
-        }
-        store.vector.stale = false;
-        store.vector.last_error = null;
-        store.vector.last_sync_at = Date.now();
-        setStore(ctx, store);
-    } catch (error) {
-        store.vector.stale = true;
-        store.vector.last_error = String(error?.message || error);
-        setStore(ctx, store);
-        log('incremental vector sync failed', error);
-    }
-}
-
 async function rebuildCanonicalFromChat(ctx, { rebuildVectors = false, silent = true } = {}) {
     const settings = getSettings(ctx);
     const previous = getStore(ctx);
@@ -2253,12 +1391,6 @@ async function rebuildCanonicalFromChat(ctx, { rebuildVectors = false, silent = 
     return replayed;
 }
 
-function getProviderStatus(ctx, store) {
-    const provider = getVectorProvider(ctx);
-    const fingerprintChanged = Boolean(store.vector.fingerprint && store.vector.fingerprint !== provider.fingerprint);
-    return { provider, fingerprintChanged };
-}
-
 /**
  * Recall prefetch.
  *
@@ -2274,71 +1406,10 @@ function getProviderStatus(ctx, store) {
 let recallPrefetch = null;
 let pendingRecallCommit = null;
 
-export function recallSignature(ctx, chat) {
-    const rows = Array.isArray(chat) ? chat : [];
-    const last = rows[rows.length - 1] || {};
-    return [getChatIdentity(ctx) || '', rows.length, String(last.mes ?? '').length, String(last.swipe_id ?? last.swipeId ?? '')].join('|');
-}
-
-export function startRecallPrefetch(ctx = getContext()) {
-    if (ctx && getSettings(ctx).narrative_pipeline) return null;
-    const settings = getSettings(ctx);
-    if (!settings.vector_recall) return false;
-    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
-    if (!chat.length) return false;
-    const signature = recallSignature(ctx, chat);
-    if (recallPrefetch && recallPrefetch.signature === signature) return true;
-    const startedAt = Date.now();
-    const promise = recallMemories(ctx, chat, { commit: false, startedAt })
-        .then(rows => ({ rows, ms: Date.now() - startedAt }))
-        .catch(error => {
-            // A failed prefetch is not fatal: the interceptor falls back to a live recall. It must
-            // still be visible, or a permanently broken prefetch path would look like a cache miss.
-            lastRecallPrefetchError = String(error?.message || error).slice(0, 200);
-            log('recall prefetch failed', error);
-            return { rows: [], ms: Date.now() - startedAt };
-        });
-    recallPrefetch = { signature, promise, startedAt, chatId: getChatIdentity(ctx) };
-    lastRecallPrefetchError = null;
-    return true;
-}
-
-export function recallPrefetchStatus() {
-    return {
-        armed: Boolean(recallPrefetch),
-        signature: recallPrefetch?.signature || null,
-        // How many candidates are parked and not yet committed. The store is untouched until the
-        // interceptor commits them.
-        parked: pendingRecallCommit ? pendingRecallCommit.ids.length : 0,
-        last_lead_ms: lastRecallPrefetchLeadMs,
-        last_error: lastRecallPrefetchError,
-    };
-}
-
 let lastRecallPrefetchLeadMs = null;
 let lastRecallPrefetchError = null;
 
 /** Consume a parked prefetch for this exact chat state, committing it as the real recall. */
-export function commitPrefetchedRecall(ctx, signature) {
-    if (!pendingRecallCommit || pendingRecallCommit.signature !== signature) return null;
-    const parked = pendingRecallCommit;
-    pendingRecallCommit = null;
-    const store = getStore(ctx);
-    const rows = parked.ids.map(id => ({ memory: store.memories?.[id] })).filter(row => row.memory);
-    if (!rows.length) return null;
-    for (const row of rows) {
-        row.memory.recalled_count = Number(row.memory.recalled_count || 0) + 1;
-        row.memory.last_recalled_message = parked.currentMessage;
-    }
-    lastRecallPrefetchLeadMs = Date.now() - parked.startedAt;
-    store.last_recall_debug = {
-        ...(parked.debug || {}),
-        prefetched: true,
-        prefetch_lead_ms: lastRecallPrefetchLeadMs,
-    };
-    if (rows.length || getSettings(ctx).debug) setStore(ctx, store);
-    return rows;
-}
 
 /** Cheap preparation that has nothing to do with a specific query. */
 export async function warmupRecallRuntime(ctx = getContext()) {
@@ -2354,155 +1425,6 @@ export async function warmupRecallRuntime(ctx = getContext()) {
     } catch { /* provider probing must never break warmup */ }
     out.ms = Date.now() - started;
     return out;
-}
-
-async function recallMemories(ctx, interceptorChat, { commit = true, startedAt = 0 } = {}) {
-    const settings = getSettings(ctx);
-    if (!settings.vector_recall) return [];
-    const variants = buildQueryVariants(interceptorChat, settings.query_messages);
-    if (!variants.length) return [];
-    const store = getStore(ctx);
-    const { provider, fingerprintChanged } = getProviderStatus(ctx, store);
-    const collectionId = getCollectionId(ctx);
-    let denseAvailable = Boolean(
-        provider.supported
-        && !fingerprintChanged
-        && !store.vector.stale
-        && store.vector.fingerprint
-        && collectionId
-    );
-    if (fingerprintChanged) {
-        store.vector.stale = true;
-        store.vector.last_error = 'Embedding source/model 已变化；Dense通道暂停，Lexical通道仍可工作。请重建向量索引。';
-        setStore(ctx, store);
-    }
-    const started = performance.now?.() ?? Date.now();
-    try {
-        // LittleWhiteBox-inspired: multiple dense query views + a local lexical route.
-        // If Dense is unavailable, local lexical retrieval stays usable instead of failing closed.
-        const denseLists = [];
-        const denseDebug = [];
-        if (denseAvailable) {
-            try {
-                await withVectorLock(async () => {
-                    for (const variant of variants) {
-                        const result = await vectorQuery(
-                            ctx,
-                            provider,
-                            collectionId,
-                            variant.text,
-                            Math.max(1, Number(settings.candidate_top_k) || 18),
-                            Math.min(1, Math.max(0, Number(settings.score_threshold) || 0)),
-                        );
-                        const dense = filterRecalledMemories(store, result.metadata, {
-                            finalCount: Math.max(1, Number(settings.candidate_top_k) || 18),
-                            protectRecent: settings.protect_recent_messages,
-                            chatLength: ctx.chat?.length || 0,
-                        });
-                        denseLists.push(dense);
-                        denseDebug.push({ name: variant.name, count: dense.length, ids: dense.map(m => m.id) });
-                    }
-                });
-            } catch (error) {
-                // A failed dense query must not fail the whole recall; lexical retrieval and the
-                // Dense Gate semantics both depend on knowing dense is genuinely unavailable.
-                denseAvailable = false;
-                denseDebug.push({ error: String(error?.message || error) });
-                store.vector.last_error = String(error?.message || error);
-            }
-        }
-
-        const lexicalQuery = variants.find(v => v.name === 'context')?.text || variants[0].text;
-        const lexical = settings.hybrid_recall
-            ? lexicalSearchMemories(store, lexicalQuery, {
-                limit: settings.lexical_candidate_top_k,
-                protectRecent: settings.protect_recent_messages,
-                chatLength: ctx.chat?.length || 0,
-            })
-            : [];
-        // Third recall channel: effective-time window / scope precision, independent of similarity.
-        const structured = settings.temporal_channel_enabled === false ? [] : selectTemporalCandidates(store, {
-            asOfIndex: ctx.chat?.length || 0,
-            limit: settings.temporal_channel_limit,
-            protectRecent: settings.protect_recent_messages,
-            chatLength: ctx.chat?.length || 0,
-        });
-
-        // If no Dense backend is available, lexical becomes an intentional fallback and is not gated.
-        // If Dense is available, lexical-only candidates need semantic agreement, except exact entity matches.
-        let fused = fuseHybridCandidates(store, denseLists, lexical, {
-            rrfK: settings.rrf_k,
-            denseWeights: variants.map(v => v.weight),
-            lexicalWeight: settings.lexical_weight,
-            denseGate: denseAvailable,
-            structuredLists: structured.length ? [structured] : [],
-            currentMessage: ctx.chat?.length || 0,
-            cooldownTurns: settings.recall_cooldown_turns,
-        });
-        const fusedBeforeGraph = fused.map(r => ({ id: r.memory.id, score: r.score, channels: r.channels, entityBypass: r.entityBypass }));
-        if (settings.graph_diffusion) {
-            fused = graphDiffuseCandidates(store, fused, { damping: settings.graph_damping, iterations: 5 });
-        }
-        // Fusion scores channels; it never reads the query against the candidate. This stage does, and
-        // it runs before diversity selection so a query-matching candidate is not dropped first.
-        let rerankDebug = null;
-        if (settings.rerank_enabled !== false && fused.length > 1) {
-            const outcome = rerankCandidates(fused, lexicalQuery, {
-                weight: Number(settings.rerank_weight) || 0.55,
-                currentMessage: ctx.chat?.length || 0,
-                halfLifeTurns: Number(settings.rerank_half_life_turns) || 120,
-                maxPool: Math.max(30, (Number(settings.final_recall_count) || 6) * 5),
-            });
-            fused = outcome.rows;
-            rerankDebug = outcome.debug;
-        }
-        const selected = diversifyCandidates(fused, {
-            finalCount: settings.final_recall_count,
-            lambda: settings.mmr_lambda,
-        });
-        const currentMessage = ctx.chat?.length || 0;
-        const elapsed = (performance.now?.() ?? Date.now()) - started;
-        const recallDebug = {
-            at_message: currentMessage,
-            elapsed_ms: Math.round(elapsed * 10) / 10,
-            dense_available: denseAvailable,
-            dense_reason: denseAvailable ? null : (fingerprintChanged ? 'provider fingerprint changed' : (!provider.supported ? provider.reason : (store.vector.stale ? 'vector index stale' : 'no usable collection/index'))),
-            query_variants: variants.map(v => ({ name: v.name, weight: v.weight, chars: v.text.length })),
-            dense: denseDebug,
-            lexical: lexical.slice(0, 20).map(x => ({ id: x.memory.id, score: Math.round(x.score * 1000) / 1000, entityMatches: x.entityMatches })),
-            fused: fusedBeforeGraph.slice(0, 24),
-            structured: structured.map(x => ({ id: x.memory.id, score: Math.round(x.score * 1000) / 1000, reason: x.reason })),
-            graph_top: fused.slice(0, 20).map(x => ({ id: x.memory.id, score: x.score, graphScore: x.graphScore ?? null })),
-            rerank: rerankDebug,
-            selected: selected.map(x => ({ id: x.memory.id, score: x.score, mmrScore: x.mmrScore ?? null })),
-        };
-        if (!commit) {
-            // Park the ranking without touching counters, cooldowns or the store.
-            pendingRecallCommit = {
-                chatId: getChatIdentity(ctx),
-                signature: recallSignature(ctx, ctx.chat),
-                ids: selected.map(x => x.memory.id),
-                currentMessage,
-                debug: recallDebug,
-                startedAt: startedAt || Date.now(),
-            };
-            return selected;
-        }
-        for (const row of selected) {
-            const memory = row.memory;
-            memory.recalled_count = Number(memory.recalled_count || 0) + 1;
-            memory.last_recalled_message = currentMessage;
-        }
-        store.last_recall_debug = recallDebug;
-        if (selected.length || settings.debug || !denseAvailable) setStore(ctx, store);
-        return selected;
-    } catch (error) {
-        store.vector.last_error = String(error?.message || error);
-        store.last_recall_debug = { error: store.vector.last_error, at_message: ctx.chat?.length || 0 };
-        setStore(ctx, store);
-        log('hybrid recall failed', error);
-        return [];
-    }
 }
 
 function clearInjectedPrompts(ctx, settings, { includeLegacy = true } = {}) {
@@ -2887,12 +1809,6 @@ async function setupUi() {
     bindNumber('aum-v54-evidence-chars', 'memory_evidence_max_chars', { min: 400, max: 8000, integer: true });
     const selfCheckOutput = document.getElementById('aum-v54-selfcheck');
     const writeSelfCheck = text => { if (selfCheckOutput) selfCheckOutput.textContent = String(text ?? ''); };
-    document.getElementById('aum-v54-run-selfcheck')?.addEventListener('click', () => {
-        const report = runRetrievalSelfCheck();
-        getSettings(ctx).selfcheck_last = { passed: report.passed, total: report.total, ok: report.ok, at: Date.now() };
-        ctx.saveSettingsDebounced?.();
-        writeSelfCheck(formatSelfCheck(report));
-    });
     document.getElementById('aum-v54-show-metrics')?.addEventListener('click', () => writeSelfCheck(formatMetrics(ctx)));
     document.getElementById('aum-v54-reset-metrics')?.addEventListener('click', () => { resetMetrics(ctx); writeSelfCheck(formatMetrics(ctx)); });
     document.getElementById('aum-v54-purge-collections')?.addEventListener('click', async () => {
@@ -3038,9 +1954,6 @@ async function startup() {
 
 // Small explicit test hooks. They are not used by normal runtime, but make the autonomous
 // extraction pipeline verifiable without depending on DOM event timing.
-export function __testNormalizeDepth(value, fallback = DEFAULT_SETTINGS.injection_depth) {
-    return normalizeDepth(value, fallback);
-}
 
 /** Shared host adapters for the original-text pipeline. No prompt mutation in these services. */
 export function createNarrativeHostServices(ctx) {
@@ -3073,14 +1986,6 @@ export function createNarrativeHostServices(ctx) {
         settings: async query => filterSettingRowsForActor(
             await retrievePluginSettings(ctx, query, { mode: 'generation' }), deriveActorIdentity(ctx, getStore(ctx))),
     };
-}
-
-export async function __testExtractMemoryForAssistant(ctx, assistantIndex, options = {}) {
-    return extractMemoryForAssistant(ctx, assistantIndex, options);
-}
-
-export function __testGetStore(ctx) {
-    return getStore(ctx);
 }
 
 export function __testGetSettingStore(ctx, options = {}) {
@@ -3119,34 +2024,11 @@ export async function __testRetrieveGenerationSettings(ctx, chat, store = null) 
     return retrieveGenerationSettings(ctx, chat, store);
 }
 
-export function __testCreatePluginBaselineDeduper(ctx, prepared = null) {
-    return createPluginBaselineDeduper(ctx, prepared);
-}
-
-export async function __testEnsureSemanticBaseline(ctx, options = {}) {
-    return ensureSemanticBaseline(ctx, options);
-}
-
-export async function __testFilterOperationsAgainstBaseline(ctx, ops, prepared) {
-    return filterOperationsAgainstBaseline(ctx, ops, prepared);
-}
-
 /**
  * The current-state block is a baseline wider than the mandatory set: it renders every active
  * memory, not only the irreversible ones. This resolves which of the two a run is using, so the
  * choice is a named policy rather than an implicit property of the assembly path.
  */
-export function resolveCurrentStateScope(settings) {
-    return settings?.current_state_scope === 'mandatory-only' ? 'mandatory-only' : 'mandatory+broad';
-}
-
-export function __testResolveCurrentStateScope(settings) {
-    return resolveCurrentStateScope(settings);
-}
-
-export function __testGetLastSettingSeedDebug() {
-    return lastSettingSeedDebug;
-}
 
 /**
  * A8 quality report for the current chat: key retention, causal recall (canonical vs injected) and
