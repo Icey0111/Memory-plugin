@@ -100,6 +100,67 @@ export const RRF_K = 60;
 // from 96% to 98% while answer-in-context fell from 63% to 58%. A weak weight keeps the recall the dense
 // channel adds and drops the reordering it should not have. See ADR-0015.
 export const DENSE_FUSION_WEIGHT = 0.1;
+/** How many rare situation terms get a guaranteed candidate, and how much a guaranteed one is worth. */
+export const ENTITY_TERM_LIMIT = 8;
+export const ENTITY_WEIGHT = 0.5;
+/** A term that occurs in more than this share of the chunks is prose, not the name of a thing. */
+export const ENTITY_DF_RATIO = 0.25;
+
+/**
+ * The rare terms of the current situation, and the two chunks that matter for each.
+ *
+ * Recall here is trigger-driven: the query is the recent messages, so an entity that walks back into the
+ * scene is a term in that query. Two chunks matter - the best-ranked one that carries the term, and the
+ * earliest still-hidden one, which is where the thing was introduced. The second is the one a score-ordered
+ * shortlist drops, and it is the one a returning character needs.
+ */
+export function entityTargets(chunks, query, { visibleSources = new Set(), limit = ENTITY_TERM_LIMIT, lexical = null } = {}) {
+    const terms = [...new Set(tokenizeBaselineText(String(query || '')))].filter(term => term.length >= 2 && term.length <= 12);
+    if (!terms.length) return [];
+    const counts = chunks.map(chunk => baselineTermCounts(chunk.retrievalText));
+    const cap = Math.max(2, Math.ceil(chunks.length * ENTITY_DF_RATIO));
+    const rankOf = new Map((lexical || []).map((row, i) => [row.chunk.id, i]));
+    const out = [];
+    for (const term of terms) {
+        const holders = [];
+        for (let i = 0; i < chunks.length; i++) if (counts[i].has(term)) holders.push(chunks[i]);
+        if (!holders.length || holders.length > cap) continue;
+        const hidden = holders.filter(chunk => !visibleSources.has(chunk.source));
+        const best = holders.slice().sort((a, b) => (rankOf.get(a.id) ?? Infinity) - (rankOf.get(b.id) ?? Infinity))[0];
+        const earliest = (hidden.length ? hidden : holders).slice().sort((a, b) => a.index - b.index)[0];
+        out.push({ term, df: holders.length, best, earliest, earliest_hidden: Boolean(hidden.length) });
+    }
+    // Keep only the maximal terms: every n-gram of a longer one is a fragment of it, and counting both
+    // turns one piece of evidence into two candidates and two misses.
+    const maximal = out.slice().sort((a, b) => b.term.length - a.term.length)
+        .filter((row, _i, all) => !all.some(other => other !== row && other.term.length > row.term.length && other.term.includes(row.term)));
+    // A term that also lives in a hidden floor comes first, and only then the rarest one. Without that
+    // order the rarest terms of a query are the n-grams unique to the newest message - which by
+    // construction exist nowhere else - and they crowd out every term that could actually recall
+    // something. Measured: the first live run of this metric reported zero candidates on all thirty turns.
+    return maximal.sort((a, b) => Number(b.earliest_hidden) - Number(a.earliest_hidden)
+        || a.df - b.df || a.earliest.index - b.earliest.index).slice(0, limit);
+}
+
+/**
+ * Did the terms of the current situation bring their hidden floors back?
+ *
+ * This is the recall metric the probe runs had to be hand-written for: at each generation, the rare terms
+ * of the query that live only in hidden floors are counted, and each is checked against the evidence that
+ * was actually packed. A term the transcript still shows is not counted - there is nothing to recall.
+ */
+export function entityRecall(chunks, history, { query = '', visibleSources = new Set(), packed = [], limit = ENTITY_TERM_LIMIT } = {}) {
+    const packedText = packed.map(entry => history.records[entry.source || entry]?.text || '').join('\n');
+    const rows = [];
+    for (const target of entityTargets(chunks, query, { visibleSources, limit })) {
+        if (!target.earliest_hidden) continue;
+        const hidden = chunks.filter(chunk => !visibleSources.has(chunk.source) && chunk.text.includes(target.term));
+        if (!hidden.length) continue;
+        rows.push({ term: target.term, hidden_floors: new Set(hidden.map(chunk => chunk.index)).size,
+            first_floor: Math.min(...hidden.map(chunk => chunk.index)), recalled: packedText.includes(target.term) });
+    }
+    return rows;
+}
 
 /**
  * Fuse the channels into one ranked list.
@@ -109,7 +170,8 @@ export const DENSE_FUSION_WEIGHT = 0.1;
  * needs the raw quantities.
  */
 export function rankRawChunks(chunks, query, dense = [], options = {}) {
-    const { scorer = 'bm25', rrfK = RRF_K, lexicalWeight = 1, denseWeight = DENSE_FUSION_WEIGHT } = options;
+    const { scorer = 'bm25', rrfK = RRF_K, lexicalWeight = 1, denseWeight = DENSE_FUSION_WEIGHT,
+        entityWeight = ENTITY_WEIGHT, entityLimit = ENTITY_TERM_LIMIT, visibleSources = new Set() } = options;
     const lexical = scoreChunks(chunks, query, { scorer });
     const byHash = new Map(chunks.map(chunk => [String(chunk.hash), chunk]));
     const scores = new Map();
@@ -117,13 +179,29 @@ export function rankRawChunks(chunks, query, dense = [], options = {}) {
         if (!chunk) return;
         const row = scores.get(chunk.id) || { chunk, score: 0, channels: [], lexical: 0, vector: null };
         row.score += weight / (Math.max(1, rrfK) + rank + 1);
-        row.channels.push(channel);
+        if (!row.channels.includes(channel)) row.channels.push(channel);
         if (channel === 'lexical') row.lexical = Number(value) || 0;
-        else row.vector = { rank, score: Number(value) || 0 };
+        else if (channel === 'vector') row.vector = { rank, score: Number(value) || 0 };
+        else row.entity = { rank, score: Number(value) || 0 };
         scores.set(chunk.id, row);
     };
     lexical.forEach((row, i) => add(row.chunk, i, 'lexical', row.score, lexicalWeight));
     dense.forEach((row, i) => add(byHash.get(String(row.hash)), i, 'vector', row.score, denseWeight));
+    // The third channel: the rare terms of the current situation. A returning character, place or object is
+    // named in the recent messages, so its introduction is a chunk the lexical channel already found and
+    // ranked late. Measured on a 30-turn run written for exactly that: when a bronze lamp was named again
+    // on floor 27 the evidence quoted floors 20, 10 and 10, never floor 4 where the lamp appears.
+    if (options.entity !== false) {
+        const seen = new Set();
+        let rank = 0;
+        for (const target of entityTargets(chunks, query, { visibleSources, limit: entityLimit, lexical })) {
+            for (const chunk of [target.earliest, target.best]) {
+                if (!chunk || seen.has(chunk.id)) continue;
+                seen.add(chunk.id);
+                add(chunk, rank++, 'entity', target.df, entityWeight);
+            }
+        }
+    }
     return [...scores.values()].sort((a, b) => b.score - a.score || b.chunk.index - a.chunk.index);
 }
 
@@ -700,6 +778,17 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
         span.cost = estimateTokens(String.fromCharCode(10, 10)
             + renderEvidenceLine(span.row, span.anchorStart, span.anchorEnd));
     }
+    // One slot per message. A message longer than a chunk yields several chunks that do not overlap, and two
+    // of them can both rank, which spends a slot on a message the prompt already has. Measured: 10 to 15
+    // percent of the three slots went that way on both the 30-turn and the 60-turn runs, and the slot is
+    // what the budget is short of when a third message could have been quoted. The most relevant span wins.
+    const perSource = new Map();
+    for (const span of ordered) {
+        const best = perSource.get(span.source);
+        if (!best || span.rel > best.rel) perSource.set(span.source, span);
+    }
+    const kept = ordered.filter(span => perSource.get(span.source) === span);
+    const redundant = ordered.filter(span => perSource.get(span.source) !== span);
     const note = (span, outcome, slot) => ({ source: span.source, chunks: [...span.members], start: span.start,
         end: span.end, relevance: Math.round(span.rel * 1000) / 1000, cost: span.cost, outcome, slot });
     const lines = [];
@@ -711,11 +800,11 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
     const submodular = (policy === 'submodular' || policy === 'relevance') && Boolean(query);
     if (submodular) {
         const weights = policy === 'relevance' ? PACK_RELEVANCE_FIRST : PACK_WEIGHTS;
-        const selected = selectSubmodular(ordered, { query, budget: room(), maxEntries: entries, weights });
-        const picked = [...selected].sort((a, b) => ordered[a].row.index - ordered[b].row.index
-            || ordered[a].start - ordered[b].start);
+        const selected = selectSubmodular(kept, { query, budget: room(), maxEntries: entries, weights });
+        const picked = [...selected].sort((a, b) => kept[a].row.index - kept[b].row.index
+            || kept[a].start - kept[b].start);
         for (const index of picked) {
-            const span = ordered[index];
+            const span = kept[index];
             // Selection charged the minimal quote; emission still grows it into a fair share, which is
             // what the greedy path does, so the two policies differ only in which spans they choose.
             const budget = Math.min(Math.max(share, span.cost), room());
@@ -727,12 +816,12 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source });
             trace.push(note(span, 'included', sources.length - 1));
         }
-        for (const [index, span] of ordered.entries()) {
+        for (const [index, span] of kept.entries()) {
             if (selected.has(index)) continue;
             trace.push(note(span, selected.size >= entries ? 'entry_cap' : 'not_selected', null));
         }
     } else {
-        for (const span of ordered) {
+        for (const span of kept) {
             if (sources.length >= entries) { trace.push(note(span, 'entry_cap', null)); continue; }
             const budget = Math.min(share, room());
             if (budget <= 0) { trace.push(note(span, 'budget', null)); continue; }
@@ -744,6 +833,7 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             trace.push(note(span, 'included', sources.length - 1));
         }
     }
+    for (const span of redundant) trace.push(note(span, 'same-message', null));
     return { text: lines.length ? header + String.fromCharCode(10, 10) + lines.join(String.fromCharCode(10, 10)) : '',
         sources, tokens: lines.length ? used : 0, trace, policy: submodular ? 'submodular' : 'greedy' };
 }

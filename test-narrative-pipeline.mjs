@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
     nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
-    RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT } from './raw-history.js';
+    RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
@@ -710,6 +710,65 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         rerank: async (query, documents) => { rerankCalls += 1; return documents.map((_, index) => ({ index, score: 1 })); } }) };
     await buildNarrativeContext(unfolded.ctx, counted, { contextSize: 32768 });
     assert.equal(rerankCalls, 0, 'an all-visible shortlist is not reranked');
+}
+
+// --- 20. recall is triggered by the situation, and a slot is spent once per message ------------------
+// A 30-turn run written for the moment a past person, place or object comes back measured this: six such
+// moments, every relevant floor already folded, and the earlier floors came back with only three of them.
+// The lamp named again on floor 27 was introduced on floor 4, and the evidence quoted floors 20, 10 and 10
+// instead. Two defects came out of the same table, and both are pinned here.
+{
+    const makeChunk = (id, source, index, text) => ({ id, source, start: 0, end: text.length, index,
+        role: 'assistant', name: 'A', text, hash: id, retrievalText: 'speaker: A (assistant)\n' + text });
+
+    // (a) one slot per message. A row longer than a chunk yields chunks that do not overlap, and two of
+    // them can both rank: 10 to 15 percent of the three evidence slots went that way on both live runs.
+    const body = '甲'.repeat(400) + '关键词' + '乙'.repeat(1600) + '关键词' + '丙'.repeat(400);
+    const history = { version: 1, sequence: 1, records: { raw_1: { id: 'raw_1', index: 1, role: 'assistant',
+        name: 'A', text: body } }, active: ['raw_1'] };
+    const chunks = chunkHistory(history);
+    assert.ok(chunks.length >= 3, 'the long row really is several chunks');
+    const ranked = rankRawChunks(chunks, '关键词', [], { entity: false });
+    const packed = packRawEvidence(ranked, history, { maxTokens: 4000 });
+    assert.equal(packed.sources.length, 1, 'a message occupies one slot however many of its chunks ranked');
+    assert.ok(packed.trace.some(row => row.outcome === 'same-message'), 'and the dropped span says why');
+
+    // (b) the situation channel. A term of the recent messages that only lives in hidden floors claims the
+    // chunk where the thing was introduced, which is the one a score-ordered shortlist drops.
+    const scene = [makeChunk('c1', 'raw_1', 1, '柜台上放着一盏铜灯，灯身刻着丙字三号。'),
+        makeChunk('c2', 'raw_2', 3, '雨一直下，雨一直下，我们看着窗外的雨。'),
+        makeChunk('c3', 'raw_3', 5, '雨一直下，雨一直下，屋里很安静。')];
+    const targets = entityTargets(scene, '老周问起那盏铜灯', { visibleSources: new Set(['raw_2', 'raw_3']) });
+    const hiddenFirst = targets.filter(row => row.earliest_hidden).length;
+    assert.ok(hiddenFirst > 0, 'a term from the hidden past is a target');
+    assert.ok(targets.slice(0, hiddenFirst).every(row => row.earliest_hidden),
+        'a term that also lives in a hidden floor is chosen before one that only lives in the newest message');
+    const lamp = targets.find(row => row.term.includes('铜') && row.earliest_hidden);
+    assert.ok(lamp, 'the object named in the query is a situation term');
+    assert.equal(lamp.earliest.source, 'raw_1', 'and its introduction is the earliest hidden holder');
+    assert.equal(targets.some(row => row !== lamp && lamp.term.includes(row.term)), false,
+        'only the longest spelling of it is kept, so one piece of evidence is not two candidates');
+    assert.equal(lamp.earliest_hidden, true);
+    const claimed = rankRawChunks(scene, '老周问起那盏铜灯', [], { visibleSources: new Set(['raw_2', 'raw_3']) });
+    const introduction = claimed.find(row => row.chunk.id === 'c1');
+    assert.ok(introduction.channels.includes('entity'), 'the introduction is a candidate even when it ranks late');
+
+    // (c) the metric that replaces the hand-written probes: of the situation terms that exist only in
+    // hidden floors, how many came back with the evidence that was packed.
+    const sceneHistory = { version: 1, sequence: 3, active: ['raw_1', 'raw_2', 'raw_3'], records: {
+        raw_1: { id: 'raw_1', index: 1, role: 'assistant', name: 'A', text: '柜台上放着一盏铜灯，灯身刻着丙字三号。' },
+        raw_2: { id: 'raw_2', index: 3, role: 'assistant', name: 'A', text: '雨一直下，雨一直下，我们看着窗外的雨。' },
+        raw_3: { id: 'raw_3', index: 5, role: 'assistant', name: 'A', text: '雨一直下，雨一直下，屋里很安静。' } } };
+    const recall = entityRecall(scene, sceneHistory, { query: '老周问起那盏铜灯', packed: [] });
+    const missed = recall.find(row => row.term.includes('铜'));
+    assert.ok(missed, 'a hidden situation term is counted');
+    assert.equal(missed.recalled, false, 'and it is reported as missed when the evidence does not quote it');
+    assert.equal(missed.first_floor, 1);
+    const hit = entityRecall(scene, sceneHistory, { query: '老周问起那盏铜灯', packed: [{ source: 'raw_1' }] });
+    assert.equal(hit.find(row => row.term.includes('铜')).recalled, true, 'quoting the floor counts as recalled');
+    const visible = entityRecall(scene, sceneHistory, { query: '老周问起那盏铜灯',
+        visibleSources: new Set(['raw_1', 'raw_2', 'raw_3']), packed: [] });
+    assert.equal(visible.length, 0, 'a term the transcript still shows is not something to recall');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

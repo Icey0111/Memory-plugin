@@ -104,12 +104,26 @@ A 30-turn run was written for that, with six such moments and every relevant flo
 
 Missed outright: the tea-shed keeper when the shed came back, the bronze lamp when it was named again, and the
 dispensary back door when the route was discussed. The lamp's introduction was floor 4 and the run quoted
-floors 20, 10 and 10 instead.
+floors 20, 10 and 10 instead. The lexical channel had found all three; it ranked them too low to survive
+fusion, and a rerank shortlist is the fused head, so they could never be reordered in.
 
-Two defects fall out of the same table. **Ten to fifteen percent of evidence slots quote a second span of a
-message already quoted that turn** (9 of 60 slots here, 15 of 150 in the 60-turn run), which is 3 available
-slots spending one of them on a message the prompt already has. And the ranking is recency-biased: the oldest
-quoted floor sits 14 to 23 floors back, but not the floor where the returning entity was introduced.
+**Fixed in ADR-0019**, by giving the situation its own fusion channel and a shortlist guarantee. Measured on
+the same 30-turn run:
+
+| observation | before | after |
+| --- | --- | --- |
+| reappearance moments that recalled a floor of the thing that returned | 3 of 6 | **5 of 6** |
+| mean share of the three slots about that thing | 0.22 | **0.39** |
+| automatic metric over 30 turns (`entityRecall`) | not recorded | 60 of 128 terms (47%) |
+
+The per-turn terms are readable: the lamp is recalled on the turn it is named again, and `左手小`, `手小指`
+and `缺一节` come back with the innkeeper on the turn he returns.
+
+Two limits stand. The terms are character n-grams rather than names, so `能看见` and `收回来` are counted as
+missable entities; 47% is an indicator to trend, not a recall score. And a first report of this table claimed
+that 10 to 15 percent of evidence slots were spent on a second span of a message already quoted that turn.
+Counted by message id that is 0 in all three runs - the repeated floors were the two messages of one turn, which
+are two messages. The one-span-per-message rule survives as a guard, not as a measured gain.
 
 **Correction to the section above.** "Retrieval is a fallback that rarely fires" is true of questions and false
 of recall. Retrieval packs evidence on two thirds to five sixths of turns; what is rare is a question only it
@@ -139,9 +153,9 @@ can answer. Measured by situation, it fires constantly and finds the right earli
 - Embedding and reranking calls have costs beyond the final LLM context budget.
 - The earlier 87% answer-in-context result belongs to its measured question set and provider.
 - Source-id coverage verifies provenance alignment, not whether every necessary fact was summarized.
-- Retrieval fires on most turns but was measured only as a coverage fallback. Its situational hit rate is
-  3 of 6 on the one run written to test it, and 10 to 15 percent of its slots are spent on a message already
-  quoted that turn.
+- Retrieval fires on most turns. Its situational hit rate was 3 of 6 on the run written to test it and is
+  5 of 6 after ADR-0019, which is one chat and six moments; the automatic metric that replaces the probe table
+  counts n-gram fragments as entities and is an indicator rather than a score.
 - The state block is stale by up to one cadence by design (ADR-0017); the visible transcript is what covers
   that window.
 

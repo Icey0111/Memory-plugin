@@ -29,6 +29,8 @@ flowchart TD
     end
     subgraph G[Read path - once per generation]
         Q[recent messages = the query] --> L[lexical rank over chunks, dense when configured]
+        Q --> N[situation terms that live only in hidden floors]
+        N --> L
         K --> L
         L --> P[packRawEvidence: skip what the prompt still shows, cite id, floor, speaker]
         A --> Y[current-state block: the continuity summary]
@@ -107,10 +109,9 @@ the chat file keeps (ADR-0004).
 - Dense retrieval over original text needs a configured embedding backend; without one the pipeline
   is lexical-only and says so in its diagnostics.
 - Recall is trigger-driven, not question-driven: the query is the recent messages, so the thing to measure is
-  whether the earlier floors of a returning person, place or object come back with it. Measured once, that
-  happened in 3 of 6 such moments while the continuity block carried the entity in 6 of 6, and 10 to 15 percent
-  of evidence slots quote a second span of a message already quoted that turn. dev_docs/04_roadmap.md records
-  the runs.
+  whether the earlier floors of a returning person, place or object come back with it. That happened in 3 of 6
+  such moments, and 5 of 6 after the situation channel of ADR-0019; the channel's own metric counts character
+  n-grams rather than names and is an indicator, not a score. dev_docs/04_roadmap.md records the runs.
 - The archive keeps every superseded version, and nothing prunes it. Measured at about one copy of the
   conversation text (41-351 KB per chat, 4-33% of the file), which is why it stays lossless (ADR-0004).
   Growth on very long chats is still unmeasured.

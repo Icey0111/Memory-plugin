@@ -1,6 +1,6 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
     summaryPrompt, applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
-    mergeKnowledge, completedUserTurns } from './raw-history.js';
+    mergeKnowledge, completedUserTurns, entityRecall } from './raw-history.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -292,6 +292,10 @@ function warningsFor(state, opts) {
     if (state.knowledge_unconfirmed >= opts.anchorUnconfirmedWarn) {
         out.push('有 ' + state.knowledge_unconfirmed + ' 条知情边界已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
     }
+    if (state.entity_missed >= 2) {
+        out.push('本轮有 ' + state.entity_missed + ' 个只存在于已折叠楼层的当前实体没有被召回；'
+            + '它们的原文未被引用，模型只能靠摘要推断。');
+    }
     if (state.knowledge_duplicate_subjects > 0) {
         out.push('有 ' + state.knowledge_duplicate_subjects + ' 个角色在知情边界里占了多行（最多 '
             + state.knowledge_max_per_subject + ' 行）；每个角色应当只有一行，否则同一个角色的两行可以互相矛盾。');
@@ -331,6 +335,9 @@ function fitWholeBlocks(blocks, tokens) {
  * prompt with no retrieval is not. The shortlist is capped so the cost is a fixed number of documents per
  * generation rather than a function of the archive size.
  */
+/** How many situation-channel documents a rerank shortlist admits beyond its score-ordered head. */
+const RERANK_ENTITY_EXTRA = 8;
+
 async function applyRerank(services, opts, query, ranked, visibleSources) {
     const model = opts.rerankModel;
     if (!model || !opts.rerankCandidates || ranked.length < 2) return { ranked, used: false, error: null };
@@ -342,13 +349,18 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
     const service = typeof services.rerank === 'function' ? services.rerank() : null;
     if (!service || !service.supported) return { ranked, used: false, error: null };
     const shortlist = eligible.slice(0, opts.rerankCandidates);
+    // Anything the situation channel claimed keeps a seat. That channel exists for the returning character
+    // whose introduction ranked late, so the guarantee is worth as many extra documents as it claims terms.
+    const claimed = eligible.filter(row => row.channels.includes('entity') && !shortlist.includes(row))
+        .slice(0, RERANK_ENTITY_EXTRA);
+    const pick = claimed.length ? [...shortlist, ...claimed] : shortlist;
     try {
-        const order = await service.rerank(query, shortlist.map(row => row.chunk.retrievalText), model);
+        const order = await service.rerank(query, pick.map(row => row.chunk.retrievalText), model);
         const score = new Map(order.map(row => [row.index, row.score]));
-        const head = shortlist.map((row, index) => ({ ...row, rerank: score.has(index) ? score.get(index) : null }))
+        const head = pick.map((row, index) => ({ ...row, rerank: score.has(index) ? score.get(index) : null }))
             .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.chunk.index - b.chunk.index);
         // Reordered rows go back in front of everything the shortlist did not cover, eligible or not.
-        const rest = ranked.filter(row => !shortlist.includes(row));
+        const rest = ranked.filter(row => !pick.includes(row));
         return { ranked: [...head, ...rest], used: true, error: null };
     } catch (error) {
         return { ranked, used: false, error: String(error?.message || error) };
@@ -413,7 +425,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         return { referenceBlock: '', currentStateBlock: '', diagnostics: { summary_error: 'context budget too small; original floors restored' } };
     }
     const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuityBlock)));
-    const fused = rankRawChunks(chunks, query, dense);
+    const fused = rankRawChunks(chunks, query, dense, { visibleSources });
     const reranked = evidenceBudget > 0 ? await applyRerank(services, opts, query, fused, visibleSources)
         : { ranked: fused, used: false, error: null };
     // The rerank is a host round-trip, so it needs the same guard every other await here has: a result
@@ -421,6 +433,10 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     if (!services.isCurrent()) return null;
     const ranked = reranked.ranked;
     const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources });
+    // The metric the hand-written probe runs had to be replaced by: of the rare terms of this situation that
+    // exist only in hidden floors, how many came back with the evidence that was actually packed.
+    const entityState = entityRecall(chunks, history, { query, visibleSources, packed: evidence.sources });
+    const entityMissed = entityState.filter(row => !row.recalled);
     let settingText = '';
     if (opts.settingTokens && services.settings) {
         const result = await services.settings(query);
@@ -437,7 +453,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchors_truncated: anchorsTruncated,
         knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
-        knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0 }, opts);
+        knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
+        entity_missed: entityMissed.length }, opts);
     const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
         covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
@@ -447,6 +464,10 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: anchorsTruncated,
         state_horizon_floors: coveredIndex == null ? null : coveredIndex + 1,
+        entity_candidates: entityState.length,
+        entity_recalled: entityState.length - entityMissed.length,
+        entity_terms: entityState.map(row => ({ term: row.term, first_floor: row.first_floor, recalled: row.recalled })),
+        entity_missed: entityMissed.map(row => ({ term: row.term, first_floor: row.first_floor, hidden_floors: row.hidden_floors })),
         knowledge_entries: knowledge.length,
         knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
@@ -556,13 +577,17 @@ export function readNarrativeReport(ctx) {
         knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
+        entity_candidates: store.narrative_diagnostics?.entity_candidates || 0,
+        entity_recalled: store.narrative_diagnostics?.entity_recalled || 0,
+        entity_missed: (store.narrative_diagnostics?.entity_missed || []).map(row => row.term),
         warnings: warningsFor({ ...pending, summary_failures: failures,
             summary_error: store.narrative_diagnostics?.summary_error || null,
             anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
             anchors_truncated: 0,
             knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
             knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
-            knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0 },
+            knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
+            entity_missed: (store.narrative_diagnostics?.entity_missed || []).length },
             options(settings)),
         messages: history ? history.active.length : 0,
         completed_floors: completedUserTurns(chunks),
