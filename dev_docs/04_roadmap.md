@@ -165,6 +165,29 @@ packer spends only what its candidates need, so the same budget now reaches thre
 no more tokens. The first run of this experiment was invalid: it ran against a host page holding the previous
 build, so every variant was the baseline.
 
+### A second scenario, with no memory question asked
+
+Every earlier run carried probes. This one is a different story entirely - a repair dock in a northern salt
+harbour, new characters, new places - and the user only talks: no turn asks about the past, so recall has to be
+triggered by the situation or not at all. 30 turns, 0 summary failures, evidence on the 20 turns that had
+folded text to reach.
+
+| observation | measurement |
+| --- | --- |
+| turns with a known character in the situation | 20 |
+| of those, turns that quoted a passage *describing* them | **20** |
+| attribute checks kept / contradicted | **6 / 6 kept, 0 contradicted** |
+| mean evidence tokens, mean slots used | 362, 3.33 of the 5 the budget pays for |
+
+The hardest check is the one that matters. On turns 21 and 22 the manager arrives with a bandage, and the
+attribute was **not** in the summary block: it came from the original text. The reply put the bandage on the
+left eye - the one the story gave him - and nowhere invented a problem with the right one. The same reply
+noticed that the navigator's copper ring was lying on the bench rather than in her ear, a detail from a floor
+folded ten turns earlier, and the next turn put it back on the correct ear.
+
+That is the third scenario in a row with no observed contradiction, which is still not a rate: three runs,
+eighteen checked attributes, one model.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
