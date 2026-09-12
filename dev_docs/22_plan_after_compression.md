@@ -419,5 +419,70 @@ ordering fix is correct whatever the table says; the table is what to argue abou
 The stop-doing list, the cost rule, B1/B2, C1's 56% target, A3's narrowing to the named-thing lookup, and the
 verification discipline: measure on the real app, and write down the corrections.
 
+<!-- VERSION 6 -->
+## v6 - 2026-09-12 07:20:00 - D7 closed without a new table, and the certificate stopped certifying what it never checked
+
+Measurements in `21_memory_thesis.md` v6.
+
+### D7 is closed, and it did not produce a new weight table
+
+v5 promoted "validate the weight table" ahead of compression work. Ran, the question dissolved:
+
+- **v5's premise was wrong.** The table was validated twice, for two different questions, and both
+  validations are in the code with their reasoning. `CANONICAL_KIND_WEIGHT` answers *what should the model
+  see first*; `IRREVERSIBILITY` / `RECONSTRUCTIBILITY` answer *what cannot be rebuilt*. Both families are
+  internally consistent and each family agrees with itself across files.
+- **The narrow defect is real**: the render order's comment claims "the most consequential kinds first" and
+  never defines consequential, and for `state` it is the exact inverse of the codebase's only principled
+  ranking. It was inherited, not decided.
+- **Both orders were measured.** They retain the certificate's protected set **identically** - commitment
+  13/13, relation 1/1, ownership 1/1 - so the promise is not at stake; the trade is purely
+  state-versus-knowledge. **Decision: keep the render order**, criterion recorded in v6 of the thesis.
+- **Two ways of avoiding the choice were simulated and rejected**: a per-kind share cap still starves the
+  last kind (world_delta 0 of 4 at every share from 60% to 33%), and a two-pass floor in its natural form
+  breaks the protected set (commitment 13/13 to 5/13).
+
+**Why no new table**: the priority is a function of `kind`, and `kind` is an unreliable classifier. This
+store's four `world_delta` rows are a threat, a notebook's hiding place, a dried root and an event;
+`belief` - ranked second-lowest - holds the character's live deductions, which are the plot. Tuning the
+numbers would encode that noise more precisely.
+
+### Shipped — the instrument can no longer report a check it did not run
+
+**Done, tested, verified live.**
+
+- **`epistemic.clean` is `null`, not `true`, when nothing is checkable**, with an explicit `checked`
+  flag. `formatCertificate` prints `leak=not-checked` instead of the ambiguous `leak=0/0`.
+- **T-Causal's absent question kinds are named.** `scoreTcausal` already returned `by_kind`; the
+  certificate was discarding it. It is now carried through with an `unexercised` list.
+- [test-v55-certificate-vacuity.mjs](file:///D:/memory_plugin/test-v55-certificate-vacuity.mjs) pins both.
+
+Live, on the 51-floor chat, before and after:
+
+    before: leak=0/0                    ... tcausal=14/40 violations=0
+    after:  leak=not-checked            ... tcausal=14/40 violations=0 unexercised=who_unknown,no_stale
+
+**The fix immediately paid for itself.** Carrying `by_kind` through turned one opaque number into two:
+`why` is **9/9 (100%)** and `who_first` is **5/31 (16%)**. The causal chain is not the problem at all -
+"who did this first" fails five times out of six, and that was invisible inside `14/40`.
+
+### Promoted, with the evidence that made them
+
+- **D8 - make the priority two-dimensional.** The store carries a rich signal the priority ignores:
+  `epistemic` is distributed fact 60, belief 52, reported 31, inference 30, observed 29, plan 15 - a real
+  distinction between *witnessed*, *deduced*, *told* and *planned*, orthogonal to kind. Deterministic, no
+  model call. This replaces D7's original framing.
+- **D9 - why are `known_by` and `importance` never populated?** `importance` is `'medium'` on all 217
+  active memories, so four call sites that special-case `'critical'` can never fire. `known_by` is empty
+  on all 217, which is why the certificate's epistemic dimension and T-Causal's `who_unknown` are
+  decorative. **This one may need extraction-prompt changes, which cost model calls, so it is the user's
+  call rather than this plan's.**
+
+### Unchanged
+
+The stop-doing list, the cost rule, B1/B2, C1's 56% target, A3's narrowing to the named-thing lookup, and
+the verification discipline: measure on the real app, and write down the corrections.
+
+
 
 

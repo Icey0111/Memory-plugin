@@ -1003,6 +1003,116 @@ ordering fix is correct whatever the table says and the table is now the thing t
 increment). Deployed with `node deploy-live.mjs --apply`, host reloaded, and every number above re-measured
 on the running app.
 
+---
+
+## 15. D7: the weight table was never the problem, and two instruments were reporting green while checking nothing
+
+### Problem / Requirement
+
+Entry 14 found that the state block's render order had begun to fully determine what survives truncation,
+and that two of the resulting choices looked wrong: `world_delta` (weight 1) rendered at no budget although
+one of the four is an ongoing threat, and `belief` (weight 2) rendered 2 of 65 despite the highest measured
+reuse rate. It recorded "validate the weight table" as the next work item.
+
+### Purpose of Change
+
+Answer that question instead of assuming it, size the plausible fixes before building any of them, and
+correct whatever the answer overturns - including, if necessary, entry 14's own framing.
+
+### How It Was Changed
+
+**Measurement (zero model calls)**
+
+- [expr-d7-orders.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-orders.js) - both
+  candidate orderings simulated against the live store at two caps.
+- [expr-d7-share.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-share.js),
+  [expr-d7-floor.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-floor.js) - a per-kind
+  budget cap and a two-pass floor, both sized and both rejected.
+- [expr-d7-samples.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-samples.js) - the
+  actual content of each kind, which is what showed the classifier problem.
+- [expr-d7-signals.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-signals.js) - every
+  other ranking signal the store carries.
+- [expr-d7-vacuous.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-vacuous.js),
+  [expr-d7-verify.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d7-verify.js) - the
+  vacuous dimensions, and their confirmation after the fix.
+
+**Product code**
+
+- [v55-certificate.js L99-L112](file:///D:/memory_plugin/v55-certificate.js#L99) - `epistemic.clean` is
+  `null` rather than `true` when nothing is checkable, plus an explicit `checked` flag.
+- [v55-certificate.js L138-L152](file:///D:/memory_plugin/v55-certificate.js#L138) - `by_kind` and
+  `unexercised` carried through from T-Causal, which was computing them and having them discarded.
+- [v55-certificate.js L160-L166](file:///D:/memory_plugin/v55-certificate.js#L160) - `formatCertificate`
+  prints `leak=not-checked` and names the unexercised question kinds.
+- [test-v55-certificate-vacuity.mjs](file:///D:/memory_plugin/test-v55-certificate-vacuity.mjs) - new.
+
+**Documentation**
+
+- [dev_docs/21_memory_thesis.md L631](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L631) - v6.
+- [dev_docs/22_plan_after_compression.md L422](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L422) - v6.
+
+### Result
+
+**Entry 14's premise was wrong and is corrected.** The weight table *was* validated - twice, for two
+different questions, and both validations sit in the code with their reasoning.
+`CANONICAL_KIND_WEIGHT` (with `memory-core`'s `kindWeight`) answers *what should the model see first*;
+`IRREVERSIBILITY` (with `v55-forget`'s `RECONSTRUCTIBILITY`) answers *what cannot be rebuilt*. Both families
+agree with themselves across files. The spine's states its criterion outright: *"This is deliberately not
+importance... A promise cannot be unmade; a location changes again next turn."*
+
+The narrow defect is real: the render order's comment claims "the most consequential kinds first" and never
+defines consequential, and for `state` it is the exact inverse of the only principled ranking in the
+codebase. **It was inherited, not decided.** Both orders were measured; **both retain the certificate's
+protected set identically** (commitment 13/13, relation 1/1, ownership 1/1), so the plugin's actual promise
+is not at stake - the trade is purely state-versus-knowledge. **Decision: keep the render order**, because
+`state` is the only kind whose loss produces an immediate mechanical contradiction, and the criterion is
+recorded rather than left implicit.
+
+**No new weight table, and the reason is the finding.** The priority is a function of `kind`, and `kind` is
+assigned per-memory by the extraction model with no consistent definition. This store's four `world_delta`
+rows are an ongoing threat, **where a mentor's notebook is hidden**, a dried root in that notebook, and an
+apothecary being emptied. `belief` - ranked second-lowest - holds the character's live deductions ("someone
+pried the well open; people who draw water do not chisel the rim"), which is the plot. `state`, consuming
+71% of the default budget, holds "currently inside the dwelling". **Tuning the numbers would encode that
+noise more precisely.** Two ways of avoiding the choice were also simulated and rejected: a per-kind share
+cap still starves the last kind (world_delta 0 of 4 at every share from 60% to 33%), and a two-pass floor in
+its natural form breaks the protected set (commitment 13/13 to 5/13).
+
+**The real finding: two instruments were reporting green while checking nothing.**
+
+- **`importance` is dead.** All **217** active memories are `'medium'`; **zero are `'critical'`.** Four call
+  sites special-case `'critical'` and can never fire - `v55-spine` twice, `v55-boundary`'s never-repeat
+  path, and `memory-core.getActiveMemories`'s importance filter and tiebreak.
+- **`known_by` is empty on every memory in the store** - all 217, including all 52 knowledge rows. So the
+  certificate's `epistemic` dimension examined nothing and returned **`clean: true`**, and T-Causal -
+  which declares **four** question kinds - generated 40 cases that were all `why` and `who_first`.
+
+The certificate's own header says it "answers six questions about one generation's projection". Two of the
+six could not be asked, and the instrument said clean. That is precisely the failure it exists to prevent:
+it is this project's substitute for a model judge, and a judge that returns a verdict without looking is
+the thing it was built to replace.
+
+**Shipped, tested and verified live.** Live certificate line, before and after:
+
+    before: ... leak=0/0                 ... tcausal=14/40 violations=0
+    after:  ... leak=not-checked         ... tcausal=14/40 violations=0 unexercised=who_unknown,no_stale
+
+**And the fix paid for itself immediately.** Carrying `by_kind` through split one opaque number into two:
+**`why` is 9/9 (100%) and `who_first` is 5/31 (16%)**. The causal chain is not the weak part of the
+acceptance instrument at all - "who did this first" fails five times out of six, and that was invisible
+inside `14/40`.
+
+**Promoted.** **D8** - make the priority two-dimensional using `epistemic`, the one discriminating channel
+the store already carries and the priority ignores (fact 60, belief 52, reported 31, inference 30, observed
+29, plan 15 - witnessed / deduced / told / planned, orthogonal to kind). **D9** - find out why `known_by`
+and `importance` are never populated; until then the epistemic dimension and the `who_unknown` question
+kind are decorative. D9 may need extraction-prompt changes and therefore model calls, so it is the user's
+call rather than this plan's.
+
+**Verification.** `npm run check` clean, **81/81 test files pass** (was 80/80). Deployed with
+`node deploy-live.mjs --apply`, host reloaded, certificate line re-read from the running app.
+
+
 
 
 

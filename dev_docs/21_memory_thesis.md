@@ -628,5 +628,136 @@ The capacity gap is unchanged at ~56%: this fix does not make the state fit, it 
 right things** while it does not fit. C1's target stays. The weight table is promoted from an implementation
 detail to the **first thing to validate**, ahead of any further compression work.
 
+<!-- VERSION 6 -->
+## v6 - 2026-09-12 07:20:00 - D7 answered: the weight table was never the problem, and two instruments were reporting green while checking nothing
+
+v5 promoted "validate the weight table" ahead of further compression work. This version ran it, and the
+question dissolved. Measurements on the 51-floor chat (101 rows, 217 active memories, 197 slot-bearing).
+Probes: `expr-d7-orders.js`, `expr-d7-share.js`, `expr-d7-floor.js`, `expr-d7-samples.js`,
+`expr-d7-signals.js`, `expr-d7-vacuous.js`, `expr-d7-verify.js`.
+
+### Correction — v5's premise was wrong
+
+v5 said the weight table "was never validated". **It was validated twice**, for two different questions,
+and both validations are in the code with their reasoning:
+
+| family | where | order (high to low) | the question it answers |
+|---|---|---|---|
+| **render priority** | `CANONICAL_KIND_WEIGHT` (v55-runtime), `kindWeight` (memory-core) | state > intention > commitment > relation/ownership > knowledge > belief > world_delta | what should the model see first? |
+| **irreversibility** | `IRREVERSIBILITY` (v55-spine, mirrored in v55-certificate), `RECONSTRUCTIBILITY` (v55-forget) | commitment > relation/ownership > knowledge > intention/world_delta > state/belief | what cannot be rebuilt if removed? |
+
+**Each family is internally consistent and each carries its own justification.** The spine's table says so
+explicitly: *"This is deliberately not importance: importance is a judgement about the story,
+irreversibility is a fact about the world. A promise cannot be unmade; a location changes again next turn."*
+The forget table adds that a `state` record is the most rebuildable thing in the store.
+
+What is actually wrong is narrower and sharper: **`CANONICAL_KIND_WEIGHT`'s comment claims "the most
+consequential kinds first" and never defines consequential** - and for `state` it is the exact inverse of the
+only principled ranking in the codebase. The render order was never *decided*; it was inherited.
+
+### Both orders were measured, and the guarantee is not at stake
+
+At the default 12,000-character cap:
+
+| kind | render priority (current) | irreversibility order |
+|---|---|---|
+| state | **64 / 64** | 0 / 64 |
+| knowledge | 1 / 52 | **52 / 52** |
+| intention | 9 / 9 | 9 / 9 |
+| commitment | 13 / 13 | 13 / 13 |
+| world_delta | 0 / 4 | **4 / 4** |
+| belief | 1 / 73 | 4 / 73 |
+| relation / ownership | 1 / 1, 1 / 1 | 1 / 1, 1 / 1 |
+
+**Both retain the certificate's protected set identically** (commitment 13/13, relation 1/1, ownership
+1/1), so the promise this plugin actually makes is unaffected by the choice. The trade is purely
+state-versus-knowledge.
+
+**Decision: keep the render order.** `state` is the only kind whose loss produces an immediate,
+mechanical contradiction - a wrong location or condition makes the very next reply wrong - while a lost
+knowledge or belief row makes the character less informed, which the scene can repair. Recorded as a
+decision with its criterion rather than left as an inheritance.
+
+**Two mechanisms for avoiding the choice were simulated and both rejected.** A per-kind share cap
+redistributes the budget but still starves whichever kind is last: `world_delta` renders 0 of 4 at every
+share setting from 60% to 33%. A two-pass floor in its natural form breaks the protected set outright
+(commitment 13/13 drops to 5/13), and in a corrected form only trades one starving kind for another. A
+floor is also the wrong instrument for the problem it was meant to solve - see below.
+
+### The real finding: the priority is a function of an unreliable classifier
+
+The floor idea came from wanting to protect mis-classified rows, and the samples say that is the actual
+defect. `kind` is assigned per-memory by the extraction model with no consistent definition, and the four
+`world_delta` rows in this store are:
+
+- an ongoing threat - "Shadowfang still remembers the player's scent, so the road outside remains dangerous";
+- **where a mentor's notebook is hidden** - a knowledge fact;
+- a dried root tucked in that notebook's binding - a physical detail;
+- an apothecary being emptied three days ago - an event.
+
+And `belief`, ranked second-lowest, holds the character's live deductions: *"Seraphina infers that if the
+grey breath really reached the well water, it was not carried by wind - someone prised the well open; people
+who draw water do not chisel the rim."* **That is the plot.** Meanwhile `state`, which consumes 71% of the
+default budget, holds "the player character is currently inside the dwelling".
+
+**Tuning the numbers would encode this classifier's noise more precisely.** No weight table fixes a label
+that means four different things.
+
+### Two instruments were reporting green while checking nothing
+
+Chasing the priority turned up something worse, and it is this version's most important result.
+
+**`importance` is dead.** All 217 active memories are `'medium'`; **zero are `'critical'`.** Four call
+sites special-case `'critical'` and can never fire: `v55-spine` twice (the spine's own ranking bonus and
+the change chain's), `v55-boundary`'s never-repeat path, and `memory-core.getActiveMemories`'s
+importance filter and tiebreak. The second axis of the entire priority system has never contributed
+anything.
+
+**`known_by` is empty on every memory in the store** - all 217, including all 52 knowledge rows. The
+consequences:
+
+| instrument | what it did |
+|---|---|
+| certificate `epistemic` | `checkable: 0`, `leaks: 0`, **`clean: true`** - reported a clean bill on nothing examined |
+| T-Causal | declares **four** question kinds; generated 40 cases that were **all `why` (9) and `who_first` (31)**. `who_unknown` needs a holder set and produced none. |
+
+Both are vacuous, and **both report success.** The certificate's own header says it "answers six questions
+about one generation's projection"; two of the six could not be asked. That is the failure this instrument
+exists to prevent - it is the project's substitute for a model judge, and a judge that returns "clean"
+without looking is the thing it was built to replace.
+
+**Two channels, one dead and one unused.** `importance` is dead, `known_by` is empty, `kind` is noisy -
+and the store carries a fourth, rich signal nobody consults for priority: **`epistemic`**, distributed
+`fact` 60, `belief` 52, `reported` 31, `inference` 30, `observed` 29, `plan` 15. That is a real
+distribution over real distinctions (witnessed / deduced / told / planned), and it is orthogonal to kind.
+The priority is one-dimensional in a store that is not.
+
+### What shipped
+
+- **The certificate cannot report an unexamined dimension as clean.** `epistemic.clean` is now `null`
+  when nothing is checkable, with an explicit `checked` flag, following the file's own convention for an
+  unmeasurable dimension (`state.rate`). `formatCertificate` prints `leak=not-checked` instead of the
+  ambiguous `leak=0/0`.
+- **T-Causal's absent question kinds are visible.** `scoreTcausal` already returned `by_kind`; the
+  certificate was dropping it. It is now carried through, together with an `unexercised` list of declared
+  kinds that produced no case, and the summary line names them.
+- Pinned by `test-v55-certificate-vacuity.mjs`: an unexamined dimension reports `null`, never `true`;
+  every declared T-Causal kind is either exercised or named, never both and never neither; and a holder set
+  is what puts `who_unknown` back to work.
+
+### What this changes
+
+**D7 is closed, and it did not produce a new weight table.** It produced a decision (keep the render
+order, criterion recorded) and a demotion: the priority's real weakness is that it rests on a single noisy
+label. Two successors, in order:
+
+- **D8 - make the priority two-dimensional.** Combine the kind ordering with `epistemic`, which is the one
+  discriminating channel the store already carries and the priority ignores. Deterministic, no model call.
+- **D9 - find out why `known_by` and `importance` are never populated.** Either the extraction contract is
+  not asking for them, or it is asking in a way the model ignores. Until this is fixed, the certificate's
+  epistemic dimension and T-Causal's `who_unknown` kind are decorative. This one may cost model calls and
+  is therefore the user's call, not this plan's.
+
+
 
 

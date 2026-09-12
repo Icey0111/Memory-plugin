@@ -19,7 +19,7 @@
 // itself. Free-form character behaviour has no deterministic check, so the certificate does not claim
 // to cover it; that limit is stated rather than hidden.
 
-import { buildTcausalCases, scoreTcausal } from './v55-tcausal.js';
+import { buildTcausalCases, scoreTcausal, TCAUSAL_KINDS } from './v55-tcausal.js';
 import { openSpine } from './v55-spine.js';
 import { estimateTokens } from './v55-tokenizer.js';
 
@@ -97,6 +97,12 @@ export function lengthCertificate(store, { projection = '', actor = null, cases 
     const commitmentMissing = protectedRows.filter(memory => !contains(text, fragment(memory.text)));
 
     // epistemic — a memory whose holder set is explicit and excludes the actor must not be shown to it.
+    //
+    // "clean" is null, not true, when there is nothing to check. Measured on a live 51-assistant-floor
+    // chat: all 217 active memories have an empty known_by, so this dimension examined nothing and
+    // reported clean. An instrument that cannot tell "nothing leaked" from "nothing was checked" is not
+    // measuring, and this certificate exists precisely to be the thing a model judge is not. The null
+    // follows the file's own convention for an unmeasurable dimension (see state.rate).
     const epistemicCheckable = actor
         ? live.filter(memory => Array.isArray(memory.known_by) && memory.known_by.length)
         : [];
@@ -133,9 +139,27 @@ export function lengthCertificate(store, { projection = '', actor = null, cases 
         state: { total: liveSlots.length, reachable: liveSlots.length - omitted.length, omitted: omitted.map(m => m.id), rate: rate(liveSlots.length - omitted.length, liveSlots.length) },
         soundness: { violations: staleRendered.length, ids: staleRendered, clean: staleRendered.length === 0 },
         commitment: { total: protectedRows.length, retained: protectedRows.length - commitmentMissing.length, missing: commitmentMissing.map(m => m.id), rate: rate(protectedRows.length - commitmentMissing.length, protectedRows.length) },
-        epistemic: { checkable: epistemicCheckable.length, leaks: leaks.length, ids: leaks.map(m => m.id), clean: leaks.length === 0 },
+        epistemic: {
+            checkable: epistemicCheckable.length,
+            checked: epistemicCheckable.length > 0,
+            leaks: leaks.length,
+            ids: leaks.map(m => m.id),
+            clean: epistemicCheckable.length ? leaks.length === 0 : null,
+        },
         causal: { total: causalTotal, complete: causalComplete, rate: rate(causalComplete, causalTotal) },
-        tcausal: { total: scored.total, hit: scored.hit, violations: scored.violations, rate: scored.rate },
+        // by_kind and unexercised are carried through because T-Causal declares four question kinds and a
+        // store can generate cases for only some of them. Measured live: 40 cases, all "why" (9) and
+        // "who_first" (31) - "who_unknown" and "no_stale" produced none, because who_unknown requires a
+        // holder set and no memory in the store has one. Without this, half the acceptance instrument can
+        // be absent while the score reads like a pass.
+        tcausal: {
+            total: scored.total,
+            hit: scored.hit,
+            violations: scored.violations,
+            rate: scored.rate,
+            by_kind: scored.by_kind || null,
+            unexercised: TCAUSAL_KINDS.filter(kind => !(scored.by_kind || {})[kind]),
+        },
     };
 }
 
@@ -149,8 +173,10 @@ export function formatCertificate(row) {
         'state=' + row.state.reachable + '/' + row.state.total + ' (' + pct(row.state.rate) + ')',
         'stale=' + row.soundness.violations,
         'commitment=' + row.commitment.retained + '/' + row.commitment.total + ' (' + pct(row.commitment.rate) + ')',
-        'leak=' + row.epistemic.leaks + '/' + row.epistemic.checkable,
+        'leak=' + (row.epistemic.checkable ? row.epistemic.leaks + '/' + row.epistemic.checkable : 'not-checked'),
         'causal=' + row.causal.complete + '/' + row.causal.total,
-        'tcausal=' + (row.tcausal.hit === null ? 'n/a' : row.tcausal.hit + '/' + row.tcausal.total) + ' violations=' + row.tcausal.violations,
+        'tcausal=' + (row.tcausal.hit === null ? 'n/a' : row.tcausal.hit + '/' + row.tcausal.total)
+            + ' violations=' + row.tcausal.violations
+            + ((row.tcausal.unexercised || []).length ? ' unexercised=' + row.tcausal.unexercised.join(',') : ''),
     ].join(' ');
 }
