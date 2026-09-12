@@ -189,6 +189,35 @@ That is the third scenario in a row with no observed contradiction, which is sti
 twelve checked attributes across the two runs that check them, one model. An earlier version of this section
 said eighteen; the two check tables hold six each.
 
+### The first failure on a chat a human drove
+
+Twenty-five turns run by hand, in character, with no probes. On the last turn the user asks what a mushroom
+looks like - "赤斑伞是什么特征来着？" - and the answer is wrong in a way the design was supposed to prevent.
+
+Floor 18 holds the authoritative description: "帽面暗红，上头一串一串褐斑，顺着伞盖的纹路排，像用火烧过一道。
+柄细，根扎在朽藤和老杉根交缠的地方". Replaying the turn offline against the stored archive:
+
+| floor | what it says about the mushroom | rank of 49 candidates | quoted? |
+| --- | --- | --- | --- |
+| 6 | "一种长在林地阴影处的蘑菇，色泽鲜艳" - no appearance at all | 5 | **yes** |
+| 18 | the description above | **16** | no |
+| 19 | mentions it in passing | 17 | no |
+
+The evidence block spent 899 tokens on floors 5, 9, 8, 6 and 10. The reply then produced 朱红伞面, 白里带灰的
+褶子, 一拃高, 一丛三株 and 掐开肉泛红 - **none of which appear anywhere in the original text** - and turned floor
+18's 褐斑 into 暗红斑 and its 火烧纹 into 藤爬纹. It is the first contradiction a run has produced, and the
+first one a user would see.
+
+**Mechanism.** `entityTargets` claims the earliest *hidden* holder of a term and the best-ranked one. For
+"赤斑伞" both resolve to floor 6, the vague first mention. The chunk where the thing is actually *described* is
+not a claim, and nothing else in the pipeline asks for it. This is the profile channel's idea - claim the
+passage that describes the thing - applied to things rather than to characters, and it is missing.
+
+**The warning misfired too.** The panel warned that 8 situation terms were not recalled; those 8 were
+character n-grams (`她的指`, `喝了两`, `回来了`). It fired on the right turn for the wrong reason, and pointed
+at nothing a user could act on. A metric that counts fragments cannot report "the thing you were asked about
+was described in a floor that was not quoted".
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
