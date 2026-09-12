@@ -250,6 +250,9 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
             maxChars: settings.memory_evidence_max_chars,
             abstained: computed.abstained === true,
             unmatched: computed.unmatched || [],
+            // The reference and state blocks are what the model is about to read. A retrieved line that is
+            // already inside them is a duplicate, not evidence.
+            alreadyVisible: visibleText,
         });
     })();
     // The scene-locator block is deliberately NOT injected. It calls itself "derived, rebuildable, not a
@@ -265,7 +268,11 @@ async function runWithV55ConsistencyInner(ctx, innerInterceptor, args) {
         collectSceneEvidence(sanitized.store, selectedScenes, { maxChars: 1200 }),
     );
 
-    if (evidenceBlock) referenceWithDerived = `${referenceWithDerived}\n\n${evidenceBlock}`;
+    // The evidence block is appended ONCE, after budgeting, at the bottom of this function. It used to be
+    // appended here as well, which put every evidence line in the prompt twice - measured live as a
+    // 368-character abstention banner repeated verbatim on turn 1 of a fresh chat. The pre-budget copy also
+    // meant the reservation below was paying for text that was already inside the string it was reserving
+    // against, so the duplicate cost the reference block its own budget twice over.
     store.last_evidence_resolution = { chars: evidenceBlock.length, at: Date.now() };
 
     // The evidence is appended after the derived blocks, so without a reservation the reference trim below

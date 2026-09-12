@@ -287,7 +287,7 @@ export function resolveTurnEvidence(storeInput, chatInput, { maxEntries = 3, max
     return { query, considered: hits.length, entries, abstained: entries.length === 0 && unmatched.length > 0, unmatched };
 }
 
-export function formatEvidenceBlock(entriesInput, { maxChars = 4000, heading = null, abstained = false, unmatched = [] } = {}) {
+export function formatEvidenceBlock(entriesInput, { maxChars = 4000, heading = null, abstained = false, unmatched = [], alreadyVisible = '' } = {}) {
     const entries = Array.isArray(entriesInput) ? entriesInput : [];
     const cap = Math.max(400, Math.min(24000, Number(maxChars) || 4000));
     if (!entries.length) {
@@ -301,16 +301,29 @@ export function formatEvidenceBlock(entriesInput, { maxChars = 4000, heading = n
             + 'inventing it.';
         return note.slice(0, Math.max(200, Math.min(1200, cap)));
     }
+    const visible = String(alreadyVisible || '');
     const lines = [heading || '[MEMORY EVIDENCE — ORIGINAL TEXT, RESOLVED ON DEMAND]'];
     let used = lines[0].length;
+    let dropped = 0;
     for (const entry of entries) {
         const label = `${entry.memoryId || entry.key || 'memory'} · ${entry.source === 'live' ? 'live' : 'cold-snapshot'}`;
         for (const turn of entry.turns || []) {
-            const line = `- [${label}] ${turn.role === 'user' ? 'USER' : 'ASSISTANT'}: ${turn.text}`;
+            const body = clean(turn.text, 24000);
+            // resolveTurnEvidence screens candidates by the first 24 characters of the MEMORY text, but what
+            // actually reaches the prompt is this expanded TURN text, which the memory summary never
+            // contains. Measured over a 20-turn live run: 31,310 evidence characters injected, 8,529 of
+            // them (27%) already present verbatim in the reference or state block, and the worst single
+            // turn repeating 70% of itself. Comparing the line that is about to be emitted is the only
+            // place the two texts can actually be compared.
+            if (visible && body.length > 20 && visible.includes(body)) { dropped += 1; continue; }
+            const line = `- [${label}] ${turn.role === 'user' ? 'USER' : 'ASSISTANT'}: ${body}`;
             if (used + line.length + 1 > cap) return lines.join('\n');
             lines.push(line);
             used += line.length + 1;
         }
     }
+    // Every candidate was already on screen. Emitting the bare heading would advertise evidence that is
+    // not there, so this reports nothing at all rather than a label with no content under it.
+    if (lines.length === 1 && dropped > 0) return '';
     return lines.join('\n');
 }

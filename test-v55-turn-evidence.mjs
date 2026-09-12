@@ -86,4 +86,37 @@ const WELL = { op: 'add', kind: 'knowledge', slot: 'Seraphina.knowledge.well_rim
     assert.ok(block.length <= 4000, 'bounded');
 }
 
+// 7. A retrieved line the prompt already carries is a duplicate, not evidence. The candidate screen in
+//    resolveTurnEvidence only inspects the first 24 characters of the MEMORY text, while the block emits
+//    the expanded TURN text, so the same floor survived the screen and was injected again.
+{
+    // The shared fixture's turns are short; the 20-character floor under which a line is never worth
+    // dropping means this needs substantial text, so the entry is built here rather than borrowed.
+    const long = '旅人在屋后的泉沿上摸到三道朝里斜的凿痕，石粉还白着，前两场雨没有把它冲掉。';
+    const long2 = '瑟拉菲娜说屋后那眼活泉的石沿是她二十几岁亲手一块一块砌起来的。';
+    const entries = [{
+        memoryId: 'm_fixture',
+        source: 'live',
+        turns: [
+            { role: 'user', index: 1, text: long },
+            { role: 'assistant', index: 2, text: long2 },
+        ],
+    }];
+    const full = formatEvidenceBlock(entries, { maxChars: 4000 });
+    assert.ok(full.includes(long) && full.includes(long2), 'lines the prompt does not carry are emitted');
+    const deduped = formatEvidenceBlock(entries, { maxChars: 4000, alreadyVisible: long });
+    assert.ok(!deduped.includes(long), 'a line the prompt already shows is not repeated');
+    assert.ok(deduped.includes(long2), 'while the line it does not carry survives: ' + deduped);
+    assert.equal(
+        formatEvidenceBlock(entries, { maxChars: 4000, alreadyVisible: long + '\n' + long2 }),
+        '',
+        'a block whose every line is already visible reports nothing rather than a bare heading',
+    );
+    const tiny = [{ memoryId: 'm_tiny', source: 'live', turns: [{ role: 'user', index: 1, text: '他说他走了十一天。' }] }];
+    assert.ok(
+        formatEvidenceBlock(tiny, { maxChars: 4000, alreadyVisible: '他说他走了十一天。' }).includes('十一天'),
+        'a line under the 20-character floor is never dropped, because dropping it saves nothing',
+    );
+}
+
 console.log('PASS v5.5 turn evidence: the original-text trigger is computed, and silence is not the fallback');

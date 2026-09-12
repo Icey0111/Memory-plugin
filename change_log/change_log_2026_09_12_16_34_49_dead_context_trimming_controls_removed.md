@@ -189,3 +189,105 @@ Close both gaps so "removed" means removed in the running app, not just in the r
   interceptor returns without error, reference block 2,580 chars, state block 8,115 chars, 44 memories,
   41 active. The extension is not damaged by the removal.
 - `npm run check` clean; `node run-tests.mjs` **84/84 test files passed**.
+
+---
+
+## Third change: the evidence block was injected twice, and its lines were never checked against the prompt
+
+### Problem / Requirement
+
+A second 20-user-turn acceptance run was started to fix the previous run's scenario defect and to finally
+isolate H4 (is retrieved original text actually used?). Two defects surfaced from the run itself rather
+than from reading code.
+
+First: on turn 1 of a fresh chat, the reference block the model receives was
+
+    [MEMORY ABSTENTION - THE RECORD HAS NOTHING FOR THIS TURN] No stored memory or original text
+    resolved for: Seraphina. Their current state is unknown; say so rather than inventing it.
+
+**twice**, verbatim, 368 characters. `runWithV55ConsistencyInner` appended the resolved evidence block to
+the reference text once before `budgetPromptPair` and again after it, so every evidence line reached the
+model duplicated. The pre-budget copy also sat inside the string that the reservation at
+`maxReferenceChars` was subtracting for, so the duplicate was charged to the reference budget twice.
+
+Second: over the run, **31,310 characters of evidence text were injected**, and **8,529 of them (27%) were
+already present verbatim in the reference or state block**, rising to **70% on the worst single turn**. The
+candidate screen in `resolveTurnEvidence` tests only the first 24 characters of the *memory* text, while
+what is actually emitted is the expanded *turn* text, which a memory summary never contains. The screen is
+therefore structurally unable to see the duplicate it is looking for.
+
+### Purpose of Change
+
+Stop paying twice for the same text, and make the check happen where the two texts can actually be
+compared.
+
+### How It Was Changed
+
+- [v55-consistency.js L268-L273](file:///D:/memory_plugin/v55-consistency.js#L268-L273) - the pre-budget
+  append is gone; the evidence block is appended once, after budgeting, which is what the reservation was
+  always written for.
+- [v55-evidence.js L290](file:///D:/memory_plugin/v55-evidence.js#L290) - `formatEvidenceBlock` takes
+  `alreadyVisible`.
+- [v55-evidence.js L304-L330](file:///D:/memory_plugin/v55-evidence.js#L304-L330) - a line whose body is
+  already in that text is dropped; a block whose every line is dropped returns `''` rather than a heading
+  with nothing under it. Lines under 20 characters are never dropped, because removing them saves nothing.
+- [v55-consistency.js L249-L258](file:///D:/memory_plugin/v55-consistency.js#L249-L258) - the caller passes
+  the reference and state text it is about to publish.
+- [test-v55-turn-evidence.mjs L89-L125](file:///D:/memory_plugin/test-v55-turn-evidence.mjs#L89-L125) - new
+  case 7: a visible line is not repeated, an invisible one survives, an all-visible block reports nothing,
+  and a sub-20-character line is never dropped.
+- Pre-change snapshots: `remove/remove_2026_09_12_16_52_10_evidence_block_appended_twice/` for the first
+  defect, `remove/remove_2026_09_12_17_12_00_evidence_lines_already_visible/` for the second.
+
+### Result
+
+- Duplication confirmed gone live: interceptor invoked on the finished 20-turn chat, 6 evidence lines,
+  **0 of them present anywhere in the rest of the reference or the state block**.
+- Same live turn measured both ways: 1,864 characters before, 1,864 after, **0 saved on that turn**. The
+  saving is turn-dependent - part of the 27% came from a replay that passed `protectRecent: 0` rather than
+  the shipped `protectRecent: 8`, so **the shipped-path saving is smaller than 27% and is not quantified**.
+  What is quantified is the guard: on the shipped path the block no longer contains any line the model
+  already has.
+- `npm run check` clean; `node run-tests.mjs` **84/84 test files passed**.
+
+### Run B, the second 20-turn / 40-floor acceptance
+
+| batch | turns | gen errors | timeouts | extraction timeouts | evidence turns | avg reply chars |
+|---|---|---|---|---|---|---|
+| 1-10 | 10 | 0 | 0 | 0 | 10/10 | 497 |
+| 11-20 | 10 | 0 | 0 | 0 | 10/10 | 509 |
+| **total** | **20** | **0** | **0** | **0** | **20/20** | **494** |
+
+Replies 379-634 characters, 19/19 in the 250-700 band, all Chinese. Memories 5 -> 64. Reference block
+saturated at 4,000 characters from turn 7; state block 725 -> 3,147.
+
+Long-range recall, taken from the character's own words and never prompted for:
+
+- Turn 20 asks how many days the journey took. The reply: *"你从北边走过来，走了十一天。这是你自己进城那
+  三天前对我说的原话，我记着。"* - turn 1's detail, 19 turns later, with its provenance.
+- Turn 20 also recalls turn 4's chisel marks and adds her own observation that the stone dust is still white.
+- Turn 19 counts: *"这是第二回你把我的话搬去喂一头鹿了。头一回我当场跟你说过。"* - a cross-turn count.
+- Turn 9 quotes her own earlier phrasing back: *"我方才说得很清楚——'你那本手札'。"*
+
+### Two corrections to earlier entries in this file
+
+1. **The level-1 row count falling is not content loss.** Run A showed 15 -> 11 rows; run B showed 6 -> 2 and
+   7 -> 3, which looked like summaries being dropped. Reading the tree settles it: the rows are 10-turn
+   batches (`covers: 10`), and the pass re-consolidates per-turn rows into batch rows. The final level-1 row
+   still describes the last user turn in detail, and level 2 / level 3 are legitimately empty. Nothing is
+   lost; the counter was measuring a shape, not a budget.
+2. **The scenario defect from run A was misdiagnosed.** Entry 1 blamed the character card's bedridden
+   premise. Run B, whose turns added explicit recovery and time markers, collapsed the same way for a
+   different reason: **details the user asserts about the character's past or belongings are not canon**, so
+   the model plays her as denying them ("林子里没有藤箱", "我没有师父", "第三回了"). This is a defect in the
+   test design, and it means a valid H4 run has to let the *character* introduce the facts the user later
+   asks her to recall, instead of the user planting objects in her house.
+
+### H4 is still not answered
+
+The detail table shows every planted detail present in the prompt at the turn it was echoed. The reference
+block is a 4,000-character hierarchical summary that already paraphrases nearly everything, so retrieval
+and summary are not separable in this configuration: the summary, not the raw-text channel, is carrying the
+long-range recall that the run demonstrates. Isolating H4 needs a chat long enough that a fact falls out
+of the summary while remaining retrievable.
+
