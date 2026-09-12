@@ -234,11 +234,29 @@ the turn under different constructions:
 | each row capped at 300 / 150 / 80 characters | 14 / 9 / 10 | no |
 | the current user message only | **6** | **yes** |
 
-So the composition does mislead the ranking, capping only helps a little, and only dropping the newest
-assistant reply moves that floor into the selection. It is **not shipped**: this is one turn, and the
-three-message query is also what triggers situational recall (ADR-0019), which has not been measured under the
-alternative. Direction one - a seat for the floor that describes a term named in the query - is the other
-candidate.
+So the composition does mislead the ranking on that turn, and capping only helps a little. The alternative was
+then replayed over **four recorded archives and 44 turns** before shipping anything:
+
+| query construction | entity terms recalled | character profiles described |
+| --- | --- | --- |
+| last three rows (live) | 338 of 352 (96%) | 132 of 143 (92%) |
+| each row capped at 150 characters | 338 of 352 (96%) | 132 of 143 (92%) |
+| the current user message only | 288 of 289 " | 126 of 143 (88%) |
+
+**The change is rejected.** Capping at 150 characters makes no difference at all in aggregate, so the
+single-turn rank improvement did not survive four archives. The user-message-only query scores higher on the
+entity column only because **that column is measured against the terms of the query it is given** - a shorter
+query has fewer, easier terms and a smaller denominator - while it costs four points of character profiles,
+whose names more often appear in the assistant's reply than in the user's message.
+
+The same replay corrects the severity of the failure. Across 44 turns of four archives the shipped
+construction recalls 96% of its situation terms and describes 92% of the characters in the scene. The mushroom
+turn is an outlier, not the norm, and it is an outlier of the stage these numbers do not include: they measure
+the candidates, while the live selection is decided by the reranker.
+
+Direction one - a seat for the floor that describes a term named in the query - remains, and the metric it
+should be judged by does not exist yet: entity recall is defined against the query, so it cannot compare two
+queries.
 
 ## Validation still worth extending
 
