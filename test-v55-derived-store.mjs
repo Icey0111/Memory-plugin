@@ -4,8 +4,7 @@
 //   2. derived keys are only stripped from chat_metadata after the external write succeeded.
 import assert from 'node:assert/strict';
 import { decodeRecordMap } from './memory-core.js';
-import { floorFoldStatus } from './v55-floor-fold.js';
-import { summaryTreeHistoryStatus } from './v55-summary-runtime.js';
+import { readNarrativeReport } from './narrative-runtime.js';
 import {
   DERIVED_KEYS, __resetDerivedStateForTests, __setDerivedBackendForTests, awaitDerivedReady,
   derivedReady, ensureDerivedHydrated, extractDerived, hasDerivedBackend, installDerivedSerializationFilter, queueDerivedWrite,
@@ -169,14 +168,13 @@ assert.equal(await awaitDerivedReady(ctx, 5000), false, 'the bounded await must 
 __resetDerivedStateForTests();
 const bare = { version: '5.4', memories: {} };
 const bareCtx = { chatMetadata: { [KEY]: bare }, chat: [], extensionSettings: { [KEY]: { summary_fold_hidden_floors: true } } };
-const foldStatus = floorFoldStatus(bareCtx);
-assert.equal(foldStatus.hidden_messages, 0);
-assert.equal(foldStatus.runs, 0);
-assert.equal('floor_folds' in bare, false, 'floorFoldStatus must not create floor_folds');
-const historyStatus = summaryTreeHistoryStatus(bareCtx);
-assert.equal(historyStatus.depth, 0);
-assert.deepEqual(historyStatus.entries, []);
-assert.equal('summary_history' in bare, false, 'summaryTreeHistoryStatus must not create summary_history');
+const report = readNarrativeReport(bareCtx);
+assert.equal(report.messages, 0);
+assert.equal(report.summary_valid, false);
+assert.equal(report.folded_rows, 0);
+assert.equal('raw_history' in bare, false, 'the narrative report must not create the original-text archive');
+assert.equal('narrative_summary' in bare, false, 'nor a summary');
+assert.equal('floor_folds' in bare, false, 'nor the retired fold audit');
 // --- a write must never drop a key it does not carry ---------------------------------------------
 // A reloaded store carries fewer keys than the record does. Replacing the record wholesale erased the
 // cold snapshot and the fold audit on the first write after every reload.

@@ -1,7 +1,11 @@
-// Reliability regression suite for the review fixes: privacy filtering, extraction contract,
-// memory-op schema bounds, hash-authoritative dense mapping, budget accounting, store guards.
+// Reliability regression suite for the review fixes: extraction contract, memory-op schema bounds,
+// hash-authoritative dense mapping, budget accounting, store guards.
+//
+// The per-memory privacy filter that used to be section 1 retired with the fact-injection path: facts
+// are no longer assembled into a prompt, so there is no per-line filter left to test. Role-private
+// audiences are still enforced where a prompt is still built, by filterSettingRowsForActor, which
+// test-setting-retrieval-host.mjs and test-setting-secret-visibility.mjs cover.
 import assert from 'node:assert/strict';
-import { filterPrivateKnowledge } from './v55-finalizer.js';
 import { parseExtractionResult } from './memory-extractor.js';
 import { validateMemoryOp, normalizeStore, fuseHybridCandidates, diversifyCandidates } from './memory-core.js';
 import { mapDenseSettingMetadata } from './setting-retriever.js';
@@ -13,15 +17,6 @@ import {
 } from './setting-store.js';
 import { buildSettingIndexSnapshot } from './setting-index.js';
 import { handleTauriVectorRequest, __testResetTauriVectorBackend, isNativeTauriTavern } from './v55-tauri-vector-backend.js';
-
-// --- 1. private memory with XML-special characters must be removed, not merely reported as hidden ---
-{
-  const store = { memories: { secret: { id: 'secret', kind: 'knowledge', text: `O'Brien's vault code is 7391 & rising`, known_by: ['Alice'], known_by_ids: ['ent_alice'] } } };
-  const current = `- [knowledge:secret] O'Brien's vault code is 7391 & rising\n- [state] visible`;
-  const out = filterPrivateKnowledge('', current, store, { aliases: ['bob'], ids: ['ent_bob'] });
-  assert.doesNotMatch(out.currentStateBlock, /7391/, 'escaped/raw mismatch must not leak a private line');
-  assert.deepEqual(out.hiddenMemoryIds, ['secret']);
-}
 
 // --- 2. extraction contract: operations must be an array; missing fields are reported, not silently wiped ---
 {
@@ -140,4 +135,4 @@ import { handleTauriVectorRequest, __testResetTauriVectorBackend, isNativeTauriT
   __testResetTauriVectorBackend();
 }
 
-console.log('PASS reliability fixes: privacy filter, extraction contract, op bounds, hash-first dense mapping, ordering, guards, budget, Tauri store errors');
+console.log('PASS reliability fixes: extraction contract, op bounds, hash-first dense mapping, ordering, guards, budget, Tauri store errors');

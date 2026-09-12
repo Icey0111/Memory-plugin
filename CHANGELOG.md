@@ -1,0 +1,50 @@
+# Changelog
+
+This file records user-visible release changes. Detailed implementation history
+belongs in Git commits and pull requests.
+
+## Unreleased
+
+### Added
+
+- Narrative continuity summary: a background pass every N floors writes one compact summary of where
+  the story stands (default budget 600 tokens), replacing the previous summary rather than growing it.
+- Original-text archive and retrieval: every message version is kept, chunked and indexed, and
+  evidence is quoted back on demand with its source id, character span, floor and speaker (default
+  budget 1000 tokens).
+- Settings panel "剧情摘要与原文检索" with live diagnostics, "update the summary now", and
+  "restore the original text".
+- `check-syntax.mjs`: the syntax gate discovers the files it parses instead of using a hand-written list.
+
+### Changed
+
+- Prompt injection is two blocks again: the continuity summary as the current-state block, and quoted
+  original text plus relevant setting entries as the reference block. The fact set is no longer
+  rendered into the prompt.
+- A floor leaves the prompt only while the accepted summary covers every chunk of it; the newest floor
+  and the unsummarized tail always stay visible.
+- The extension has one generation entry instead of four layered installers.
+
+### Fixed
+
+- A summary that no longer matches the history (after an edit, a swipe, a delete or a branch change)
+  is dropped and its floors are restored in the same call, instead of being injected as if current.
+- A background summary that finishes after the user has changed chats is discarded instead of being
+  written into the wrong chat.
+- A diagnostics read creates no stored keys, so it cannot put an empty object back into the chat file.
+- Edited or folded floors can no longer stay hidden with nothing standing in for them.
+
+### Deprecated
+
+- The fact store, the context assembler, the memory spine and the extraction pipeline are retained for
+  old-chat compatibility only. They are inert while the narrative pipeline is on.
+
+### Removed
+
+- The layered summary stack: hierarchical summary runtime, digest, consistency, provenance,
+  finalization, scene boundaries, repetition compression and per-actor fact filtering, together with
+  their settings keys and seventeen test files.
+
+### Security
+
+- Quoted evidence is labelled as quoted history, not instructions.

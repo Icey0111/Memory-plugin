@@ -84,6 +84,7 @@ import { awaitDerivedReady, ensureDerivedHydrated, installV55DerivedStore, persi
 import { rerankCandidates } from './v55-rerank.js';
 import { formatMetrics, recordEmbeddingCall, recordModelCall, resetMetrics } from './v55-metrics.js';
 import { formatSelfCheck, runRetrievalSelfCheck } from './v55-selfcheck.js';
+import { getV55EmbeddingProfile } from './v55-vector-policy.js';
 
 const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -205,12 +206,10 @@ const DEFAULT_SETTINGS = Object.freeze({
     // values would never see the new ones, because getSettings only fills keys that are missing - so the
     // correction carries a version and a one-time migration.
     memory_budget_version: 2,
-    // Plan A2/A4/A6. All three are on by default and all three degrade to the previous behaviour when
-    // switched off, which is the plan's own degradation rule for the A list ("a failed detector is never
-    // worse than the floor beat").
-    boundary_detection_enabled: true,
-    compression_repetition_enabled: true,
-    cold_eviction_by_reconstructability: true,
+    // Plan A2/A4/A6 (scene boundaries, repetition compression, forgetting by reconstructability) were
+    // removed with the layered summary stack: their readers were v55-boundary/v55-compression and the
+    // hierarchical summarizer, and their only controls lived on its settings panel. The prune call below
+    // keeps the behaviour it always had (the default), so an install that saved the old keys is unaffected.
     // Iteration 14 (drift fix): the current-state block renders EVERY active memory, not only the
     // mandatory set, so it was already a baseline wider than S4 claimed. That was implicit, which
     // made the "irreversible-only" experiment impossible to run. Now it is a named setting and the
@@ -1265,7 +1264,7 @@ ${pair.assistantText}`,
     // stays correct with the switch off. It exists so 【查阅记忆】 can still show original wording
     // after the host text changed — which is why it is a copy of the transcript and not a fact store.
     if (settings.cold_turn_snapshot_enabled === false) {
-        pruneColdTurns(store, settings.cold_turn_max_chars, { byReconstructability: settings.cold_eviction_by_reconstructability !== false });
+        pruneColdTurns(store, settings.cold_turn_max_chars);
     } else {
         recordColdTurn(store, {
             source_key: pair.key,
@@ -1379,7 +1378,7 @@ function scheduleLatestAssistantExtraction({ force = false } = {}) {
     const ctx = getContext();
     if (!ctx) return;
     const settings = getSettings(ctx);
-    if (!settings.auto_extract) return;
+    if (settings.narrative_pipeline || !settings.auto_extract) return;
     const index = findLatestAssistantIndex(ctx.chat || []);
     if (index < 0) return;
     const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
@@ -2335,6 +2334,7 @@ async function rebuildCanonicalFromChat(ctx, { rebuildVectors = false, silent = 
 async function reconcileCurrentChat(ctx, { forceRebuild = false } = {}) {
     if (!ctx) return;
     const settings = getSettings(ctx);
+    if (settings.narrative_pipeline) return;
     let store = pruneStaleExtractionRecords(getStore(ctx), ctx.chat || []);
     const currentSources = collectAutonomousExtractionSources(ctx.chat || [], store.extractions || {})
         .map(x => ({ index: x.assistantIndex, hash: x.hash }));
@@ -2379,6 +2379,7 @@ export function recallSignature(ctx, chat) {
 }
 
 export function startRecallPrefetch(ctx = getContext()) {
+    if (ctx && getSettings(ctx).narrative_pipeline) return null;
     const settings = getSettings(ctx);
     if (!settings.vector_recall) return false;
     const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
@@ -3363,6 +3364,11 @@ async function startup() {
     await setupUi();
     // v5.2/v5.1 canonical metadata migrates automatically; old inline <memory_ops> are replayed once.
     void enqueue(async () => {
+        if (settings.narrative_pipeline) {
+            getStore(ctx); // Migrate old metadata without replaying or rewriting its facts.
+            await warmupRecallRuntime(ctx);
+            return;
+        }
         await reconcileCurrentChat(ctx, { forceRebuild: true });
         await ensureSemanticBaseline(ctx, { silent: true });
         await ensurePluginSettingIndex(ctx, { silent: true });
@@ -3376,6 +3382,39 @@ async function startup() {
 // extraction pipeline verifiable without depending on DOM event timing.
 export function __testNormalizeDepth(value, fallback = DEFAULT_SETTINGS.injection_depth) {
     return normalizeDepth(value, fallback);
+}
+
+/** Shared host adapters for the original-text pipeline. No prompt mutation in these services. */
+export function createNarrativeHostServices(ctx) {
+    getStore(ctx);
+    const identity = getChatIdentity(ctx);
+    const metadata = ctx.chatMetadata;
+    const chat = ctx.chat;
+    return {
+        isCurrent: () => {
+            const current = getContext();
+            return Boolean(current && getChatIdentity(current) === identity
+                && current.chatMetadata === metadata && current.chat === chat);
+        },
+        vector: () => {
+            const provider = getVectorProvider(ctx);
+            const settings = getSettings(ctx);
+            const collectionId = identity ? `aetheria_v54_raw_${fnv1a32(identity).toString(36)}` : null;
+            if (!settings.vector_recall || !collectionId) return { supported: false, reason: '原文向量检索未启用或聊天尚未保存' };
+            if (!provider.supported) return provider;
+            rememberVectorCollection(ctx, collectionId, 'raw');
+            return {
+                supported: true,
+                fingerprint: provider.fingerprint + '|' + getV55EmbeddingProfile(ctx).space_fingerprint,
+                purge: () => withVectorLock(() => purgeVectorCollection(ctx, collectionId)),
+                insert: items => withVectorLock(() => vectorInsert(ctx, provider, collectionId, items)),
+                remove: hashes => withVectorLock(() => vectorDelete(ctx, provider, collectionId, hashes)),
+                query: (text, topK) => withVectorLock(() => vectorQuery(ctx, provider, collectionId, text, topK, 0)),
+            };
+        },
+        settings: async query => filterSettingRowsForActor(
+            await retrievePluginSettings(ctx, query, { mode: 'generation' }), deriveActorIdentity(ctx, getStore(ctx))),
+    };
 }
 
 export async function __testExtractMemoryForAssistant(ctx, assistantIndex, options = {}) {
