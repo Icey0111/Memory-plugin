@@ -83,8 +83,37 @@ The summary is why. On a purpose-written probe set - a meaningless serial `ÁÅ∞Èπ
 600-token budget, and still carried all ten after the budget was cut to 300 (summaries 344 vs 409 characters
 stored). Squeezing the budget shortened the prose and kept the itemised facts.
 
-So the continuity block is the foundation the story leans on, and retrieval is a fallback for what that block
-drops. The cost of the arrangement is the prompt budget the block occupies, not the accuracy of the index.
+So the continuity block is the foundation the story leans on, and retrieval covers what that block drops. The
+cost of the arrangement is the prompt budget the block occupies, not the accuracy of the index.
+
+### Situational recall, which is what retrieval is for
+
+Those 27 probes were questions. Recall is not a question: it is a past person walking back in, a visited place
+coming round again, a borrowed object being named again. The trigger is the situation - the recent messages -
+and the test is whether the earlier floors come back with it, without anyone asking.
+
+A 30-turn run was written for that, with six such moments and every relevant floor folded before its moment:
+
+| observation | measurement |
+| --- | --- |
+| turns that packed any evidence | 20 of 30 (67%; 50 of 60 and 20 of 30 in the two earlier runs) |
+| moments that brought back at least one earlier floor of the thing that returned | **3 of 6** |
+| relevance of the slots when it did | 1 of 3 slots; the other two went to recent floors or floor 1 |
+| continuity block carried the returning entity | 6 of 6 |
+| reply treated it as familiar | 6 of 6 |
+
+Missed outright: the tea-shed keeper when the shed came back, the bronze lamp when it was named again, and the
+dispensary back door when the route was discussed. The lamp's introduction was floor 4 and the run quoted
+floors 20, 10 and 10 instead.
+
+Two defects fall out of the same table. **Ten to fifteen percent of evidence slots quote a second span of a
+message already quoted that turn** (9 of 60 slots here, 15 of 150 in the 60-turn run), which is 3 available
+slots spending one of them on a message the prompt already has. And the ranking is recency-biased: the oldest
+quoted floor sits 14 to 23 floors back, but not the floor where the returning entity was introduced.
+
+**Correction to the section above.** "Retrieval is a fallback that rarely fires" is true of questions and false
+of recall. Retrieval packs evidence on two thirds to five sixths of turns; what is rare is a question only it
+can answer. Measured by situation, it fires constantly and finds the right earlier floor about half the time.
 
 ## Validation still worth extending
 
@@ -110,8 +139,9 @@ drops. The cost of the arrangement is the prompt budget the block occupies, not 
 - Embedding and reranking calls have costs beyond the final LLM context budget.
 - The earlier 87% answer-in-context result belongs to its measured question set and provider.
 - Source-id coverage verifies provenance alignment, not whether every necessary fact was summarized.
-- Retrieval is a fallback: it was the only possible source in 3 of 27 measured probes, so its precision is not
-  established by live play in this architecture, only its absence of observed failure.
+- Retrieval fires on most turns but was measured only as a coverage fallback. Its situational hit rate is
+  3 of 6 on the one run written to test it, and 10 to 15 percent of its slots are spent on a message already
+  quoted that turn.
 - The state block is stale by up to one cadence by design (ADR-0017); the visible transcript is what covers
   that window.
 
