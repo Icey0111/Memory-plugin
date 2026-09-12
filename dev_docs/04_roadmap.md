@@ -208,10 +208,13 @@ The evidence block spent 899 tokens on floors 5, 9, 8, 6 and 10. The reply then 
 18's 褐斑 into 暗红斑 and its 火烧纹 into 藤爬纹. It is the first contradiction a run has produced, and the
 first one a user would see.
 
-**Mechanism.** `entityTargets` claims the earliest *hidden* holder of a term and the best-ranked one. For
-"赤斑伞" both resolve to floor 6, the vague first mention. The chunk where the thing is actually *described* is
-not a claim, and nothing else in the pipeline asks for it. This is the profile channel's idea - claim the
-passage that describes the thing - applied to things rather than to characters, and it is missing.
+**Mechanism, corrected.** The first reading of this blamed the entity channel: it claims a term's earliest
+hidden holder and its best-ranked one, and both resolve to floor 6. That is true and it is not the reason.
+Floor 18 ranked **16th of 49 candidates, inside the 24 the reranker is given**, and the reranker chose floors
+11, 13, 17, 19 and 20 over it. The descriptive floor was available and the stage that reorders candidates
+demoted it, so the bottleneck is the reranking decision, not the candidate set. A densest-mention claim was
+implemented to move floor 18 and did not move it (still rank 16); it was reverted rather than shipped
+unverified.
 
 **The warning misfired too.** The panel warned that 8 situation terms were not recalled; those 8 were
 character n-grams (`她的指`, `喝了两`, `回来了`). It fired on the right turn for the wrong reason, and pointed
