@@ -12,7 +12,9 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 
 ## Acceptance contract
 
-Default summary cadence is **10 completed user turns**, normally 20 dialogue message floors.
+Default summary cadence is **10 floors**, a floor being one user message and the character's reply -
+twenty dialogue message rows. The setting, the report and the hidden count all use that unit; message rows
+are the derived number.
 A character greeting is not a user turn; an unanswered user message is not completed. Tests of
 specific boundaries may explicitly use another interval, but live acceptance must retain 10.
 

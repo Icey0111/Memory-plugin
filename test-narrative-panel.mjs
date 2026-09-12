@@ -54,10 +54,11 @@ assert.equal(narrativeSettings(ctx).narrative_every, 7, 'the reader fills missin
 
 // 2. the panel is filled from the read-only report, which creates no state
 const report = JSON.parse(panel.querySelector('[data-status]') ? JSON.stringify(readNarrativeReport(ctx)) : '{}');
-assert.equal(report.update_every_user_turns, 7, 'the report reflects the settings, in the unit the setting is in');
-// Floors, not the same number under a second name. Seven completed user turns are fourteen message floors;
-// reporting seven made a reader count the hidden floors and conclude the hiding was wrong.
-assert.equal(report.update_every_floors, 14, 'the floor cadence is derived from the turn cadence');
+// A floor is what a reader of the chat counts: one user message and the character reply. The setting, the
+// reported cadence and the hidden count are all in that unit, and messages are the derived number.
+assert.equal(report.update_every_floors, 7, 'the setting and the reported cadence share one unit');
+assert.equal(report.update_every_user_turns, 7, 'which is also the user turn');
+assert.equal(report.update_every_messages, 14, 'and two message rows');
 assert.equal('raw_history' in ctx.chatMetadata.aetheriaUnifiedMemoryV54, false,
     'a panel render must not create the archive, a summary or a fold audit');
 

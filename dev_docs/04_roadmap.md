@@ -8,7 +8,8 @@ The extracted-fact generation runtime and layered-summary stack are retired.
 
 This iteration separates background summary work from foreground reads, invalidates all continuity
 projections together after history changes, and uses request-local summary settings with response
-diagnostics. Default cadence is 10 completed user turns, normally 20 message floors. Summary coverage
+diagnostics. A **floor** here is one user message and the character's reply; the default cadence is 10 of
+them, so twenty message rows, and the setting, the report and the hidden count all share that unit. Summary coverage
 is source coverage, not proof of semantic fidelity.
 
 Anchors and knowledge boundaries are re-stated by the summary rather than updated between passes, so the

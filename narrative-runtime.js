@@ -586,13 +586,20 @@ export function readNarrativeReport(ctx) {
     return {
         enabled: settings.enabled !== false,
         summary_running: jobs.has(hostKey(ctx)),
-        cadence_unit: 'completed user turns (normally two message floors)',
+        // The unit is the floor as a reader of the chat counts it: one user message and the character's
+        // reply. The setting has always been in that unit, and every second field that repeated it under a
+        // different name made a cadence of ten read as ten message rows, which it is not.
+        cadence_unit: 'floor = one user message + the character reply (two message rows)',
+        update_every_floors: bound(settings.narrative_every, defaults.narrative_every, 1, 100),
         update_every_user_turns: bound(settings.narrative_every, defaults.narrative_every, 1, 100),
         // Message floors, not the setting repeated. The two were the same number under two names, so a
         // cadence of ten read as "ten floors" while it is ten completed user turns - normally twenty floors,
         // and the reader who counted hidden floors saw nineteen after the first pass and concluded the
         // hiding was wrong. A user turn is a user message and its reply; the greeting is not a turn.
-        update_every_floors: bound(settings.narrative_every, defaults.narrative_every, 1, 100) * 2,
+        update_every_messages: bound(settings.narrative_every, defaults.narrative_every, 1, 100) * 2,
+        // The count a reader compares against the setting. Hidden rows are messages; a floor is two of them,
+        // and the newest floor is never hidden, which is why the first pass hides nine and a half floors.
+        folded_floors: Math.round(rows.filter(row => row?.is_system === true && isFoldedRow(row)).length / 2),
         pending_floors: pending.pending_floors,
         pending_tokens: pending.pending_tokens,
         summary_failures: failures,
@@ -648,7 +655,7 @@ export function mountNarrativeSettings(getContext, createServices) {
     const root = document.createElement('div');
     root.id = 'aum-narrative-settings';
     root.innerHTML = '<h3>剧情摘要与原文检索</h3><p>摘要保障续写，检索找回原文。未完成总结的楼层继续保留。</p>'
-        + [['narrative_every','每几轮更新摘要（1 user turn 通常为 2 楼）',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
+        + [['narrative_every','每几楼更新摘要（1 楼 = user 消息 + 角色回复）',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
             ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000],
             ['narrative_anchor_tokens','锚点 token 预算',0,4000],
             ['narrative_pending_warn_tokens','未总结原文告警阈值',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]
