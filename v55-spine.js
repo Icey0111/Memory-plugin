@@ -96,6 +96,13 @@ export function isNeverDrop(memory) {
     return irreversibilityRank(memory) >= NEVER_DROP_RANK;
 }
 
+/** How many never-drop memories the store holds, and whether that is past the planning bound. */
+export function mandatoryBaselineSize(store, limit = 24) {
+    const count = mandatoryMemories(store).length;
+    const bound = Math.max(0, Number(limit) || 0);
+    return { count, limit: bound, over_limit: bound > 0 && count > bound };
+}
+
 export function mandatoryMemories(store, { limit = 24 } = {}) {
     const memories = store?.memories && typeof store.memories === 'object' ? store.memories : {};
     const spine = openSpine(store, false);
@@ -115,7 +122,19 @@ export function mandatoryMemories(store, { limit = 24 } = {}) {
     }
     rows.sort((a, b) => b.rank - a.rank
         || Number(b.memory.source_message || 0) - Number(a.memory.source_message || 0));
-    return rows.slice(0, Math.max(0, Number(limit) || 0)).map(row => row.memory);
+    // The limit is a PLANNING bound, not a truncation, and it used to be the latter.
+    //
+    // Every row here is a never-drop memory, so slicing to the limit cut the one kind of memory the
+    // design says can never be dropped - silently, and at the moment it mattered most, since the set only
+    // reaches the bound when the story has accumulated that many irreversible claims. Measured on the
+    // acceptance chat the baseline sat at 23 of 24: one slot of headroom, and the next promise would have
+    // been dropped from the baseline while the certificate went on computing its protected set from
+    // IRREVERSIBILITY and reporting the loss as an ordinary budget outcome.
+    //
+    // The set is bounded by the story's commitments rather than by its slots, so it stays small in
+    // practice - 15 on a 51-floor chat, 23 on a 28-floor one - and when it does exceed the bound that is
+    // information. mandatoryBaselineSize reports it instead of hiding it.
+    return rows.map(row => row.memory);
 }
 
 export function provenanceChannel(op = {}, memoryLike = {}) {

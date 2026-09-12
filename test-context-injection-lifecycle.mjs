@@ -46,19 +46,25 @@ for(const type of ['quiet','impersonate']){
   const start=prompts.length;
   await globalThis.aetheriaUnifiedMemoryV54Interceptor(input,4096,()=>{},type);
   const calls=prompts.slice(start);
-  for(const key of ['aetheria_unified_memory_v5_4','aetheria_unified_memory_v5_4_reference','aetheria_unified_memory_v5_4_current_state']){
+  // Only the two real channels. The v5.4 single-block key and the standalone summary key are not
+  // registered at all: the host refuses a projection with more than two ranges and an empty
+  // registration still counts as one, so a third key costs the block that carries state.
+  for(const key of ['aetheria_unified_memory_v5_4_reference','aetheria_unified_memory_v5_4_current_state']){
     const row=calls.find(x=>x[0]===key);
     assert.ok(row,`${type} must clear ${key}`);
     assert.equal(row[1],'');
   }
+  assert.equal(calls.find(x=>x[0]==='aetheria_unified_memory_v5_4'),undefined,'the legacy key is never registered');
+  assert.equal(calls.find(x=>x[0]==='aetheria_unified_memory_v5_5_hierarchical_summary'),undefined,'nor is the standalone summary key');
 }
 
 context.extensionSettings.aetheriaUnifiedMemoryV54.enabled=false;
 const disableStart=prompts.length;
 await globalThis.aetheriaUnifiedMemoryV54Interceptor(input,4096,()=>{},'normal');
 const disableCalls=prompts.slice(disableStart);
-for(const key of ['aetheria_unified_memory_v5_4','aetheria_unified_memory_v5_4_reference','aetheria_unified_memory_v5_4_current_state']){
+for(const key of ['aetheria_unified_memory_v5_4_reference','aetheria_unified_memory_v5_4_current_state']){
   assert.equal(disableCalls.find(x=>x[0]===key)?.[1],'',`disabled plugin must clear ${key}`);
 }
+assert.equal(disableCalls.find(x=>x[0]==='aetheria_unified_memory_v5_4'),undefined,'and the legacy key stays unregistered');
 
 console.log('PASS Commit F normal/continue/regenerate/group lifecycle + quiet/impersonate/disable cleanup + depth=0');

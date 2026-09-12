@@ -19,7 +19,7 @@ import {
 import { sanitizeStoreForActor } from './v55-privacy.js';
 import { getMandatoryMemories, isDialogueRow } from './memory-core.js';
 import { persistChatStore } from './v55-derived-store.js';
-import { getHierarchicalSummaryContext, normalizeSummaryInjectionDepth, SUMMARY_PROMPT_KEY } from './v55-summary-runtime.js';
+import { getHierarchicalSummaryContext, SUMMARY_PROMPT_KEY } from './v55-summary-runtime.js';
 import { stabilizeProvenanceStore } from './v55-provenance.js';
 import { formatEvidenceBlock, resolveMemoryLookupRequests, resolveTurnEvidence } from './v55-evidence.js';
 import { REFERENCE_HEADER_CHARS } from './context-assembler.js';
@@ -81,9 +81,21 @@ function captureOrPublished(captured, published, key) {
     };
 }
 
-function clearStandaloneSummary(realSetPrompt, settings) {
-    const depth = normalizeSummaryInjectionDepth(settings?.summary_injection_depth, 4);
-    realSetPrompt(SUMMARY_PROMPT_KEY, '', IN_CHAT, depth, false, SYSTEM_ROLE);
+// This used to set SUMMARY_PROMPT_KEY to the empty string on every generation, to clear a standalone
+// summary prompt that no longer exists: the summary has ridden inside the reference block since
+// injectSceneSummaryBlock was introduced, and this key has been written with nothing but '' for its whole
+// life. Clearing it that way turned out to be the opposite of harmless.
+//
+// The host validates the projection it builds from the prompt surface and refuses more than TWO ranges.
+// An extension prompt registered with an empty value still counts as a range, so this "clear" was the
+// third one, and every generation threw "ChatSurface projection has 3 ranges; maximum is 2". Measured on
+// a 20-turn run: 9 of 10 replies were lost to it, and the failure is inside generate(), so it looks like
+// the model hanging rather than like a plugin bug - the UI just sits on "thinking".
+//
+// The rule this leaves behind: never register a prompt key you do not intend to fill. If a legacy value
+// ever needs clearing, it has to be cleared once at install time, not on every generation.
+function clearStandaloneSummary() {
+    return false;
 }
 
 function generationSuppressed(settings, args) {

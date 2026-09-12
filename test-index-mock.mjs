@@ -72,10 +72,11 @@ assert.equal(diag.current_state_depth,1);
 const start=prompts.length;
 await globalThis.aetheriaUnifiedMemoryV54Interceptor(coreChat, 8192, () => {}, 'quiet');
 const clears=prompts.slice(start);
-for(const key of ['aetheria_unified_memory_v5_4','aetheria_unified_memory_v5_4_reference','aetheria_unified_memory_v5_4_current_state']){
+for(const key of ['aetheria_unified_memory_v5_4_reference','aetheria_unified_memory_v5_4_current_state']){
   const row=clears.find(x=>x[0]===key);
   assert.ok(row,`quiet must clear ${key}`);
   assert.equal(row[1],'');
 }
+assert.equal(clears.find(x=>x[0]==='aetheria_unified_memory_v5_4'),undefined,'the legacy key is no longer registered: a third range is a generation failure');
 
 console.log('PASS Commit F interceptor uses dual prompt keys/depths, preserves chat, and clears on quiet');

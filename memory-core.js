@@ -1021,11 +1021,65 @@ function memorySearchText(memory) {
     return [memory?.text, ...(memory?.entities || []), ...(memory?.topics || [])].filter(Boolean).join(' ');
 }
 
-function exactEntityMatches(query, memory) {
+/**
+ * Names that contain one another, grouped into MATCHING families. Identity is left alone.
+ *
+ * Measured on the live 51-floor chat: a turn that says 井台 finds nothing tagged 井水样瓶, because entity
+ * matching was exact substring containment. The names form containment families - 井 / 井台 / 井水 / 井巷 /
+ * 井水样瓶, 弥拉 / 弥拉的手札 - and those families are NOT co-reference: the biggest one holds a port city,
+ * its slum district, an alley, a well platform, the water, a sample bottle, a shop and a shopkeeper.
+ *
+ * So this is deliberately not a canonicalisation and must never reach the entity registry. The registry's
+ * exact-match rule is correct for identity - holders, discriminators, known_by - and relaxing it would
+ * merge a city with a water bottle. What the families are for is the opposite direction: given that a
+ * turn mentioned one member, a memory tagged with another is worth looking at. Matching gets permissive;
+ * identity stays strict.
+ *
+ * Two rules keep the grouping from collapsing into one blob. A name links two others only when it is a
+ * PREFIX or a SUFFIX of them, never a mid-string coincidence - otherwise a particle like 的 would join
+ * everything that happens to contain it. And a single-character name may link but is never itself a
+ * member, because one character is contained in too much to be evidence on its own.
+ */
+export function entityMatchFamilies(namesInput) {
+    const all = [...new Set((Array.isArray(namesInput) ? namesInput : [])
+        .map(name => normalizeHybridText(String(name ?? '')).replace(/\s+/g, ''))
+        .filter(Boolean))].sort((a, b) => a.length - b.length);
+    const parent = new Map(all.map(name => [name, name]));
+    const find = name => { let root = name; while (parent.get(root) !== root) root = parent.get(root); return root; };
+    for (let i = 0; i < all.length; i += 1) {
+        for (let j = i + 1; j < all.length; j += 1) {
+            if (all[i] === all[j]) continue;
+            if (!all[j].startsWith(all[i]) && !all[j].endsWith(all[i])) continue;
+            const a = find(all[i]);
+            const b = find(all[j]);
+            if (a !== b) parent.set(b, a);
+        }
+    }
+    const groups = new Map();
+    for (const name of all) {
+        if (name.length < 2) continue;
+        const root = find(name);
+        if (!groups.has(root)) groups.set(root, []);
+        groups.get(root).push(name);
+    }
+    const out = new Map();
+    for (const members of groups.values()) {
+        if (members.length < 2) continue;
+        for (const name of members) out.set(name, members);
+    }
+    return out;
+}
+function exactEntityMatches(query, memory, families = null) {
     const q = normalizeHybridText(query).replace(/\s+/g, '');
     return uniqueStrings(memory?.entities).filter(entity => {
         const e = normalizeHybridText(entity).replace(/\s+/g, '');
-        return e.length >= 2 && q.includes(e);
+        if (e.length >= 2 && q.includes(e)) return true;
+        // Nothing matched by name. Before giving up, look at the entity's containment family: the turn may
+        // have named the well platform while this memory is tagged with the sample bottle.
+        if (!families) return false;
+        const family = families.get(e);
+        if (!family) return false;
+        return family.some(member => member !== e && q.includes(member));
     });
 }
 
@@ -1046,6 +1100,9 @@ export function lexicalSearchMemories(storeInput, queryText, options = {}) {
     if (!docs.length) return [];
     const queryTokens = tokenizeHybridText(queryText);
     if (!queryTokens.length) return [];
+    // Built once per search from the store's own vocabulary. A matching aid only - see entityMatchFamilies
+    // - and it never reaches the entity registry.
+    const families = entityMatchFamilies(docs.flatMap(memory => uniqueStrings(memory?.entities)));
     const qtf = countTokens(queryTokens);
     const tokenized = docs.map(memory => {
         const tokens = tokenizeHybridText(memorySearchText(memory));
@@ -1069,7 +1126,7 @@ export function lexicalSearchMemories(storeInput, queryText, options = {}) {
             const denom = tf + k1 * (1 - b + b * doc.length / Math.max(1, avgLen));
             score += idf * (tf * (k1 + 1) / denom) * Math.min(2, qCount);
         }
-        const entityMatches = exactEntityMatches(queryText, doc.memory);
+        const entityMatches = exactEntityMatches(queryText, doc.memory, families);
         if (entityMatches.length) score += 3.2 + Math.min(3, entityMatches.length - 1) * 0.8;
         const qNorm = normalizeHybridText(queryText);
         const topicMatches = uniqueStrings(doc.memory.topics).filter(t => {

@@ -21,10 +21,12 @@ const disabledCtx = {
 };
 assert.equal((await processSummaryHierarchy(disabledCtx)).skipped, 'disabled');
 assert.equal(modelCalls, 0);
-refreshSummaryPrompt(disabledCtx);
-assert.equal(prompts.at(-1)[0], 'aetheria_unified_memory_v5_5_hierarchical_summary');
-assert.equal(prompts.at(-1)[1], '');
-assert.equal(prompts.at(-1)[3], 0);
+// The standalone summary prompt no longer exists: the summary is injected into the reference block, and
+// registering the key with an empty value still costs a projection range the host does not have. Writing
+// it on every generation was the third range, and every generation failed because of it.
+const promptCountBefore = prompts.length;
+assert.equal(refreshSummaryPrompt(disabledCtx), false, 'refreshSummaryPrompt is a no-op now');
+assert.equal(prompts.length, promptCountBefore, 'and it registers no prompt at all');
 const privacyCtx = {
   name2: 'Bob',
   extensionSettings: { aetheriaUnifiedMemoryV54: { enabled: true, hierarchical_summary_enabled: true, summary_max_context_chars: 6000 } },

@@ -89,7 +89,6 @@ const SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
 const LEGACY_SETTINGS_KEYS = ['aetheriaUnifiedMemoryV53', 'aetheriaUnifiedMemoryV52', 'aetheriaUnifiedMemoryV51'];
 const LEGACY_METADATA_KEYS = ['aetheriaUnifiedMemoryV53', 'aetheriaUnifiedMemoryV52', 'aetheriaUnifiedMemoryV51'];
-const LEGACY_PROMPT_KEY = 'aetheria_unified_memory_v5_4';
 const REFERENCE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_reference';
 const CURRENT_STATE_PROMPT_KEY = 'aetheria_unified_memory_v5_4_current_state';
 const INTERCEPTOR_NAME = 'aetheriaUnifiedMemoryV54Interceptor';
@@ -236,7 +235,6 @@ const DEFAULT_SETTINGS = Object.freeze({
     mmr_lambda: 0.78,
     recall_cooldown_turns: 4,
     vector_settle_messages: 0,
-    max_memory_context_chars: 7000,
     include_evidence: true,
     injection_depth: 4,
     max_active_items: 12,
@@ -2705,7 +2703,10 @@ async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
 function clearInjectedPrompts(ctx, settings, { includeLegacy = true } = {}) {
     const referenceDepth = normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth);
     const currentDepth = normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth);
-    if (includeLegacy) ctx.setExtensionPrompt(LEGACY_PROMPT_KEY, '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
+    // LEGACY_PROMPT_KEY is deliberately NOT cleared here. The host refuses a projection with more than two
+    // ranges and an empty extension prompt still counts as one, so clearing a key that no longer exists
+    // costs the range the real blocks need. The v5.4 single-block key has not been written by any code
+    // path for several versions, and nothing persists it across sessions.
     ctx.setExtensionPrompt(REFERENCE_PROMPT_KEY, '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
     ctx.setExtensionPrompt(CURRENT_STATE_PROMPT_KEY, '', IN_CHAT, currentDepth, false, SYSTEM_ROLE);
 }
@@ -3355,8 +3356,15 @@ async function startup() {
     if (!ctx) return;
     const settings = getSettings(ctx);
     getSettingStore(ctx);
-    // In-place upgrade safety: the old single-block key must not coexist with Commit F prompts.
-    ctx.setExtensionPrompt?.(LEGACY_PROMPT_KEY, '', IN_CHAT, normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth), false, SYSTEM_ROLE);
+    // In-place upgrade safety, kept but made conditional. A v5.4 install may have left the single-block
+    // prompt populated, and leaving it would double the state. Clearing it unconditionally on every
+    // generation is what broke generation entirely: registering a key - even with an empty value - costs
+    // one of the two projection ranges the host allows, and the plugin needs both for the blocks that
+    // actually carry state. So this clears the legacy value only when there is one, once, at init.
+    const staleLegacy = ctx.extensionPrompts?.['aetheria_unified_memory_v5_4'];
+    if (staleLegacy && String(staleLegacy.value || '').trim()) {
+        ctx.setExtensionPrompt?.('aetheria_unified_memory_v5_4', '', IN_CHAT, normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth), false, SYSTEM_ROLE);
+    }
     registerEvents();
     await setupUi();
     // v5.2/v5.1 canonical metadata migrates automatically; old inline <memory_ops> are replayed once.

@@ -136,7 +136,19 @@ export function lengthCertificate(store, { projection = '', actor = null, cases 
         tokens: estimateTokens(text),
         chars: text.length,
         memories: { total: list.length, live: live.length },
-        state: { total: liveSlots.length, reachable: liveSlots.length - omitted.length, omitted: omitted.map(m => m.id), rate: rate(liveSlots.length - omitted.length, liveSlots.length) },
+        // Sufficiency is a claim about SLOT-BEARING memories, not about the store. On the 51-floor chat
+        // that is 197 of 217 active memories, and on shorter chats it has been as few as 12 of 73. The
+        // number was read as global - "state 12/12" sounds like a clean bill for the store - so the scope
+        // travels with it now, and the summary line says "slots" rather than leaving it to be inferred.
+        state: {
+            total: liveSlots.length,
+            reachable: liveSlots.length - omitted.length,
+            omitted: omitted.map(m => m.id),
+            rate: rate(liveSlots.length - omitted.length, liveSlots.length),
+            scope: 'live-slot-memories',
+            active_memories: live.length,
+            covers_active_rate: rate(liveSlots.length, live.length),
+        },
         soundness: { violations: staleRendered.length, ids: staleRendered, clean: staleRendered.length === 0 },
         commitment: { total: protectedRows.length, retained: protectedRows.length - commitmentMissing.length, missing: commitmentMissing.map(m => m.id), rate: rate(protectedRows.length - commitmentMissing.length, protectedRows.length) },
         epistemic: {
@@ -170,7 +182,7 @@ export function formatCertificate(row) {
     return [
         'certificate v' + row.version,
         'tokens=' + row.tokens,
-        'state=' + row.state.reachable + '/' + row.state.total + ' (' + pct(row.state.rate) + ')',
+        'state=' + row.state.reachable + '/' + row.state.total + ' slots (' + pct(row.state.rate) + ')',
         'stale=' + row.soundness.violations,
         'commitment=' + row.commitment.retained + '/' + row.commitment.total + ' (' + pct(row.commitment.rate) + ')',
         'leak=' + (row.epistemic.checkable ? row.epistemic.leaks + '/' + row.epistemic.checkable : 'not-checked'),
