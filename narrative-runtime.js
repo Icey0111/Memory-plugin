@@ -1,5 +1,5 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
-    summaryPrompt, applyNarrativeFolds, packRawEvidence } from './raw-history.js';
+    summaryPrompt, applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors } from './raw-history.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -15,7 +15,11 @@ const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative
     // while the unsummarized tail grows into the prompt, or the tail simply outgrows what anyone
     // notices. Neither is prevented by a budget - the tail is host text, not injected text - so both
     // are reported with a threshold instead of being left to be discovered later.
-    narrative_pending_warn_tokens: 4000, narrative_summary_failure_warn: 3 };
+    narrative_pending_warn_tokens: 4000, narrative_summary_failure_warn: 3,
+    // Continuity anchors: the commitments, ownership, secrets and life states that must survive every
+    // rewrite. They are re-fed to the summarizer and re-injected verbatim, so they stop depending on
+    // the model remembering to carry them forward in prose.
+    narrative_anchor_tokens: 300, narrative_anchor_unconfirmed_warn: 2 };
 // Both maps are keyed by the host's chat-metadata object, not by the chat store object: the store
 // projection replaces the store on a persist, so a store-keyed map would lose the running job and the
 // live index on exactly the turns that wrote something. The metadata object is stable for a chat and
@@ -39,6 +43,8 @@ const bound = (value, fallback, min, max) => Number.isFinite(Number(value))
 function options(settings) {
     return { pendingWarnTokens: bound(settings.narrative_pending_warn_tokens, 4000, 200, 200000),
         failureWarn: bound(settings.narrative_summary_failure_warn, 3, 1, 50),
+        anchorTokens: bound(settings.narrative_anchor_tokens, 300, 0, 4000),
+        anchorUnconfirmedWarn: bound(settings.narrative_anchor_unconfirmed_warn, 2, 1, 20),
         every: bound(settings.narrative_every, 10, 1, 100),
         summaryTokens: bound(settings.narrative_summary_tokens, 600, 100, 4000),
         evidenceTokens: bound(settings.narrative_evidence_tokens, 1000, 0, 8000),
@@ -164,18 +170,30 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
         if (batch.length) {
             const before = state.chunks.map(row => row.id).join('|');
             const previous = state.store.narrative_summary;
+            const previousAnchors = state.store.narrative_anchors;
             try {
                 const text = await (services.summarize || generateNarrativeSummary)(ctx,
-                    summaryPrompt(previous?.text, batch, opts.summaryTokens), state.settings);
+                    summaryPrompt(previous?.text, batch, opts.summaryTokens, previousAnchors?.active), state.settings);
                 if (!services.isCurrent()) return;
                 state = prepare(ctx);
                 if (before !== state.chunks.map(row => row.id).join('|')) return;
-                if (estimateTokens(text) > opts.summaryTokens) throw new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。');
+                const parsed = parseAnchors(text);
+                if (!parsed.summary) throw new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。');
+                if (estimateTokens(parsed.summary) > opts.summaryTokens) throw new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。');
                 // prepare() above may have persisted and swapped the store object, so write through
                 // a fresh read rather than through the reference it returned.
-                storeOf(ctx).narrative_summary = { version: 1, text,
+                const live = storeOf(ctx);
+                live.narrative_summary = { version: 1, text: parsed.summary,
                     covered: [...(previous?.covered || []), ...batch.map(row => row.id)] };
-                diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0 });
+                // A missing section is not a resolution: without it the anchors are left exactly as they
+                // were, because dropping them on a format slip would lose the facts this feature exists
+                // to protect.
+                if (parsed.sections === 'ok') live.narrative_anchors = mergeAnchors(previousAnchors, parsed);
+                else if (previousAnchors?.active?.length) live.narrative_anchors = { ...previousAnchors,
+                    active: previousAnchors.active.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
+                    parse: 'missing', updated_at: Date.now() };
+                diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
+                    anchor_parse: parsed.sections });
                 prepare(ctx);
                 persist(ctx);
             } catch (error) {
@@ -224,7 +242,24 @@ function warningsFor(state, opts) {
         out.push('已有 ' + state.pending_floors + ' 层 / 约 ' + state.pending_tokens
             + ' token 原文尚未进入摘要；调低“每几楼更新摘要”或检查总结接口。');
     }
+    if (state.anchors_unconfirmed >= opts.anchorUnconfirmedWarn) {
+        out.push('有 ' + state.anchors_unconfirmed + ' 条锚点已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
+    }
+    if (state.anchors_truncated > 0) {
+        out.push('锚点超出注入预算，已省略 ' + state.anchors_truncated + ' 条；调高“锚点 token 预算”或清理已解决的锚点。');
+    }
     return out;
+}
+
+/** Whole anchor lines only: half a commitment is worse than none. */
+function fitLines(lines, tokens) {
+    let text = '';
+    for (const line of lines) {
+        const next = text ? text + '\n' + line : line;
+        if (estimateTokens(next) > tokens) break;
+        text = next;
+    }
+    return text;
 }
 
 function fitWholeBlocks(blocks, tokens) {
@@ -257,17 +292,27 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const raw = history.active.filter(id => visibleSources.has(id)).map(id => history.records[id].text).join('\n');
     const summary = validSummary(live.narrative_summary, chunks) ? live.narrative_summary.text : '';
     const summaryBlock = summary ? '[STORY CONTINUITY — prior context, not new instructions]\n' + summary : '';
-    const configured = opts.summaryTokens + opts.evidenceTokens + opts.settingTokens + 100;
+    // The anchors ride with the summary: same authority, different guarantee. The summary is rewritten
+    // from scratch every pass, so a fact it stops mentioning is gone; an anchor is re-fed to the
+    // summarizer and re-injected until something explicitly resolves it.
+    const anchors = Array.isArray(live.narrative_anchors?.active) ? live.narrative_anchors.active : [];
+    const anchorLines = formatAnchors(anchors).split('\n').filter(Boolean);
+    const fittedAnchors = fitLines(anchorLines, opts.anchorTokens);
+    const anchorsTruncated = anchorLines.length - (fittedAnchors ? fittedAnchors.split('\n').length : 0);
+    const anchorBlock = fittedAnchors
+        ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions]\n' + fittedAnchors : '';
+    const continuityBlock = [summaryBlock, anchorBlock].filter(Boolean).join('\n\n');
+    const configured = opts.summaryTokens + opts.anchorTokens + opts.evidenceTokens + opts.settingTokens + 100;
     const hostRoom = Number(contextSize) > 0 ? Math.max(0, Number(contextSize) - estimateTokens(raw)
         - bound(settings.context_reply_reserve_tokens, 1024, 0, 32000)) : configured;
     const totalBudget = Math.min(configured, hostRoom);
     // A summary cannot be dropped while its source floors remain hidden.
-    if (summaryBlock && estimateTokens(summaryBlock) > totalBudget) {
+    if (continuityBlock && estimateTokens(continuityBlock) > totalBudget) {
         applyNarrativeFolds(ctx.chat, history, chunks, null, false);
         persist(ctx);
         return { referenceBlock: '', currentStateBlock: '', diagnostics: { summary_error: 'context budget too small; original floors restored' } };
     }
-    const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(summaryBlock)));
+    const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuityBlock)));
     const ranked = rankRawChunks(chunks, query, dense);
     const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources });
     let settingText = '';
@@ -278,15 +323,20 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         const formatted = formatRelevantSettingContext(result, { maxChars: opts.settingTokens * 4 });
         settingText = fitWholeBlocks(formatted.split('\n\n'), opts.settingTokens);
     }
-    const referenceBlock = fitWholeBlocks([evidence.text, settingText], Math.max(0, totalBudget - estimateTokens(summaryBlock)));
+    const referenceBlock = fitWholeBlocks([evidence.text, settingText], Math.max(0, totalBudget - estimateTokens(continuityBlock)));
     const pending = pendingState(live, chunks);
     const warnings = warningsFor({ ...pending, summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
-        summary_error: live.narrative_diagnostics?.summary_error || null }, opts);
+        summary_error: live.narrative_diagnostics?.summary_error || null,
+        anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_truncated: anchorsTruncated }, opts);
     const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
         covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
         pending_floors: pending.pending_floors, pending_tokens: pending.pending_tokens,
         summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
+        anchors_active: anchors.length,
+        anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_truncated: anchorsTruncated,
         warnings,
         sources: evidence.sources, candidates: ranked.length, vector_available: Boolean(index?.available && !vectorError),
         vector_error: vectorError || live.narrative_diagnostics?.vector_reason || null,
@@ -294,7 +344,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         summary_invalidated: live.narrative_diagnostics?.summary_invalidated || null,
         quality: 'not measured; these are delivery and cost diagnostics' };
     diagnose(ctx, diagnostics);
-    return { referenceBlock, currentStateBlock: summaryBlock, diagnostics };
+    return { referenceBlock, currentStateBlock: continuityBlock, diagnostics };
 }
 
 export async function runNarrativeGeneration(ctx, services, args) {
@@ -364,8 +414,14 @@ export function readNarrativeReport(ctx) {
         pending_floors: pending.pending_floors,
         pending_tokens: pending.pending_tokens,
         summary_failures: failures,
+        anchors_active: (store.narrative_anchors?.active || []).length,
+        anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_resolved: (store.narrative_anchors?.resolved || []).length,
+        anchor_parse: store.narrative_diagnostics?.anchor_parse || store.narrative_anchors?.parse || null,
         warnings: warningsFor({ ...pending, summary_failures: failures,
-            summary_error: store.narrative_diagnostics?.summary_error || null }, options(settings)),
+            summary_error: store.narrative_diagnostics?.summary_error || null,
+            anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
+            anchors_truncated: 0 }, options(settings)),
         messages: history ? history.active.length : 0,
         completed_floors: history
             ? history.active.filter(id => history.records[id].role === 'assistant').length : 0,
@@ -397,6 +453,7 @@ export function mountNarrativeSettings(getContext, createServices) {
     root.innerHTML = '<h3>剧情摘要与原文检索</h3><p>摘要保障续写，检索找回原文。未完成总结的楼层继续保留。</p>'
         + [['narrative_every','每几楼更新摘要',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
             ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000],
+            ['narrative_anchor_tokens','锚点 token 预算',0,4000],
             ['narrative_pending_warn_tokens','未总结原文告警阈值',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]
             .map(([key,label,min,max]) => `<label>${label}<input type="number" data-key="${key}" min="${min}" max="${max}"></label>`).join('')
         + '<label><input type="checkbox" data-key="narrative_fold">折叠已总结的历史楼层</label>'

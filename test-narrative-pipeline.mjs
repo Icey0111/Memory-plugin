@@ -321,4 +321,62 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.deepEqual(readNarrativeReport(quiet.ctx).warnings, [], 'a threshold above the tail stays quiet');
 }
 
+// --- 12. continuity anchors survive rewrites, and silence is not a resolution ---------------------
+{
+    const PROSE = '局面：主角在大厅与管家交谈。';
+    const replies = [
+        PROSE + '\n【锚点】\n- 承诺 | 林舟答应苏晚不把钥匙的事说出去\n- 秘密 | 钥匙来自林舟\n【已解决】\n无',
+        PROSE + '\n【锚点】\n- 承诺 | 林舟答应苏晚不把钥匙的事说出去\n- 秘密 | 钥匙来自林舟\n- 所有权 | 钥匙现在在苏晚手里\n【已解决】\n无',
+        PROSE + '\n【锚点】\n- 秘密 | 钥匙来自林舟\n- 所有权 | 钥匙现在在苏晚手里\n【已解决】\n- 承诺 | 林舟答应苏晚不把钥匙的事说出去',
+        PROSE,   // the model stops emitting the sections altogether
+    ];
+    const prompts = [];
+    let call = 0;
+    const host = makeHost(12, { summarize: async (ctx, prompt) => { prompts.push(prompt); return replies[Math.min(call++, replies.length - 1)]; } });
+    const { ctx, services } = host;
+    const addFloor = n => {
+        host.chat.push({ name: 'User', is_user: true, mes: '第' + n + '层：主角走回大厅。' });
+        host.chat.push({ name: 'Seraphina', is_user: false, mes: '第' + n + '层：管家把钥匙递过来。' });
+    };
+
+    await updateNarrative(ctx, services, { force: true });
+    let report = readNarrativeReport(ctx);
+    assert.equal(report.anchors_active, 2, 'the anchors the summarizer listed are recorded');
+    assert.match(prompts[0], /【当前锚点】/, 'the summarizer is given the anchors it must carry forward');
+
+    addFloor(13); addFloor(14);
+    await updateNarrative(ctx, services, { force: true });
+    report = readNarrativeReport(ctx);
+    assert.equal(report.anchors_active, 3, 'a new anchor is added while the others carry forward');
+    assert.match(prompts[1], /林舟答应苏晚不把钥匙的事说出去/, 'and the carrying list is fed back verbatim');
+
+    const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
+    assert.match(bundle.currentStateBlock, /BINDING CONTINUITY ANCHORS/,
+        'anchors are injected with the summary, not left to the prose');
+    assert.match(bundle.currentStateBlock, /\[承诺\] 林舟答应苏晚不把钥匙的事说出去/);
+
+    addFloor(15); addFloor(16);
+    await updateNarrative(ctx, services, { force: true });
+    report = readNarrativeReport(ctx);
+    assert.equal(report.anchors_active, 2, 'an explicitly resolved anchor leaves the active list');
+    assert.equal(report.anchors_resolved, 1, 'and is recorded as resolved rather than forgotten');
+
+    addFloor(17); addFloor(18);
+    await updateNarrative(ctx, services, { force: true });
+    report = readNarrativeReport(ctx);
+    assert.equal(report.anchor_parse, 'missing', 'the format slip is recorded');
+    assert.equal(report.anchors_active, 2, 'a missing section changes nothing: silence is not a resolution');
+    assert.equal(report.warnings.some(text => /锚点已连续多轮/.test(text)), true,
+        'but the anchors the model stopped repeating are announced');
+
+    // The injection budget is separate from the summary budget, and it never sends half a line.
+    const tight = makeHost(12, { settings: { narrative_anchor_tokens: 0 },
+        summarize: async () => replies[1] });
+    await updateNarrative(tight.ctx, tight.services, { force: true });
+    const clipped = await buildNarrativeContext(tight.ctx, tight.services, { contextSize: 32768 });
+    assert.doesNotMatch(clipped.currentStateBlock, /\[承诺\]/, 'no anchor is injected without budget for it');
+    assert.equal(clipped.diagnostics.anchors_truncated, 3, 'and the omission is counted');
+    assert.equal(clipped.diagnostics.warnings.some(text => /锚点超出注入预算/.test(text)), true);
+}
+
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');
