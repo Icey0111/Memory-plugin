@@ -358,4 +358,66 @@ quietly fixed.)
 The stop-doing list, the cost rule (**no per-turn model call; no model output may mean "do not retrieve"**),
 B1/B2, and the verification discipline: measure on the real app, and write down the corrections.
 
+<!-- VERSION 5 -->
+## v5 - 2026-09-12 06:45:00 - the trim now removes the least consequential memory, and the weight table is the open question
+
+Measurements and the negative result are in `21_memory_thesis.md` v5.
+
+### Shipped — the state block is emitted in canonical priority order
+
+**Done, tested, verified live.** `buildCurrentStateBlock` no longer assembles fixed topical groups in a
+fixed order. It emits every live memory in **non-increasing canonical weight** and changes the heading when
+the group does, so the tail trim removes the least consequential memory instead of whichever group happened
+to be written last.
+
+The two were the same bug: the old `Active conditions / relations / ownership` group held `state` (weight
+7), `relation`/`ownership` (4) and `belief` (2) together, and **a group that spans three weight bands
+cannot be emitted in weight order at all.** So the group was split into `Current state`,
+`Relations / ownership` and `Beliefs / expectations`.
+
+Verified live on the 51-floor chat: knowledge rendered **0/46 → 46/46** at the ceiling and 1/46 → 32/46 at a
+20,000 cap; commitments **13/13 at the default cap**; `tcausal` **16/40 → 32/40**. The missing set is now
+exactly the two lowest-weight kinds.
+
+### C1's target is unchanged, and now correctly located
+
+Deterministic text compression was sized before anything was built, and it does not reach 56%:
+
+| strategy | chars for 197 rows | saving |
+|---|---|---|
+| today | 27,983 | - |
+| hoist the shared slot prefix | 25,483 | 9% |
+| + collapse near-duplicate texts | 25,483 | **0%** |
+
+There are no near-duplicates to collapse. So **C1 stays at 56% and stays on the critical path**, but the
+honest statement of what it is has changed: it is not "make the state fit", it is "carry more of the state in
+the same budget". The ordering fix does not shrink the gap; it decides what falls in.
+
+### A design rejected on evidence
+
+v4's own framing suggested splitting `belief`/`knowledge` (111 rows, 61% of the full render) out of the
+always-on block. Measured, their entities are re-mentioned **more** often than the core kinds' (0.55 vs
+0.44), so the split would have been a preference dressed as a design. **Closed.**
+
+### Promoted — the weight table is now the first thing to validate
+
+`CANONICAL_KIND_WEIGHT` used to break ties inside a fixed group order. It now fully determines what
+survives, and two entries look wrong:
+
+- **`world_delta` (weight 1) is never rendered at any budget**, and one of the four is an ongoing threat
+  ("Shadowfang still remembers the player's scent"). That is not the least consequential thing in the store.
+- **`belief` (weight 2) is effectively never rendered** (2 of 65 at the default cap) despite having the
+  highest measured reuse rate.
+
+**New work item, ahead of further compression: D7 - validate the weight table.** The inputs a measurement can
+supply are now all in hand - reuse rate, dormancy (median floors until reuse), irreversibility rank, and the
+certificate's per-kind effect - and none of them was available when the current numbers were chosen. The
+ordering fix is correct whatever the table says; the table is what to argue about.
+
+### Unchanged
+
+The stop-doing list, the cost rule, B1/B2, C1's 56% target, A3's narrowing to the named-thing lookup, and the
+verification discipline: measure on the real app, and write down the corrections.
+
+
 

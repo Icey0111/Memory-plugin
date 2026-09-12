@@ -504,4 +504,129 @@ gate's remaining honest scope is the narrow named-thing lookup, which still has 
 and on this evidence it will only do so when the target is *small*, which the certificate's binary sufficiency
 definition can never produce.
 
+<!-- VERSION 5 -->
+## v5 - 2026-09-12 06:45:00 - the block was spending its whole budget on beliefs and never rendering knowledge
+
+v4 established that the state block is 65% short at 51 floors and that no ranking fixes a capacity problem.
+This version found why the shortfall lands where it does, and fixed it. Measurements on the same 51-floor
+chat (101 rows, 217 live memories, 197 slot-bearing). Probes: `expr-c1-profile.js`,
+`expr-c1-strategies.js`, `expr-c1-reuse.js`, `expr-c1-coverage.js`, `expr-c1-missing.js`,
+`expr-c1-bykind.js`, `expr-c1-order.js`.
+
+### Three compression strategies were sized, and two of them do not exist
+
+Before touching anything, what could deterministic compression actually save?
+
+| strategy | chars for 197 rows | saving |
+|---|---|---|
+| S0 today's one-row-per-memory render | 27,983 | - |
+| S1 prefix tree (hoist the shared dotted slot prefix) | 25,483 | **9%** |
+| S2 S1 + collapse near-duplicate texts | 25,483 | **0%** |
+
+**S2 saved nothing: no two of the 197 memory texts are 80% token-contained in one another.** The store is
+not bloated with restatements. And the prefix tree is only 9%, because a slot is `owner.category.name` and
+the third segment is unique per memory - the repeated part is the leading owner, about 12 characters a row.
+
+**Text compression cannot reach the 56% the capacity gap needs**, and these are the numbers that say so. The
+remaining lever is not compression at all, it is *ordering*, which the next section found.
+
+### The defect: the block renders every live memory and cuts the tail, and the tail was arbitrary
+
+The block is capped at 20,000 characters by `clampInteger` regardless of the setting (a 40,000 setting is
+silently clamped, which is why v4's sweep appeared to plateau). At that ceiling it rendered 129 of 197 slot
+values. The 68 that never rendered were **not** a budget effect - they were a group that sat past the cut,
+because the block emitted fixed topical groups in a fixed order:
+
+> locations → present → conditions → commitments → knowledge → other
+
+and `Active conditions / relations / ownership` was a **125-row grab-bag spanning canonical weights 7 down
+to 2** (`state` 7, `relation`/`ownership` 4, `belief` 2). Emitted third, it consumed the entire budget by
+itself. Measured at the ceiling:
+
+| kind | weight | rendered before |
+|---|---|---|
+| knowledge | 3 | **0 of 46** |
+| world_delta | 1 | **0 of 4** |
+| commitment | 5 | 0 of 13 in its own group - alive only through the 24-slot Must-remember baseline |
+| intention | 6 | 3 of 9 |
+| belief | 2 | 52 of 65 - **emitted before any knowledge row could be reached** |
+
+**The block was spending its whole budget on the lowest-weight kind it contains and never reaching a
+higher-weight one.** That is the same failure the change-chain reservation fixed in v3, in a different
+place: content the certificate requires, placed last, cut first.
+
+### The fix, and it is an ordering fix
+
+Rows are emitted in **non-increasing canonical weight** and the heading changes as the group does, so the
+tail trim now removes the least consequential memory. For that to be possible at all the groups had to stop
+spanning weight bands, so `belief` and `relation`/`ownership` were split out of the old conditions group
+into `Beliefs / expectations` and `Relations / ownership`. A group that spans three bands cannot be emitted
+in weight order, which is why the coarse grouping and the wrong trim were the same bug.
+
+Measured after (slot values rendered, by kind):
+
+| kind | weight | total | @12000 | @16000 | @20000 | ceiling |
+|---|---|---|---|---|---|---|
+| state | 7 | 58 | 47 | **58** | **58** | 58 |
+| intention | 6 | 9 | 3 | **9** | **9** | 9 |
+| commitment | 5 | 13 | **13** | **13** | **13** | 13 |
+| relation / ownership | 4 | 2 | 2 | 2 | 2 | 2 |
+| knowledge | 3 | 46 | 1 | 6 | 32 | **46** |
+| belief | 2 | 65 | 2 | 2 | 2 | 6 |
+| world_delta | 1 | 4 | 0 | 0 | 0 | 0 |
+
+Every row is monotone in weight at every budget, which is the property that matters: a memory is never cut
+while a less consequential one is still rendered. **Commitments are 13/13 at the default cap** instead of
+surviving by accident through the baseline. **Knowledge goes from 0/46 to 46/46** at the ceiling and from
+1/46 to 32/46 at 20,000. And the certificate's `tcausal` **nearly doubles, 16/40 to 32/40** at the ceiling,
+because the causal questions needed rows that were never being rendered.
+
+Total coverage: **129/197 → 135/197** at the ceiling, 112 → 117 at 20,000.
+
+### A negative result that stopped a bad design
+
+Before ordering, the obvious move was to stop injecting accumulated knowledge at all: `belief` (65) and
+`knowledge` (46) are 111 of the 197 rows and **61% of the full render**, and they read as notes rather than
+situation. That split would have fit the budget comfortably - the remaining 86 rows need 10,144 characters
+against a 12,000 cap.
+
+**It is not supported by the data.** Re-mention rate, counting only entities that are not the ubiquitous
+cast, for each memory after the floor it came from:
+
+| kind | n | re-mentioned | never repeated | median floors until reuse |
+|---|---|---|---|---|
+| belief | 73 | **0.479** | 0.493 | 4 |
+| knowledge | 52 | **0.404** | 0.519 | 2 |
+| state | 64 | 0.297 | 0.359 | 5 |
+| commitment | 13 | **0.154** | **0.769** | **40** |
+
+**The "deferred" group is re-mentioned more often than the "core" group** (0.55 vs 0.44), so scoping them
+out would have been a preference dressed as a design. The table also shows why re-mention rate cannot be the
+policy: commitments have the *lowest* re-mention rate and the *longest* dormancy, and they are the most
+protected kind in the system. **A commitment is protected because of what it costs when it is silently lost,
+not because it is used often** - the asymmetry the whole design rests on, now measured rather than assumed.
+
+### The policy is now the weight table, and it was never validated
+
+Before this change the group order dominated and the weight table only broke ties. Now the table fully
+determines what survives, and two of its entries look wrong on inspection:
+
+- **`world_delta` at weight 1 is never rendered at any budget** - and one of the four is
+  `影牙.threat.tracking_player`, "Shadowfang still remembers the player's scent, so the road outside remains
+  dangerous". An ongoing threat is not the least consequential thing in the store.
+- **`belief` at weight 2 is effectively never rendered** (2 of 65 at the default cap), while its reuse rate
+  is the highest measured.
+
+This is recorded as the open question, not changed here: **the ordering fix is correct whatever the table
+says, and the table is now the thing to argue about.** Choosing weights is a policy decision that a
+measurement can inform - reuse rate, dormancy, irreversibility - but the current numbers are a first guess
+from before anyone could see their effect.
+
+### What this changes
+
+The capacity gap is unchanged at ~56%: this fix does not make the state fit, it makes the block **lose the
+right things** while it does not fit. C1's target stays. The weight table is promoted from an implementation
+detail to the **first thing to validate**, ahead of any further compression work.
+
+
 

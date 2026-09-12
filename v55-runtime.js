@@ -300,10 +300,27 @@ const CANONICAL_KIND_WEIGHT = Object.freeze({ state: 7, intention: 6, commitment
 export function orderCanonicalMemories(storeInput) {
     const store = storeInput && typeof storeInput === 'object' ? storeInput : {};
     const memories = Object.values(store.memories || {}).filter(memory => memory?.status === 'active' && clean(memory?.text));
-    memories.sort((a, b) => (CANONICAL_KIND_WEIGHT[b.kind] || 0) - (CANONICAL_KIND_WEIGHT[a.kind] || 0)
-        || Number(b.source_message ?? -1) - Number(a.source_message ?? -1)
-        || clean(a.id).localeCompare(clean(b.id)));
+    memories.sort(compareCanonicalMemories);
     return memories;
+}
+
+/**
+ * The canonical ordering, as a comparator over a list of memories rather than over a store.
+ *
+ * Exported because the current-state block has to trim from the bottom of this order and no other: it
+ * renders every live memory and cuts whatever does not fit, so "what is last" is "what is lost". It
+ * used to emit fixed topical groups instead, which is a different order entirely, and the difference
+ * was measured to cost the whole of two kinds (see buildCurrentStateBlock). Both callers share this
+ * comparator rather than each keeping a copy, because a copy is how the two orders drift apart.
+ */
+export function canonicalKindWeight(kind) {
+    return CANONICAL_KIND_WEIGHT[kind] || 0;
+}
+
+export function compareCanonicalMemories(a, b) {
+    return (CANONICAL_KIND_WEIGHT[b?.kind] || 0) - (CANONICAL_KIND_WEIGHT[a?.kind] || 0)
+        || Number(b?.source_message ?? -1) - Number(a?.source_message ?? -1)
+        || clean(a?.id).localeCompare(clean(b?.id));
 }
 
 export function buildCanonicalState(storeInput, maxChars = 12_000) {

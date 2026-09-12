@@ -899,6 +899,111 @@ chat holding **224**; `chat-scan.mjs` decodes both shapes and reproduces the liv
 **Verification.** All numbers measured against the running app over CDP. `npm run check` clean, **79/79 test
 files pass**. No product code changed in this entry, so the live deployment is unchanged.
 
+---
+
+## 14. The state block was spending its entire budget on beliefs and never rendering knowledge
+
+### Problem / Requirement
+
+Entry 13 established that at 51 assistant floors the state block carries 69 of 197 slot values at the
+default cap and 129 of 197 at the 20,000-character ceiling the assembler clamps to. It did not ask **which**
+68 were missing, or why that particular 68. The answer was not a budget effect and it was not random.
+
+### Purpose of Change
+
+Find what the missing set actually is, size the deterministic compression strategies before building any of
+them, and fix the reason the block loses the wrong things while it cannot fit everything.
+
+### How It Was Changed
+
+**Measurement (zero model calls)**
+
+- [expr-c1-profile.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-profile.js) - the shape
+  of the 197 slot memories: kinds, owners, text lengths, ages.
+- [expr-c1-strategies.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-strategies.js) - four
+  compression strategies sized against the real store.
+- [expr-c1-reuse.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-reuse.js) - re-mention
+  rate and dormancy per kind, which is what rejected the scope split.
+- [expr-c1-order.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-order.js),
+  [expr-c1-missing.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-missing.js) - which rows
+  render, which headings appear, and which memories the projection cannot reach.
+- [expr-c1-coverage.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-coverage.js),
+  [expr-c1-bykind.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-c1-bykind.js) - coverage and
+  cost against the cap, per kind.
+
+**Product code**
+
+- [context-assembler.js L303-L340](file:///D:/memory_plugin/context-assembler.js#L303) - the group function
+  split into weight bands, and the heading table.
+- [context-assembler.js L357-L400](file:///D:/memory_plugin/context-assembler.js#L357) -
+  `buildCurrentStateBlock` emits rows in canonical priority order with the heading changing on group change,
+  replacing the six fixed `appendGroup` calls.
+- [v55-runtime.js L300-L325](file:///D:/memory_plugin/v55-runtime.js#L300) - `canonicalKindWeight` and
+  `compareCanonicalMemories` exported so the assembler shares the one comparator instead of copying it.
+- [test-v55-state-priority.mjs](file:///D:/memory_plugin/test-v55-state-priority.mjs) - new. Pins the
+  invariant that matters: across ten budgets, **a memory is never cut while a less consequential one is
+  still rendered**, plus the specific defect (a belief must never render while knowledge is cut).
+- [package.json](file:///D:/memory_plugin/package.json) - the new test registered in the `check` chain.
+
+**Documentation**
+
+- [dev_docs/21_memory_thesis.md L507](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L507) - v5.
+- [dev_docs/22_plan_after_compression.md L361](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L361) - v5.
+
+### Result
+
+**The missing 68 were a group that sat past the cut, not a budget effect.** The block emitted fixed topical
+groups in a fixed order - locations, present, conditions, commitments, knowledge, other - and
+`Active conditions / relations / ownership` was a **125-row grab-bag spanning canonical weights 7 down to
+2** (`state` 7, `relation`/`ownership` 4, `belief` 2). Emitted third, it consumed the whole budget by
+itself. At the ceiling: **knowledge 0 of 46 rendered, world_delta 0 of 4, commitments 0 of 13 in their own
+group** (alive only through the 24-slot Must-remember baseline), intentions 3 of 9 - and **52 of 65 beliefs
+rendered, ahead of every knowledge row.**
+
+**Text compression cannot close the gap, and this was sized before anything was built.** Hoisting the shared
+dotted slot prefix saves **9%**; collapsing near-duplicate texts saves **0%**, because no two of the 197
+texts are 80% token-contained in one another. The 56% that entry 13 measured is not reachable
+deterministically. The lever was never compression - it was ordering.
+
+**Ordering fixed, verified live.** Rows are emitted in non-increasing canonical weight, so the tail trim
+removes the least consequential memory. For that to be expressible the groups had to stop spanning weight
+bands, so `belief` and `relation`/`ownership` were split out of the old conditions group. Measured after,
+per kind:
+
+| kind | weight | total | @12000 | @16000 | @20000 | ceiling |
+|---|---|---|---|---|---|---|
+| state | 7 | 58 | 47 | **58** | **58** | 58 |
+| intention | 6 | 9 | 3 | **9** | **9** | 9 |
+| commitment | 5 | 13 | **13** | **13** | **13** | 13 |
+| knowledge | 3 | 46 | 1 | 6 | 32 | **46** |
+| belief | 2 | 65 | 2 | 2 | 2 | 6 |
+| world_delta | 1 | 4 | 0 | 0 | 0 | 0 |
+
+Knowledge goes from **0/46 to 46/46** at the ceiling, and the certificate's `tcausal` **nearly doubles,
+16/40 to 32/40**, because the causal questions needed rows that were never being rendered. Coverage at the
+ceiling rises 129/197 to 135/197 and at 20,000 from 112 to 117. `commitment` stays 15/15 at every cap.
+
+**A design was rejected on evidence.** Splitting `belief`/`knowledge` (111 rows, 61% of the full render) out
+of the always-on block would have fit the budget comfortably - the other 86 rows need 10,144 characters
+against a 12,000 cap. Measured, their entities are re-mentioned **more** often than the core kinds' (0.55 vs
+0.44), so it would have been a preference dressed as a design. It also produced the sharpest fact in this
+entry: **commitments have the lowest re-mention rate (0.154), the longest dormancy (median 40 floors) and the
+strongest protection** - which is the whole reason the design protects by irreversibility rather than by
+frequency, now measured instead of assumed.
+
+**Two defects found and one promoted.** The state cap is silently clamped at 20,000 characters regardless of
+the setting, which is why entry 13's sweep appeared to plateau - the 40,000 reading was the clamp plus the
+change chain, not the setting. And the weight table, which previously only broke ties, now **fully determines
+what survives**: `world_delta` at weight 1 is never rendered at any budget although one of the four is an
+ongoing threat, and `belief` at weight 2 is effectively never rendered despite the highest measured reuse
+rate. **D7 - validate the weight table - is promoted ahead of further compression work**, because the
+ordering fix is correct whatever the table says and the table is now the thing to argue about.
+
+**Verification.** `npm run check` clean, **80/80 test files pass** (was 79/79; the new priority test is the
+increment). Deployed with `node deploy-live.mjs --apply`, host reloaded, and every number above re-measured
+on the running app.
+
+
 
 
 
