@@ -111,7 +111,39 @@ export const KNOWLEDGE_SECTION = '【知情边界】';
 const SECTION_HEADS = [ANCHOR_SECTION, RESOLVED_SECTION, KNOWLEDGE_SECTION];
 /** The knowledge list is bounded: it is a prompt block, not a ledger. */
 export const MAX_KNOWLEDGE = 20;
-const anchorKey = item => (String(item.kind || '其他').trim() + '|' + String(item.text || '').trim()).normalize('NFKC');
+/**
+ * The identity of an anchor or a boundary, and the reason it is normalised twice.
+ *
+ * Measured on a live 40-floor run: the model wrote the same anchor as "- 身份 | ..." on one pass and
+ * "- [身份] ..." on the next, and the second form parsed as kind "其他" with the bracket left inside the
+ * text. The two spellings then coexisted, the list grew from 11 real entries to 19, and the panel warned
+ * that eight of them had "not been repeated" - because they were duplicates of the ones that had.
+ *
+ * So: the key strips a bracketed kind from the text, and ignores the knowledge state, which the model
+ * sometimes states and sometimes omits ("Seraphina | 知道 | X" and "[Seraphina] | X" are one boundary).
+ */
+const anchorKey = item => {
+    const kind = String(item.kind || '其他').trim();
+    const base = kind.includes('/') ? kind.split('/')[0] : kind;
+    return (base + '|' + String(item.text || '').trim()).normalize('NFKC');
+};
+const KIND_IN_TEXT = /^[\[【]([^\]】]{1,12})[\]】]\s*(.*)$/;
+const KNOWLEDGE_STATE = /^(知道|不知道|未知|知情|不知情)\s*[|｜:：]?\s*/;
+const normalizeEntry = (raw) => {
+    const body = String(raw || '').trim();
+    const parts = body.split(/[|｜]/).map(part => part.trim()).filter(Boolean);
+    let kind = parts.length >= 2 ? parts[0] : '其他';
+    let text = parts.length >= 2 ? parts.slice(1).join(' | ') : body;
+    kind = kind.replace(/^[\[【]/, '').replace(/[\]】]$/, '').trim() || '其他';
+    const inner = KIND_IN_TEXT.exec(text);
+    if (inner) { if (kind === '其他') kind = inner[1].trim() || '其他'; text = inner[2].trim(); }
+    const state = KNOWLEDGE_STATE.exec(text);
+    if (state && KNOWLEDGE_STATE.test(kind) === false && kind !== '其他') {
+        kind = kind + '/' + state[1];
+        text = text.slice(state[0].length).trim();
+    }
+    return { kind: kind.slice(0, 20), text: text.slice(0, 200) };
+};
 
 /**
  * Split a summary response into prose, still-binding anchors and explicitly resolved ones.
@@ -138,10 +170,7 @@ export function parseAnchors(text) {
         if (!bullet) continue;
         const body = bullet[1].trim();
         if (!body || body === '无' || body === '（无）' || body === 'none') continue;
-        const parts = body.split(/[|｜]/).map(part => part.trim()).filter(Boolean);
-        const item = parts.length >= 2
-            ? { kind: parts[0].slice(0, 12), text: parts.slice(1).join(' | ').slice(0, 200) }
-            : { kind: '其他', text: body.slice(0, 200) };
+        const item = normalizeEntry(body);
         if (!item.text) continue;
         if (section === ANCHOR_SECTION) anchors.push(item);
         else if (section === RESOLVED_SECTION) resolved.push(item);

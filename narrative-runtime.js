@@ -76,7 +76,10 @@ function quiet(settings, type) {
 }
 
 export async function generateNarrativeSummary(ctx, prompt, settings) {
-    const max = bound(settings.summary_max_tokens, 2048, 256, 8192);
+    // Measured on a live host: the completion endpoint was a reasoning model, and one summary call spent
+    // 5,798 tokens on reasoning before writing a word. At the old 2,048 default the content came back
+    // empty, silently: the summary simply never formed and the diagnostics said "No message generated".
+    const max = bound(settings.summary_max_tokens, 8192, 256, 16384);
     let result;
     settings.__narrative_summary_in_progress = true;
     settings.__quiet_extraction_in_progress = true;
@@ -101,7 +104,8 @@ export async function generateNarrativeSummary(ctx, prompt, settings) {
     const text = String(typeof result === 'string' ? result : result?.content || '').trim();
     if (!text || /^\[(?:API\s*(?:错误|error)|error|错误)\]/i.test(text)
         || (text.length < 800 && /rate limit|too many requests|quota exhausted|invalid api key|HTTP\s*[45]\d\d/i.test(text))) {
-        throw new Error('总结接口未返回有效摘要；未总结原文继续保留。');
+        throw new Error('总结接口没有返回正文（若模型是推理模型，token 预算可能被推理耗尽：'
+            + '请提高总结 token 预算，或为总结单独配置一个非推理连接）；未总结原文继续保留。');
     }
     recordModelCall(ctx, { kind: 'summary', promptText: prompt, completionText: text,
         promptChars: prompt.length, completionChars: text.length });
@@ -406,8 +410,11 @@ export function installNarrativeRuntime(getContext, createServices) {
         if (!current || narrativeSettings(current).__narrative_summary_in_progress) return;
         void updateNarrative(current, createServices(current)).then(() => {
             syncFloorFoldDom(current);
-            mountNarrativeSettings(getContext, createServices);
-        }).catch(error => { storeOf(current).narrative_diagnostics = { error: String(error.message || error) }; });
+            // A panel failure is a panel failure. It used to replace the whole diagnostics object, so a
+            // thrown prepend erased the delivery report the panel exists to show.
+            try { mountNarrativeSettings(getContext, createServices); }
+            catch (error) { diagnose(current, { panel_error: String(error.message || error) }); }
+        }).catch(error => { diagnose(current, { error: String(error.message || error) }); });
     };
     for (const name of ['CHAT_CHANGED', 'MESSAGE_RECEIVED', 'CHARACTER_MESSAGE_RENDERED', 'MESSAGE_EDITED', 'MESSAGE_SWIPED', 'MESSAGE_UPDATED', 'MESSAGE_DELETED']) {
         if (ctx.eventTypes?.[name]) ctx.eventSource?.on(ctx.eventTypes[name], schedule);
@@ -519,6 +526,11 @@ export function mountNarrativeSettings(getContext, createServices) {
         syncFloorFoldDom(current);
         root.querySelector('[data-key="narrative_fold"]').checked = false;
     });
+    // Mount first, then fill: a render that throws must not leave the panel unattached, and the append
+    // belongs to the function whose scope owns the parent element. It used to sit in the renderer, where
+    // the only 'parent' in scope is the browser's window.parent - so the panel never mounted and every
+    // scheduled pass threw "parent.prepend is not a function" (found by the live acceptance run).
+    parent.prepend(root);
     renderNarrativePanel(root, ctx);
     return true;
 }
@@ -532,5 +544,4 @@ function renderNarrativePanel(root, ctx) {
         warning.hidden = !report.warnings.length;
     }
     root.querySelector('[data-status]').textContent = JSON.stringify(report, null, 2);
-    parent.prepend(root);
 }

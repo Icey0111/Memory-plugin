@@ -11,7 +11,7 @@
 //   5. a background result that belongs to a chat the user has left is never written.
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
-    nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, formatAnchors,
+    nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE } from './raw-history.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
@@ -437,8 +437,8 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
     assert.match(bundle.currentStateBlock, /KNOWLEDGE BOUNDARIES/,
         'boundaries are injected as their own block, not left inside the prose');
-    assert.ok(bundle.currentStateBlock.includes('苏晚] 不知道 | 钥匙来自林舟'),
-        'including what a character must not act on');
+    assert.ok(bundle.currentStateBlock.includes('苏晚/不知道] 钥匙来自林舟'),
+        'including what a character must not act on, with the state in the label');
 
     // The format slips: the boundaries stay, and they are reported as unrepeated.
     reply = PROSE;
@@ -494,6 +494,30 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const resident = bundle.diagnostics.summary_tokens + bundle.diagnostics.anchors_active * 20;
     assert.ok(resident <= 900, 'the resident block stays inside its budget after ten rewrites: ' + resident);
     assert.equal(chat.filter(row => row.is_system === true).length > 0, true, 'and covered floors are still folded');
+}
+
+// --- 16. the same anchor spelled two ways is one anchor ------------------------------------------
+// Found on a live 40-floor run: the model wrote "- 身份 | ..." on one pass and "- [身份] ..." on the
+// next. The second parsed as kind "其他" with the bracket inside the text, so the two spellings
+// coexisted, the list grew from 11 real entries to 19, and the panel warned that eight anchors "had not
+// been repeated" - they were duplicates of the ones that had.
+{
+    const first = parseAnchors('局面。\n【锚点】\n- 身份 | Seraphina 自称森林守护者。\n【已解决】\n无');
+    const second = parseAnchors('局面。\n【锚点】\n- [身份] Seraphina 自称森林守护者。\n【已解决】\n无');
+    assert.deepEqual(first.anchors[0], second.anchors[0], 'both spellings parse to the same entry');
+    let state = mergeAnchors(undefined, first, 1);
+    state = mergeAnchors(state, second, 2);
+    assert.equal(state.active.length, 1, 'so a rewrite that changes the spelling does not duplicate it');
+    assert.equal(state.active[0].passes, 2, 'and it counts as confirmed twice, not as one unconfirmed');
+    assert.equal(state.active[0].unconfirmed, 0);
+
+    // A boundary the model states with and without its state word is also one boundary.
+    const withState = parseAnchors('局面。\n【知情边界】\n- 苏晚 | 不知道 | 钥匙来自林舟');
+    const without = parseAnchors('局面。\n【知情边界】\n- [苏晚] | 钥匙来自林舟');
+    let knowledge = mergeKnowledge(undefined, withState, 1);
+    knowledge = mergeKnowledge(knowledge, without, 2);
+    assert.equal(knowledge.entries.length, 1, 'the state word does not fork the boundary');
+    assert.equal(knowledge.entries[0].kind, '苏晚', 'the newest spelling wins the label');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

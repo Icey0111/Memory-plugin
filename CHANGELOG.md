@@ -55,6 +55,16 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- The settings panel now mounts. `parent.prepend` had been moved into the renderer, where the only
+  `parent` in scope is the browser's `window.parent`; the panel was never attached and every scheduled
+  pass threw, which then replaced the diagnostics with the error. Found by the live acceptance run.
+- The same continuity anchor spelled `- 身份 | ...` and `- [身份] ...` no longer becomes two anchors.
+  Measured on a 40-floor run: 11 real anchors were being stored as 19, and the panel warned that eight of
+  them had "not been repeated".
+- The background summary budgets for a reasoning model: 5,798 of 6,569 completion tokens in one measured
+  call went to reasoning, the body came back empty, and at the old 2,048 default the summary never
+  formed. The default is 8,192 and the empty-body error now names the cause (ADR-0013).
+
 - A summary that no longer matches the history (after an edit, a swipe, a delete or a branch change)
   is dropped and its floors are restored in the same call, instead of being injected as if current.
 - A background summary that finishes after the user has changed chats is discarded instead of being
