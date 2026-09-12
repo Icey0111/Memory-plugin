@@ -285,6 +285,22 @@ known names rather than the ones in the query drops the first row of that table 
 *ordering* is the same under both approximations and the shipped change is the one that costs nothing, but the
 absolute numbers move with the approximation and a live run is the confirmation.
 
+### Live confirmation of the query bound
+
+The host was reloaded and the same question asked again in the same chat. The packed evidence was
+`raw_37, raw_33, raw_39, raw_13, raw_31` - **`raw_37` is floor 18, the floor that describes the mushroom,
+which the original run did not quote**. 874 tokens, 45 candidates, reranker used. The fix holds end to end,
+including through the stage the offline harness cannot run.
+
+**The answer did not change**, and the reason matters more than the result. The reply repeats the earlier
+invented description - 暗红斑, 褶子白里带灰, 一拃高, 一丛三株 - and not floor 18's 褐斑, 顺着伞盖纹路排,
+像火烧过一道. The earlier wrong answer is now in the visible transcript and the character is being consistent
+with what she already said, which is the behaviour this whole document is trying to produce. The measurement
+is contaminated by its own subject; the answer-level effect needs a chat where the wrong answer is not already
+present, which means a fresh run of the same scenario rather than a second question in the same one.
+
+The two rows that test added to that chat are still there and can be deleted.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
