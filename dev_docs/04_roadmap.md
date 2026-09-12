@@ -301,6 +301,24 @@ present, which means a fresh run of the same scenario rather than a second quest
 
 The two rows that test added to that chat are still there and can be deleted.
 
+### A fresh chat with the same shape, and the answer holds
+
+The answer-level effect the contaminated confirmation could not test was measured in a new chat with the
+mushroom failure's structure: the thing is mentioned **vaguely on floor 2** ("墙上挂着一只旧潮标，铜的，早就
+停了。我没细看。"), **described on floor 7** (黄铜盘面, 指针停在四点一刻, 玻璃上一道裂从左上角斜到右下角,
+底座三行小字, 最下一行"庚子年重修"), folded by turn 11, and asked about naturally on turn 21: "墙上那只潮标，
+到底是什么样的？"
+
+At turn 21 the packed evidence is `raw_37, raw_16, raw_12, raw_6, raw_14` - **`raw_14` is the describing
+floor** - and the reply reproduces every detail: 黄铜, 四点一刻, 裂从左上角斜到右下角, 三行小字, 庚子年重修.
+Nothing is invented. Turn 22 then *uses* the recalled detail instead of repeating it: the crack holds salt
+rather than dust, the twelve notches are counting holes, and a faint vertical mark sits under the inscription.
+That is the split this project is built on, visible in one answer - the summary carried who these people are
+and what is unresolved, and the original text carried what the instrument looks like.
+
+Same shape as the failure, opposite outcome, 0 summary failures, and no earlier wrong answer in the context to
+be consistent with.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line
