@@ -353,15 +353,12 @@ const renderEvidenceLine = (row, start, end) => '[' + row.id + ':' + start + '-'
 // Budgeted submodular packing, from dev_docs/06_retrieval_research.md section 3B. Weights and alpha
 // are the paper settings; every component is divided by its value on the full candidate set so the
 // weights mean the same thing whatever the query looks like.
-// Measured on the 52-question set, sweeping budget and slots together: a slot whose share falls below
-// about 400 tokens cannot cover a merged message envelope, so the answer inside it is cut off, and a
-// share above about 500 buys nothing. Recall then rises with the number of slots - 63% at two, 69% at
-// four, 75% at six - and span precision falls the other way, 32% at two against 13% at six. The slot
-// count is therefore derived from the budget instead of fixed: one slot per 400 tokens, so raising the
-// evidence budget raises coverage rather than shrinking every share.
-// Re-measured after the fusion weight was corrected (ADR-0015): with the better ranking a third slot is
-// worth its share at a 1000-token budget, where the old 400-token floor allowed only two. Three slots at
-// 1000 measured 69% against two slots at 65%, and the floor that makes that true is about 333.
+// Measured on the 52-question set, sweeping budget and slots together: a slot whose share falls below a
+// few hundred tokens cannot cover a merged message envelope, so the answer inside it is cut off, and a
+// share above about 500 buys nothing. The slot count is therefore derived from the budget instead of
+// fixed, so raising the evidence budget raises coverage rather than shrinking every share. ADR-0014 set
+// the floor at 400 tokens; ADR-0015 re-measured it after correcting the fusion weight, because with the
+// better ranking a third slot earns its share at a 1000-token budget (69% against 65% for two).
 export const EVIDENCE_TOKENS_PER_SLOT = 333;
 export const EVIDENCE_SLOT_CAP = 6;
 
@@ -601,9 +598,9 @@ function fitEvidenceSpan(span, budget) {
  *    allowance, so a question whose answer ranked third was answered with the wrong text.
  * 3. **A span that still does not fit is trimmed toward its best-ranked part**, never skipped.
  *
- * The number of entries is the budget's, not a constant: see evidenceSlots. A share below about 400 tokens
- * cannot cover a merged message envelope, so a slot count fixed independently of the budget either starves
- * every share or leaves coverage the budget could have paid for.
+ * The number of entries is the budget's, not a constant: see evidenceSlots. A share below a few hundred
+ * tokens cannot cover a merged message envelope, so a slot count fixed independently of the budget either
+ * starves every share or leaves coverage the budget could have paid for.
  *
  * Three policies share those rules. greedy walks the ranking and gives every span an equal share, which
  * is the focused heuristic the retrieval research measures against. submodular spends the budget by the

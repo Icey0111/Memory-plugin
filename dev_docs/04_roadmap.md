@@ -320,7 +320,7 @@ What is left needs a live model, and it is the owner’s to run:
 | The ruler reports per-channel entropy and margin, the drop rule and the carrying slot, and compares two runs as paired questions | recall-baseline.mjs |
 | The lexical score is BM25: recall is unchanged and the probe set costs 18% fewer evidence tokens | raw-history.js, test-narrative-pipeline.mjs |
 | Budgeted submodular packing is implemented and measured; it loses the A/B, so it is not the default | dev_docs/06_retrieval_research.md, test-narrative-pipeline.mjs |
-| The evidence slot count derives from the evidence budget, one slot per 400 tokens (ADR-0014) | raw-history.js, test-narrative-pipeline.mjs |
+| The evidence slot count derives from the evidence budget, one slot per 333 tokens (ADR-0014, floor re-measured by ADR-0015) | raw-history.js, test-narrative-pipeline.mjs |
 | The dense A/B ran offline on the configured backend; the dense channel gets a weak vote (ADR-0015) | raw-history.js, recall-embed.mjs, dev_docs/06_retrieval_research.md |
 | Answer-in-context on the 52-question set went from 56% to 69% at 4% fewer evidence tokens | ADR-0015 |
 | Continuity anchors survive an arbitrary number of summary rewrites | ADR-0005, test-narrative-pipeline.mjs |

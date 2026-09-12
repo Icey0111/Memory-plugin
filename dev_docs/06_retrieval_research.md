@@ -834,6 +834,9 @@ that (63%, precision 20%, +3% tokens). Each repaired the defect it targeted and 
 because four slots of 250 tokens is the entire budget. They are recorded here so the next session does not
 re-derive them: within a fixed four-slot shape the allocation arithmetic has no room to matter.
 
+**Amended by section 13 and ADR-0015:** the 400-token floor above was measured with the weak ranking, and
+the floor is 333 now that the fusion weight is corrected.
+
 ### 13. The dense A/B, run on the configured backend (ADR-0015)
 
 Section 11 said layer 2 needed a configured backend. The host already had one - jina-embeddings-v5-text-small,
