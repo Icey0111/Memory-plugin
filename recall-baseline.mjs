@@ -12,6 +12,10 @@
 //     node recall-baseline.mjs                       # newest 5 chats under the default host path
 //     node recall-baseline.mjs <dir-or-file> [...]    # explicit chat files or directories
 //     node recall-baseline.mjs --limit 8 --probes 80
+//     node recall-baseline.mjs --scorer bm25 --pack submodular --paraphrases <file>
+//
+// The --scorer and --pack switches exist so a retrieval change can be attributed to the rule that
+// changed rather than to the version that shipped it: idf and greedy reproduce the old behaviour.
 //
 // Reading is all it does. Nothing is written, and the plugin is never loaded.
 
@@ -28,14 +32,27 @@ const flag = (name, fallback) => {
     const at = args.indexOf('--' + name);
     return at >= 0 ? Number(args[at + 1]) : fallback;
 };
+const word = (name, fallback) => {
+    const at = args.indexOf('--' + name);
+    return at >= 0 ? String(args[at + 1]) : fallback;
+};
 /** Positional arguments are chat paths; everything else is a flag or a flag's value. */
 const flagValues = new Set();
-args.forEach((value, index) => { if (['--limit', '--probes', '--paraphrases'].includes(value)) flagValues.add(index + 1); });
+args.forEach((value, index) => {
+    if (['--limit', '--probes', '--paraphrases', '--scorer', '--pack', '--dump', '--against'].includes(value)) {
+        flagValues.add(index + 1);
+    }
+});
 const targets = args.filter((value, index) => !value.startsWith('--') && !flagValues.has(index));
 const limit = flag('limit', 5);
 const probeBudget = flag('probes', 60);
-const paraphraseFlag = args.indexOf('--paraphrases');
-const paraphraseFile = paraphraseFlag >= 0 ? args[paraphraseFlag + 1] : null;
+const paraphraseFile = word('paraphrases', null);
+const dumpFile = word('dump', null);
+const againstFile = word('against', null);
+const SCORER = word('scorer', 'bm25') === 'idf' ? 'idf' : 'bm25';
+const PACK = word('pack', 'greedy');
+const POLICY = ['submodular', 'relevance'].includes(PACK) ? PACK : 'greedy';
+const EVIDENCE_TOKENS = 1000;
 
 /**
  * A question set written by hand against a real chat, in two kinds:
@@ -45,9 +62,13 @@ const paraphraseFile = paraphraseFlag >= 0 ? args[paraphraseFlag + 1] : null;
  *   oblique  - the question describes the situation without naming it. This is the case dense
  *              retrieval exists for, and the case the lexical generator cannot fake.
  *
- * Each entry is {question, needle}: the needle is the literal substring the answer has to carry. The
- * runner checks the needle's occurrence count first, because a needle that appears twice proves
- * nothing about which span was found.
+ * Each entry is {question, needle, kind, chat}: the needle is the literal substring the answer has to
+ * carry, and chat is optional. The runner checks the needle's occurrence count first, because a needle
+ * that appears twice proves nothing about which span was found.
+ *
+ * Naming a chat makes the check the right one rather than the strictest one: the needle only has to be
+ * unique in the chat that gets searched, and a second copy in some other chat says nothing about which
+ * span this one found. Entries without a chat keep the global check.
  */
 function loadParaphrases(file) {
     if (!file || !fs.existsSync(file)) return null;
@@ -55,7 +76,8 @@ function loadParaphrases(file) {
     const rows = raw.startsWith('[') ? JSON.parse(raw)
         : raw.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
     return rows.filter(row => row && row.question && row.needle)
-        .map(row => ({ question: String(row.question), needle: String(row.needle), kind: row.kind === 'oblique' ? 'oblique' : 'entity' }));
+        .map(row => ({ question: String(row.question), needle: String(row.needle),
+            kind: row.kind === 'oblique' ? 'oblique' : 'entity', chat: row.chat ? String(row.chat) : null }));
 }
 
 function defaultRoot() {
@@ -117,6 +139,68 @@ function probesFor(messages, budget) {
     return probes;
 }
 
+/**
+ * Entropy and margin of one score distribution.
+ *
+ * Entropy says how flat the distribution is: a vague question spreads its mass, a question naming one
+ * thing concentrates it. Margin says how far the leader is ahead of the runner-up. TARG's finding is
+ * that margin is the more discriminative of the two under instruction-tuned models, so both are
+ * recorded per question and reported for hits against misses.
+ *
+ * They are computed per channel, because the fused RRF distribution is nearly flat by construction -
+ * rank 0 scores 1/61 and rank 1 scores 1/62 - so its margin is 0.02 for every question. A rule that
+ * reads confidence has to read a channel that carries magnitude, not the fusion of it.
+ */
+function distributionSignals(scores) {
+    const values = scores.map(Number).filter(value => value > 0).sort((a, b) => b - a);
+    if (values.length < 2) return { entropy: null, margin: null };
+    const total = values.reduce((sum, value) => sum + value, 0);
+    const entropy = -values.reduce((sum, value) => { const p = value / total; return sum + p * Math.log(p); }, 0)
+        / Math.log(values.length);
+    return { entropy, margin: (values[0] - values[1]) / values[0] };
+}
+
+function rankingSignals(ranked) {
+    const lexical = distributionSignals(ranked.map(row => row.lexical));
+    const fused = distributionSignals(ranked.map(row => row.score));
+    return { candidates: ranked.length, entropy: lexical.entropy, margin: lexical.margin,
+        fusedEntropy: fused.entropy, fusedMargin: fused.margin };
+}
+
+/**
+ * Where the answer went.
+ *
+ * "The answer was never a candidate" and "the answer was a candidate and the budget kept the wrong
+ * four" are different defects with different fixes, so a measurement records which rule dropped it and
+ * which quoted slot carried it. The outcome comes from the packer's own trace, not from a guess made
+ * after the fact.
+ */
+function attribute(ranked, packed, needle, records, chunks) {
+    const rank = ranked.findIndex(entry => entry.chunk.text.includes(needle));
+    const chunk = rank >= 0 ? ranked[rank].chunk : null;
+    const spanOf = span => String(records[span.source]?.text || '').slice(span.start, span.end);
+    const row = { rank, slot: packed.sources.findIndex(span => spanOf(span).includes(needle)), found: false,
+        lexical: null, lexicalRank: null, drop: 'no_chunk_carries_it' };
+    row.found = row.slot >= 0;
+    // Three different failures: no chunk holds the needle at all (the needle straddles a chunk boundary,
+    // so the question is not measurable this way), a chunk holds it but scored nothing, or it was a
+    // candidate and the packing rules discarded it. Only the last two are retrieval defects.
+    if (!chunks.some(item => item.text.includes(needle))) return row;
+    row.drop = 'not_a_candidate';
+    if (!chunk) return row;
+    const entry = (packed.trace || []).find(item => item.chunks.includes(chunk.id));
+    row.drop = entry ? entry.outcome : 'out_of_scope';
+    if (row.drop === 'included' && !row.found) row.drop = 'trimmed_out';
+    row.lexical = ranked[rank].lexical ?? null;
+    const byLexical = ranked.filter(item => (item.lexical || 0) > 0)
+        .sort((a, b) => b.lexical - a.lexical || a.chunk.index - b.chunk.index);
+    const lexicalRank = byLexical.findIndex(item => item.chunk === chunk);
+    row.lexicalRank = lexicalRank >= 0 ? lexicalRank : null;
+    return row;
+}
+
+const fixed = (value, digits) => value === null || value === undefined ? ' n/a' : value.toFixed(digits);
+
 function measure(chat) {
     const { header, messages } = load(chat.file);
     const metadata = header.chat_metadata || {};
@@ -151,12 +235,17 @@ function measure(chat) {
     let candidateHit = 0;
     let tokens = 0;
     const ranks = [];
+    const entropies = [];
+    const margins = [];
     for (const probe of probes) {
-        const ranked = rankRawChunks(chunks, probe.query);
-        const packed = packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set() });
+        const ranked = rankRawChunks(chunks, probe.query, [], { scorer: SCORER });
+        const packed = packRawEvidence(ranked, history, { maxTokens: EVIDENCE_TOKENS, visibleSources: new Set(),
+            policy: POLICY, query: probe.query });
         if (packed.text.includes(probe.needle)) found += 1;
         const rank = ranked.findIndex(entry => entry.chunk.text.includes(probe.needle));
         if (rank >= 0) { candidateHit += 1; ranks.push(rank); }
+        const signals = rankingSignals(ranked);
+        if (signals.entropy !== null) { entropies.push(signals.entropy); margins.push(signals.margin); }
         tokens += packed.tokens;
     }
     ranks.sort((a, b) => a - b);
@@ -170,6 +259,7 @@ function measure(chat) {
         candidateHit: probes.length ? candidateHit / probes.length : null,
         medianRank: ranks.length ? ranks[Math.floor(ranks.length / 2)] : null,
         meanTokens: probes.length ? Math.round(tokens / probes.length) : null,
+        entropy: median(entropies), margin: median(margins),
     };
 }
 
@@ -178,8 +268,29 @@ function measure(chat) {
  * is written by a person rather than cut out of the answer, which is the only way to see the lexical
  * floor for the question a player actually types.
  */
+/**
+ * The paraphrase measurement. It runs the same ranking and packing as the probe set, but the question
+ * is written by a person rather than cut out of the answer, which is the only way to see the lexical
+ * floor for the question a player actually types.
+ *
+ * An entry may name the chat it was written against. The needle is then checked for uniqueness inside
+ * that chat, which is the condition that actually matters - the needle exists to prove which span was
+ * found there. A needle that also occurs in a different chat says nothing about this one. Chats named
+ * by an entry are loaded even when the --limit cut left them out.
+ */
 function measureParaphrases(chats, entries) {
-    const loaded = chats.map(chat => {
+    const every = root.flatMap(target => collect(target)).sort((a, b) => b.size - a.size);
+    const seen = new Set(chats.map(chat => chat.file));
+    const wanted = [...new Set(entries.map(entry => entry.chat).filter(Boolean))];
+    const scope = [...chats];
+    for (const name of wanted) {
+        for (const chat of every) {
+            if (seen.has(chat.file) || !path.basename(chat.file).includes(name)) continue;
+            seen.add(chat.file);
+            scope.push(chat);
+        }
+    }
+    const loaded = scope.map(chat => {
         const { messages } = load(chat.file);
         const scratch = {};
         captureHistory(scratch, messages);
@@ -188,50 +299,140 @@ function measureParaphrases(chats, entries) {
     });
     const results = [];
     for (const entry of entries) {
-        const occurrences = loaded.reduce((sum, chat) => sum + chat.messages
+        const named = entry.chat ? loaded.filter(chat => chat.file.includes(entry.chat)) : [];
+        const searched = named.length ? named : loaded;
+        const occurrences = searched.reduce((sum, chat) => sum + chat.messages
             .filter(row => String(row.mes ?? '').includes(entry.needle)).length, 0);
-        const row = { ...entry, occurrences, found: false, rank: null, tokens: null };
-        if (occurrences >= 1) {
-            for (const chat of loaded) {
-                const ranked = rankRawChunks(chat.chunks, entry.question);
-                const rank = ranked.findIndex(item => item.chunk.text.includes(entry.needle));
-                if (rank < 0) continue;
-                const packed = packRawEvidence(ranked, chat.history, { maxTokens: 1000, visibleSources: new Set() });
-                row.rank = rank;
-                row.tokens = packed.tokens;
-                row.found = packed.text.includes(entry.needle);
-                row.found_in_candidates = true;
-                // Precision proxy: of the spans that were quoted, how many carry the answer.
-                row.spans = packed.sources.length;
-                row.spansWithNeedle = packed.sources.filter(span => String(chat.history.records[span.source]?.text || '')
-                    .slice(span.start, span.end).includes(entry.needle)).length;
-                break;
-            }
-            if (row.rank === null) row.found_in_candidates = false;
+        const row = { ...entry, occurrences, found: false, rank: null, slot: null, drop: null, tokens: null,
+            entropy: null, margin: null, fusedEntropy: null, fusedMargin: null, lexical: null, lexicalRank: null,
+            spans: 0, spansWithNeedle: 0, found_in_candidates: false };
+        if (occurrences === 1) {
+            // Measure in the chat that carries the needle, not merely the first one searched.
+            const chat = searched.find(item => item.chunks.some(chunk => chunk.text.includes(entry.needle)))
+                || searched[0];
+            const ranked = rankRawChunks(chat.chunks, entry.question, [], { scorer: SCORER });
+            const packed = packRawEvidence(ranked, chat.history, { maxTokens: EVIDENCE_TOKENS,
+                visibleSources: new Set(), policy: POLICY, query: entry.question });
+            const where = attribute(ranked, packed, entry.needle, chat.history.records, chat.chunks);
+            const signals = rankingSignals(ranked);
+            row.rank = where.rank;
+            row.slot = where.slot;
+            row.found = where.found;
+            row.drop = where.drop;
+            row.lexical = where.lexical;
+            row.lexicalRank = where.lexicalRank;
+            row.entropy = signals.entropy;
+            row.margin = signals.margin;
+            row.fusedEntropy = signals.fusedEntropy;
+            row.fusedMargin = signals.fusedMargin;
+            row.tokens = packed.tokens;
+            row.found_in_candidates = where.rank >= 0;
+            // Precision proxy: of the spans that were quoted, how many carry the answer.
+            row.spans = packed.sources.length;
+            row.spansWithNeedle = packed.sources.filter(span => String(chat.history.records[span.source]?.text || '')
+                .slice(span.start, span.end).includes(entry.needle)).length;
         }
         results.push(row);
     }
-    const kind = name => results.filter(row => row.kind === name && row.occurrences === 1);
+    const counted = results.filter(row => row.occurrences === 1);
+    const kind = name => counted.filter(row => row.kind === name);
     const rate = rows => rows.length ? rows.filter(row => row.found).length / rows.length : null;
     const entity = kind('entity');
     const oblique = kind('oblique');
+    const hits = counted.filter(row => row.found);
+    const misses = counted.filter(row => !row.found);
+    const byRule = new Map();
+    for (const row of counted) byRule.set(row.drop, (byRule.get(row.drop) || 0) + 1);
     console.log('');
-    console.log('paraphrase set: ' + results.length + ' entries (entity ' + entity.length + ', oblique ' + oblique.length + ')');
+    console.log('paraphrase set: ' + results.length + ' entries, ' + counted.length + ' countable (entity '
+        + entity.length + ', oblique ' + oblique.length + ')');
     for (const row of results) {
-        const note = row.occurrences === 0 ? 'needle not in this chat' : row.occurrences > 1 ? 'needle appears ' + row.occurrences + 'x, excluded' : '';
-        console.log('  ' + (row.found ? 'HIT ' : row.occurrences === 1 ? 'MISS' : '  --') + ' [' + row.kind + '] '
-            + (note || ('rank ' + row.rank + ', ' + row.tokens + ' tok')) + '  ' + row.question);
+        const mark = row.occurrences !== 1 ? '  --' : row.found ? 'HIT ' : 'MISS';
+        const detail = row.occurrences === 0 ? 'needle not in the searched chats'
+            : row.occurrences > 1 ? 'needle appears ' + row.occurrences + 'x, excluded'
+            : (row.found ? 'slot ' + row.slot : 'lost ') + ' rank ' + row.rank + ' ent ' + fixed(row.entropy, 2)
+                + ' mar ' + fixed(row.margin, 2) + ' ' + row.drop + ' ' + row.tokens + ' tok';
+        console.log('  ' + mark + ' [' + row.kind.padEnd(7) + '] ' + detail.padEnd(52) + row.question);
     }
     console.log('');
-    const counted = results.filter(row => row.occurrences === 1 && row.spans);
-    const spans = counted.reduce((sum, row) => sum + row.spans, 0);
-    const carrying = counted.reduce((sum, row) => sum + (row.spansWithNeedle || 0), 0);
+    const quoted = counted.filter(row => row.spans);
+    const spans = quoted.reduce((sum, row) => sum + row.spans, 0);
+    const carrying = quoted.reduce((sum, row) => sum + (row.spansWithNeedle || 0), 0);
     console.log('entity recall ' + pct(rate(entity)) + ' | oblique recall ' + pct(rate(oblique))
-        + ' | all ' + pct(rate(results.filter(row => row.occurrences === 1)))
-        + ' (n=' + results.filter(row => row.occurrences === 1).length + ', oblique n=' + oblique.length + ')');
+        + ' | all ' + pct(rate(counted)) + ' (n=' + counted.length + ', oblique n=' + oblique.length + ')');
     console.log('evidence precision proxy: ' + (spans ? Math.round(carrying / spans * 100) + '%' : 'n/a')
         + ' of quoted spans carry the answer (' + carrying + '/' + spans + ')');
-    return { entity: rate(entity), oblique: rate(oblique) };
+    console.log('evidence ' + median(counted.map(row => row.tokens)) + ' tokens/query | where the answer went: '
+        + [...byRule.entries()].sort((a, b) => b[1] - a[1]).map(([rule, count]) => rule + ' ' + count).join(', '));
+    console.log('lexical signal: hits median entropy ' + fixed(median(hits.map(row => row.entropy)), 2)
+        + ' margin ' + fixed(median(hits.map(row => row.margin)), 2) + ' | misses median entropy '
+        + fixed(median(misses.map(row => row.entropy)), 2) + ' margin ' + fixed(median(misses.map(row => row.margin)), 2));
+    console.log('fused (RRF) signal: hits entropy ' + fixed(median(hits.map(row => row.fusedEntropy)), 2)
+        + ' margin ' + fixed(median(hits.map(row => row.fusedMargin)), 2) + ' | misses entropy '
+        + fixed(median(misses.map(row => row.fusedEntropy)), 2) + ' margin '
+        + fixed(median(misses.map(row => row.fusedMargin)), 2));
+    const summary = { entries: results.length, countable: counted.length, entity: rate(entity), oblique: rate(oblique),
+        all: rate(counted), precision: spans ? carrying / spans : null, tokens: median(counted.map(row => row.tokens)),
+        drops: Object.fromEntries(byRule) };
+    if (dumpFile) {
+        fs.writeFileSync(dumpFile, JSON.stringify({ scorer: SCORER, pack: POLICY, summary,
+            rows: results.map(row => ({ question: row.question, kind: row.kind, chat: row.chat,
+                occurrences: row.occurrences, found: row.found, rank: row.rank, slot: row.slot, drop: row.drop,
+                tokens: row.tokens, entropy: row.entropy, margin: row.margin, lexical: row.lexical,
+                lexicalRank: row.lexicalRank, spans: row.spans, spansWithNeedle: row.spansWithNeedle })) }, null, 2));
+        console.log('wrote ' + dumpFile);
+    }
+    return summary;
+}
+
+/**
+ * Paired comparison against an earlier dump.
+ *
+ * Two percentages hide the only thing that matters for a decision: whether the questions that changed
+ * are the same questions. n=52 resolves about a 7-point difference on its own, so the discordant pairs
+ * are counted directly and tested with an exact McNemar (two-sided binomial on the pairs that moved).
+ */
+function mcnemar(both, onlyA, onlyB, neither) {
+    const discordant = onlyA + onlyB;
+    if (!discordant) return { p: 1, discordant };
+    const smaller = Math.min(onlyA, onlyB);
+    let tail = 0;
+    let choose = 1;
+    for (let k = 0; k <= smaller; k++) {
+        if (k > 0) choose = choose * (discordant - k + 1) / k;
+        tail += choose * Math.pow(0.5, discordant);
+    }
+    return { p: Math.min(1, 2 * tail), discordant };
+}
+
+function reportComparison(a, b) {
+    const left = JSON.parse(fs.readFileSync(a, 'utf8'));
+    const right = JSON.parse(fs.readFileSync(b, 'utf8'));
+    const key = row => row.question;
+    const map = new Map(right.rows.map(row => [key(row), row]));
+    const pairs = left.rows.filter(row => map.has(key(row)) && row.occurrences === 1 && map.get(key(row)).occurrences === 1)
+        .map(row => ({ kind: row.kind, question: row.question, a: row.found, b: map.get(key(row)).found }));
+    const count = rows => rows.length;
+    const tally = kind => {
+        const rows = kind ? pairs.filter(row => row.kind === kind) : pairs;
+        return { n: count(rows), both: rows.filter(row => row.a && row.b).length,
+            onlyA: rows.filter(row => row.a && !row.b).length, onlyB: rows.filter(row => !row.a && row.b).length,
+            neither: rows.filter(row => !row.a && !row.b).length };
+    };
+    const line = (label, t) => {
+        const test = mcnemar(t.both, t.onlyA, t.onlyB, t.neither);
+        console.log('  ' + label.padEnd(9) + ' n=' + String(t.n).padStart(3)
+            + '  A ' + String(Math.round((t.both + t.onlyA) / Math.max(1, t.n) * 100)).padStart(3) + '%'
+            + '  B ' + String(Math.round((t.both + t.onlyB) / Math.max(1, t.n) * 100)).padStart(3) + '%'
+            + '  both ' + String(t.both).padStart(3) + '  A only ' + String(t.onlyA).padStart(2)
+            + '  B only ' + String(t.onlyB).padStart(2) + '  neither ' + String(t.neither).padStart(3)
+            + '  p=' + (test.discordant ? test.p.toFixed(3) : 'n/a'));
+    };
+    console.log('');
+    console.log('paired comparison: A = ' + left.scorer + '/' + left.pack + '  B = ' + right.scorer + '/' + right.pack);
+    line('all', tally(null));
+    line('entity', tally('entity'));
+    line('oblique', tally('oblique'));
 }
 
 const root = targets.length ? targets : [defaultRoot()].filter(Boolean);
@@ -246,6 +447,8 @@ if (!chats.length) {
 }
 
 const pct = value => value === null ? '  n/a' : (value * 100).toFixed(0).padStart(4) + '%';
+console.log('scorer ' + SCORER + ' | pack ' + POLICY + ' | evidence budget ' + EVIDENCE_TOKENS
+    + ' tokens | top ' + limit + ' chats by size');
 console.log('chat'.padEnd(40) + 'fileKB  msgs  floors  storeKB  moved  archive  chunks  probes  recall  cand  rank   tok');
 const rows = [];
 for (const chat of chats) {
@@ -260,10 +463,10 @@ for (const chat of chats) {
         console.log(path.basename(chat.file).padEnd(40) + 'ERROR ' + String(error.message).slice(0, 60));
     }
 }
-const median = values => {
-    const sorted = values.filter(value => value !== null).sort((a, b) => a - b);
+function median(values) {
+    const sorted = values.filter(value => value !== null && value !== undefined).sort((a, b) => a - b);
     return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
-};
+}
 if (rows.length) {
     console.log('');
     console.log('median file ' + median(rows.map(r => r.fileKb)) + 'KB | transcript text '
@@ -272,7 +475,9 @@ if (rows.length) {
         + median(rows.map(r => r.derivedMovedKb)) + 'KB moved out by this version');
     console.log('median recall ' + pct(median(rows.map(r => r.recall))) + ' | candidate hit '
         + pct(median(rows.map(r => r.candidateHit))) + ' | median rank ' + median(rows.map(r => r.medianRank))
-        + ' | evidence ' + median(rows.map(r => r.meanTokens)) + ' tokens/query');
+        + ' | evidence ' + median(rows.map(r => r.meanTokens)) + ' tokens/query'
+        + ' | lexical entropy ' + fixed(median(rows.map(r => r.entropy)), 2)
+        + ' margin ' + fixed(median(rows.map(r => r.margin)), 2));
     const perFloorKb = rows.map(r => r.floors ? r.archiveKb / r.floors : null);
     const perFloorTokens = rows.map(r => r.floors ? Math.round(r.visibleTokens / r.floors) : null);
     console.log('growth: median archive ' + median(perFloorKb.map(v => v === null ? null : Math.round(v * 100) / 100))
@@ -285,3 +490,5 @@ if (rows.length) {
 }
 const paraphrases = loadParaphrases(paraphraseFile);
 if (paraphrases) measureParaphrases(chats, paraphrases);
+if (againstFile && dumpFile) reportComparison(againstFile, dumpFile);
+if (againstFile && !dumpFile) console.log('--against needs --dump in the same run: it compares that dump against this run');

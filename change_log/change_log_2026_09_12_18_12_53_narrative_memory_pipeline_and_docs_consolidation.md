@@ -220,3 +220,69 @@ to 30-50 before believing any comparison; and the two warnings from the literatu
 changes nothing, and entropy alone is weaker than the top-1/top-2 margin).
 
 Nothing was implemented and no ADR is written: an ADR appears when a layer wins its A/B.
+## Addendum 2026-09-12 20:32:10 - step 0 and layers 1 and 3, executed and measured
+
+The plan in dev_docs/06_retrieval_research.md was executed in its own order: upgrade the ruler, rebuild
+the countable question set, then A/B the first and third layers. Neither layer won its A/B, which is the
+result, and neither ships as a default.
+
+### Step 0. The ruler now measures what a decision needs (recall-baseline.mjs)
+
+Per countable question it records the lexical and the fused entropy and top-1/top-2 margin, the answer's
+rank, the rule that dropped it - no_chunk_carries_it, not_a_candidate, entry_cap, budget, too_long,
+trimmed_out or included - and the quoted slot that carried it. --dump writes a run to JSON and --against
+compares two runs as paired questions with an exact McNemar test. --scorer and --pack switch the rules
+under test, with idf and greedy reproducing what shipped.
+
+Two things it found before any behaviour changed:
+
+- **A fused RRF distribution carries no confidence at all.** Margin measured 0.02 and entropy 0.99-1.00 on
+  every question, hits and misses alike; the lexical channel does separate them (median margin 0.34
+  against 0.18), so the entropy/margin layer has to read a channel rather than the fusion.
+- **The old uniqueness rule was the wrong one.** It counted a needle across every loaded chat, so a
+  question written about one chat was excluded when a parallel chat contained the same words. An entry
+  may now name its chat - and is additionally checked for a needle contained in a single chunk, which two
+  of the old entries silently failed.
+
+### The question set, rebuilt (remove/_paraphrases2.json, not shipped)
+
+52 countable questions against AetheriaS40.jsonl: 7 entity, 45 oblique, every needle unique inside that
+chat and inside one chunk. The previous denominator of 12 is not comparable, so nothing below continues
+the old 45%.
+
+### Layer 1. BM25 as the lexical score (raw-history.js, test-narrative-pipeline.mjs sections 17-18)
+
+Paired over the 52 questions: 32 both, 1 only idf, 0 only bm25, p=1.0. Recall is unchanged. On the probe
+set - queries cut out of the answer - the same 100% recall costs 737 evidence tokens a query instead of
+904, an 18% saving. It ships on that and only that. baseline-index.js gained baselineTermCounts so the
+scorer counts terms exactly as the index tokenizes them.
+
+### Layer 3. Budgeted submodular packing (raw-history.js, --pack submodular)
+
+Implemented from arXiv 2607.00725 with its weights, its alpha and its Lin-Bilmes singleton fallback, and
+measured at 54% answer-in-context against the greedy packer's 62% - 7 questions only greedy against 3
+only submodular, p=0.34, a trend 52 questions cannot resolve either way. It is 6% cheaper (880 against
+932 tokens) and it trades question classes: entity 71% -> 86%, oblique 60% -> 49%. It does not win, so it
+is not the default and no ADR is written; it stays behind the switch as a measured alternative.
+
+Its first port scored 17%. Three of the four causes were implementation, not method: relevance was fed
+the flat RRF score, so the coverage and diversity terms decided everything (17% -> 23%); the per-channel
+relevance was then still divided by the fused top, whose scale is 1/61, so every relevance came out
+around 61 (23% -> 38%); and cost was charged as the whole merged envelope, which made a per-token rule
+reward short messages (38% -> 54%). The fourth was the method: cost-scaled greedy assumes the budget
+binds, and here the four-slot cap binds first. All four are written up in dev_docs/06_retrieval_research.md
+v2 section 9, because the next person to port this will meet them in the same order.
+
+### Tried, measured, reverted
+
+A member-first absorption rule in fitEvidenceSpan, on the theory that a merged span should quote its own
+members and not only the best-ranked one. It changed no outcome on the set - 32 included and 6 trimmed
+out either way - because the outward growth already fills whatever budget it is given. It was reverted
+rather than shipped; the six trimmed-out answers are the per-entry share binding.
+
+### Docs
+
+dev_docs/06_retrieval_research.md v2 (the measurements, the three faults, what the ruler found, what is
+left), dev_docs/02_development.md v4 (the switches, the attribution, the paired comparison, the entry's
+chat field), dev_docs/04_roadmap.md v4 (three shipped rows and the restated open items), dev_docs/header.md
+v4. Tests: 32/32, with two new sections pinning the scorer arithmetic and the packer's policy contract.

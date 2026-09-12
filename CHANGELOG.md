@@ -10,6 +10,11 @@ belongs in Git commits and pull requests.
 - `recall-baseline.mjs`: the committed ruler for archive cost and lexical recall, measured on real
   chats. It also takes a hand-written question set (`--paraphrases`), which is the instrument the
   dense-retrieval decision waits on. Results and limits are in ADR-0004 and ADR-0006.
+- The ruler reports, per countable question, the lexical and fused entropy and top-1/top-2 margin, the
+  answer's rank, the rule that dropped it and the quoted slot that carried it. `--dump` writes a run to
+  JSON and `--against <dump>` compares two runs as paired questions with an exact McNemar test, and
+  `--scorer`/`--pack` switch the rule under test. A question entry may name its chat, so its needle is
+  checked for uniqueness where it matters - inside that chat - and for containment in one chunk.
 - Continuity anchors: promises, ownership, secrets, identities and life states are stored separately,
   fed back to the summarizer verbatim every pass, and re-injected every generation. An anchor the model
   stops mentioning is kept and flagged; only an explicit resolution removes it.
@@ -52,6 +57,14 @@ belongs in Git commits and pull requests.
 - The retired fact set (memories, slots, hierarchical summaries) moved out of the chat file into the
   derived record. Measured: 53-188 KB less per chat, and it is rebuildable from the replay log, which
   stays in the chat file. An install with no derived backend keeps everything as before.
+- Original-text retrieval is scored with BM25 (k1 1.2, b 0.75) instead of a presence-only IDF sum, so term
+  frequency saturates and length is normalised. Measured paired on 52 hand-written questions: one question
+  moved and none were won, so recall is unchanged; on the probe set the same 100% recall costs 737
+  evidence tokens a query instead of 904. The change buys cost, not recall, and is reported that way.
+- Budgeted submodular evidence packing (arXiv 2607.00725) is implemented behind the ruler's `--pack`
+  switch and is deliberately not the default: it measured 54% answer-in-context against the greedy
+  packer's 62% on the same 52 questions (7 against 3 discordant, p=0.34), trading oblique recall
+  (60% -> 49%) for entity recall (71% -> 86%) at 6% fewer tokens. No ADR: a layer has to win its A/B.
 
 ### Fixed
 

@@ -186,3 +186,87 @@ A change to the pipeline is complete when all of the following hold:
 
 .github/workflows/iteration10-ci.yml runs npm run check and npm test on pull requests into main and
 on pushes to the v5.5-dev-iteration* branches. It does not run on other branch names.
+
+<!-- VERSION 4 -->
+## v4 - 2026-09-12 20:32:10 - document the ruler switches, the attribution it reports, and the paired comparison
+
+
+
+
+### Toolchain
+
+| Item | Choice | Rationale |
+| --- | --- | --- |
+| Language | Plain ESM JavaScript | SillyTavern loads third-party extensions as-is: no build step, no bundler, no transpile target |
+| Dependencies | None at runtime | Every dependency is a way to break on someone else's machine |
+| Host surface | window.SillyTavern.getContext() | The supported API; no private internals |
+| Node | 20 (matches CI) | The suite runs on the same major the workflow uses |
+| Optional host ABI | window.__TAURITAVERN__.api.extension.store | Derived-state backend; IndexedDB is the fallback |
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| npm run check | Parses every source file (check-syntax.mjs). The file list is discovered, not hand-maintained |
+| npm test | The offline suite: one child process per test-*.mjs (run-tests.mjs) |
+| npm run test:list | Lists the test files the runner would execute |
+| node test-narrative-pipeline.mjs | The acceptance test for the narrative pipeline alone |
+| node recall-baseline.mjs | The ruler: archive cost, the retired fact set and lexical recall on real chats, with --scorer and --pack to A/B one rule at a time |
+
+Both runners spawn children with file-backed stdio on purpose: capturing a child's output through a
+pipe needs a named pipe, and a confined environment refuses one. A runner that cannot capture output
+cannot report a failure.
+
+### Measure before changing a budget
+
+recall-baseline.mjs reads real chats and runs the real ranking and packing code without loading the
+plugin. Run it before changing a token budget, a chunk size or a ranking rule, and put the numbers in
+the change log. ADR-0004 records the first set: lexical recall 88-100% at median rank 0 for about 925
+tokens per query, and an archive that costs about one copy of the conversation text.
+
+The ruler also takes a question set: node recall-baseline.mjs --paraphrases <file>. Each entry is
+{question, needle, kind} where the needle is the literal substring the answer has to carry and kind is
+entity (the question names the person, place or object) or oblique (it describes the situation without
+naming it). The runner reports the needle occurrence count first, because a needle that appears twice
+proves nothing about which span was found. This is the instrument ADR-0006 leaves open: grow the set to
+50+ questions before deciding whether dense retrieval earns its cost.
+
+The ruler also runs the two retrieval layers as switches, so a change is attributed to the rule that
+changed rather than to the version that shipped it: --scorer bm25|idf and --pack greedy|submodular|relevance.
+idf and greedy reproduce the behaviour the dense decision was made against.
+
+Each run reports, per countable question, the lexical and the fused entropy and top-1/top-2 margin, the
+answer's rank, the rule that dropped it and the slot that carried it. --dump writes the run to JSON and
+--against <dump> compares two runs as paired questions with an exact McNemar test, which is the only way to
+read a change on 52 questions: the unpaired difference resolves about seven points.
+
+An entry may name the chat it was written against ({question, needle, kind, chat}). The needle must then be
+unique inside that chat and contained in one chunk, which is the condition that matters - the needle exists
+to prove which span was found there, and a second copy in another chat proves nothing about this one.
+
+### Quality bar
+
+A change to the pipeline is complete when all of the following hold:
+
+1. npm run check and npm test pass (68 test files).
+2. The narrative acceptance test still passes: a detail that exists only in the original text is
+   recallable, and no floor is hidden without a stand-in.
+3. The change is recorded in change_log/ with the four required sections, and any durable decision
+   is recorded as an ADR in dev_docs/decisions/.
+4. dev_docs/ still describes the current system. If a document no longer matches the code, fix the
+   document in the same change.
+
+### What must not regress
+
+| Property | Test |
+| --- | --- |
+| A floor is never hidden without a stand-in | test-narrative-pipeline.mjs |
+| The bootstrap leaves exactly one generation entry and owns its prompt channels | test-narrative-bootstrap-lifecycle.mjs |
+| Background work never writes into a chat the user left | test-narrative-pipeline.mjs |
+| A diagnostics read creates no state | test-v55-derived-store.mjs |
+| The retired modules stay retired | test-extension-frontend-contract.mjs |
+
+### CI
+
+.github/workflows/iteration10-ci.yml runs npm run check and npm test on pull requests into main and
+on pushes to the v5.5-dev-iteration* branches. It does not run on other branch names.

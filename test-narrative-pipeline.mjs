@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
     nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE } from './raw-history.js';
+import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
 
@@ -518,6 +519,98 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     knowledge = mergeKnowledge(knowledge, without, 2);
     assert.equal(knowledge.entries.length, 1, 'the state word does not fork the boundary');
     assert.equal(knowledge.entries[0].kind, '苏晚', 'the newest spelling wins the label');
+}
+
+// --- 17. the lexical score saturates and normalises, and both channels stay readable ---------------
+// The old score was presence only: no term frequency, no length. It cost no recall - on 52 hand-written
+// questions one question moved and none were won - but it spent 904 tokens a query on the probe set
+// where a score that saturates spends 737. Both properties are pinned, because 'it did not lose recall'
+// is only a fair report while the arithmetic really is BM25.
+{
+    const chunkOf = (text, index) => ({ id: 'raw_' + index + ':0:' + text.length, source: 'raw_' + index,
+        start: 0, end: text.length, index, role: 'assistant', name: 'A', text, hash: index, retrievalText: text });
+    // Same length, one mention against ten.
+    const repeated = chunkOf('银针'.repeat(10) + '布'.repeat(90), 1);
+    const once = chunkOf('银针' + '布'.repeat(108), 2);
+    assert.equal(repeated.text.length, once.text.length, 'the pair differs only in how often the term appears');
+    const flat = rankRawChunks([repeated, once], '银针', [], { scorer: 'idf' });
+    assert.equal(flat[0].lexical, flat[1].lexical, 'the old score could not see ten mentions');
+    const bm25 = rankRawChunks([repeated, once], '银针');
+    assert.ok(bm25[0].lexical > bm25[1].lexical, 'BM25 sees them');
+    assert.ok(bm25[0].lexical < 10 * bm25[1].lexical,
+        'and saturates rather than scaling with them: ' + bm25[0].lexical.toFixed(3) + ' against ' + bm25[1].lexical.toFixed(3));
+
+    // Same single mention, different length.
+    const short = chunkOf('银针' + '布'.repeat(9), 3);
+    const long = chunkOf('银针' + '布'.repeat(399), 4);
+    const unnormalised = rankRawChunks([long, short], '银针', [], { scorer: 'idf' });
+    assert.equal(unnormalised[0].lexical, unnormalised[1].lexical, 'the old score had no length term');
+    assert.equal(rankRawChunks([long, short], '银针')[0].chunk.id, short.id, 'BM25 ranks the short chunk first');
+
+    // Both channel readings survive fusion, which is what an entropy or margin rule has to read: a
+    // fused RRF distribution has a margin of 0.02 for every question and cannot support one.
+    const fused = rankRawChunks([short, long], '银针', [{ hash: 4, score: 0.9 }]);
+    const dense = fused.find(row => row.chunk.id === long.id);
+    assert.equal(dense.vector.rank, 0, 'the dense channel records its rank');
+    assert.equal(dense.vector.score, 0.9, 'and its score, not only its rank');
+    assert.equal(fused.find(row => row.chunk.id === short.id).vector, null,
+        'a chunk the channel never returned stays null rather than zero');
+    assert.ok(fused.every(row => row.lexical > 0), 'and the lexical reading is on every row');
+
+    // The scorer tokenizes exactly as the index does. Two tokenizers would rank different documents.
+    const counts = baselineTermCounts('Seraphina 走进钟楼旅店');
+    assert.deepEqual([...counts.keys()], tokenizeBaselineText('Seraphina 走进钟楼旅店'));
+    assert.equal(counts.get('旅店'), 1, 'and it counts rather than deduplicates');
+}
+
+// --- 18. the packer says why it dropped something, and both policies keep the shared rules ----------
+// The ruler has to separate 'the answer was never a candidate' from 'the answer was a candidate the
+// budget discarded', so the packer reports one outcome per candidate. The submodular policy lost its
+// A/B against the greedy one - 54% against 62% answer-in-context on 52 hand-written questions, with the
+// difference unresolvable at that n (7 against 3 discordant, p=0.34) - so it is not the default. Losing
+// an A/B is a reason not to ship a policy, not a reason to leave it untested; the entity-versus-oblique
+// split it produced (86% against 71% on entity, 49% against 60% on oblique) is why it is still here.
+{
+    const rowOf = (id, text, index) => ({ id, index, role: 'assistant', name: 'A', text });
+    const chunkOf = source => ({ id: source + ':0:300', source, start: 0, end: 300, index: Number(source.slice(4)),
+        role: 'assistant', name: 'A', text: '甲'.repeat(300), hash: Number(source.slice(4)), retrievalText: '甲'.repeat(300) });
+    const ids = ['raw_1', 'raw_2', 'raw_3', 'raw_4', 'raw_5'];
+    const history = { version: 1, sequence: 5, active: [...ids],
+        records: Object.fromEntries(ids.map((id, i) => [id, rowOf(id, '甲'.repeat(300), i + 1)])) };
+    const ranked = ids.map((id, i) => ({ chunk: chunkOf(id), score: 1 / (i + 1), lexical: 1 / (i + 1) }));
+    const known = new Set(['included', 'entry_cap', 'budget', 'too_long', 'not_selected']);
+
+    const greedy = packRawEvidence(ranked, history, { maxTokens: 600, maxEntries: 2, visibleSources: new Set() });
+    assert.equal(greedy.policy, 'greedy', 'the default is the policy the runtime uses');
+    assert.equal(greedy.sources.length, 2, 'two slots, two spans');
+    assert.equal(greedy.trace.length, 5, 'and every candidate is accounted for');
+    assert.deepEqual(greedy.trace.filter(row => row.outcome === 'included').map(row => row.slot), [0, 1]);
+    assert.equal(greedy.trace.filter(row => row.outcome === 'entry_cap').length, 3,
+        'the rest name the rule that stopped them');
+    for (const row of greedy.trace) assert.equal(known.has(row.outcome), true, 'unknown outcome ' + row.outcome);
+    assert.ok(greedy.tokens <= 600, 'and the budget holds: ' + greedy.tokens);
+
+    // Submodular obeys the same budget and the same one-outcome-per-candidate contract, and it is
+    // deterministic: a selection that changed between two identical runs could not be A/B tested.
+    const ask = '甲乙丙丁戊分别在哪里？';
+    const select = () => packRawEvidence(ranked, history, { maxTokens: 600, maxEntries: 2,
+        visibleSources: new Set(), policy: 'submodular', query: ask });
+    const first = select();
+    const second = select();
+    assert.equal(first.policy, 'submodular');
+    assert.ok(first.sources.length >= 1 && first.sources.length <= 2, 'the snippet cap holds: ' + first.sources.length);
+    assert.ok(first.tokens <= 600, 'and so does the budget: ' + first.tokens);
+    assert.deepEqual(first.sources, second.sources, 'the same input selects the same spans');
+    assert.equal(first.trace.length, 5);
+    for (const row of first.trace) assert.equal(known.has(row.outcome), true, 'unknown outcome ' + row.outcome);
+    assert.equal(first.trace.filter(row => row.outcome === 'included').length, first.sources.length,
+        'the trace and the quoted spans agree on what was included');
+
+    // A policy nobody implements falls back to the one the runtime uses, not to nothing.
+    const unknown = packRawEvidence(ranked, history, { maxTokens: 600, maxEntries: 2,
+        visibleSources: new Set(), policy: 'magic', query: ask });
+    assert.equal(unknown.policy, 'greedy');
+    assert.equal(unknown.sources.length, 2);
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');
