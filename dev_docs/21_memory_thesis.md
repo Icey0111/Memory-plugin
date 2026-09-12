@@ -851,6 +851,77 @@ protected set can outgrow the baseline and `commitment 15/15` will be the measur
 That is the correct behaviour - a holder set is a claim about who may see something - but it is a
 coupling worth knowing before it fires.
 
+<!-- VERSION 8 -->
+## v8 - 2026-09-12 08:20:00 - audit against the semantics: what follows them, what does not, and one claim in v1 that is simply false
+
+Asked directly whether the recent iterations follow the converged semantics. They do not, and the honest
+answer needs the audit rather than a summary. Every line below was read out of the current tree.
+
+### Correction - v1 section 4 is wrong about the last hop
+
+v1 section 4 ends: *"**except for the last hop.** Nothing turns a floor back into injected text. That
+single missing hop is the difference between 'this plugin has state' and 'this plugin has memory'."*
+
+**That is false.** [v55-evidence.js](file:///D:/memory_plugin/v55-evidence.js) is titled *"cold turn
+snapshot + on-demand original-text expansion"*: it snapshots each extracted turn into chat metadata, and
+`expandMemoryEvidence` resolves a memory back to its **original wording** from the live chat first and the
+snapshot second, bounded and formatted as `[MEMORY EVIDENCE - ORIGINAL TEXT, RESOLVED ON DEMAND]`. It is
+on by default (`memory_evidence_enabled: true`, `cold_turn_snapshot_enabled: true`). The hop exists and
+has for some time.
+
+So the corrected statement of the gap is not *"the hop is missing"*. It is **"the hop is triggered by the
+model"**, which is a different and worse problem.
+
+### The audit
+
+| the semantics say | the tree does | verdict |
+|---|---|---|
+| **memory is on-demand retrieval of the original** | original floor text is resolved and injected by `v55-evidence.js` | **present** |
+| **C5 - attention must be a computed signal, never a model decision; no model holds the veto** | the trigger for that path is the **model writing `【查阅记忆】`**, parsed out of the previous assistant reply (`v55-consistency.js` passes `lastAssistant.mes`). No `familiarity` signal exists anywhere in the tree. The other path that un-hides raw rows, `unfoldFloorsNotCovered`, is driven by *lost coverage*, not by relevance. | **not implemented, and the one live path contradicts it** |
+| **C3 / D1 - the summary carries the five dimensions by selecting structure, not by cutting prose** | `v55-digest.js`: a sealed batch is `bucket.map(row => clean(row.text, share)).join('；')` - each member's prose truncated to a share of a 400-character line | **not implemented; D1 stands exactly as written** |
+| **D2 - the fold must check "every hidden floor is still retrievable and the path is verified"** | `v55-floor-fold.js` still states its first invariant as *"Hide only what a Level-1 summary already covers"* - every hidden floor has a stand-in | **not fixed; the old invariant is still the stated contract** |
+| **C4 - indexing, retrieval, reading** | indexing by floor: **absent**. Retrieval: lexical + temporal + dense-when-healthy. Reading: present. | **partial** |
+| **C6 - frequency for the gate, IDF for the key** | BM25 and an entity bonus live *inside* the retriever; there is no separate gate | **not built** |
+| **C7 - compression rate is a knob on a fidelity curve** | caps exist (`current_state_context_max_chars`, `summary_level1_every_turns`, `reference_context_max_chars`) but nothing selects along a fidelity curve | **partially, not as designed** |
+| **abstention** (LongMemEval's fifth ability, named in C4) | no `abstain` or `abstention` anywhere in the tree | **absent** |
+
+**The single sharpest gap.** The semantics say the retrieval trigger must be computed, and the only path
+that injects **original text** is triggered by the model choosing to speak. That is the named failure mode
+verbatim. `v55-evidence.js`'s own header concedes it - *"a path that only works when the model chooses to
+speak is the failure mode this project was warned about"* - and then keeps the path as a deliberate
+supplement rather than making it load-bearing. Keeping it is defensible; **calling the result "the
+semantics are implemented" would not be.**
+
+### What the recent iterations actually were
+
+They follow the semantics' **method** and build its **preconditions**. None of them is the core.
+
+| shipped | which part of the discussion it comes from |
+|---|---|
+| the change-chain reservation (v3) | **causation is one of C3's five dimensions**, and its only carrier was being spent first |
+| the state block's priority order (v5) | the **failure asymmetry** - what cannot be recovered must not be cut first |
+| the certificate cannot report an unexamined dimension (v6) | the **methodological core**: deterministic instruments instead of a model judge. An instrument that lies destroys the premise the whole convergence rests on |
+| `EPISTEMIC_RETENTION` (v7) | the **compression-fidelity curve** applied at row granularity |
+| `known_by` in the extraction prompt (v7) | the **0% warning** - retrieved text must be injected *holder-scoped*, and without holder sets that is impossible. A prerequisite of C4's reading stage, not a side quest |
+
+### And two of the semantics were refuted rather than unimplemented
+
+This is the part that matters most for planning. **H1** (an IDF gate finds long-range detail better than a
+frequency gate) was measured and is refuted - the sign is the wrong way. The gate-versus-recency question
+was then measured on a corpus where the cap binds, and **every arm ranked at or below chance**, because 90%
+of the dropped set was required by the certificate: an unrankable target.
+
+So the gap is not "the semantics are waiting to be built". Part of the design was built as an experiment,
+run, and **did not survive**. What survived is narrower and is stated in v4: *retrieval is the mechanism for
+the last mile, not the overflow.*
+
+### The honest one-line answer
+
+**The recent iterations implement the semantics' preconditions and follow its method. The core - a
+computed trigger for retrieving the original - is not implemented, and the one path that does retrieve the
+original is triggered by the model, which is the thing the semantics forbid.**
+
+
 
 
 
