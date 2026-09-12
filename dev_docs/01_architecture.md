@@ -60,6 +60,7 @@ flowchart TD
 | May this floor leave the prompt? | Only if every chunk of it is covered, and it is not the newest floor | raw-history.js, applyNarrativeFolds |
 | What if the summary cannot be injected? | Every floor it covered comes back, and the reason is recorded | narrative-runtime.js, buildNarrativeContext |
 | What if the history changed under the summary? | The summary is dropped, the invalidation is reported, and the floors come back | narrative-runtime.js, prepare |
+| How current is the injected state block? | It is the projection of the last accepted summary; a change made after that pass is invisible to it until the next one | narrative-runtime.js, raw-history.js |
 | Who writes the transcript styling? | Only the projection of the markers; it never writes chat state | v55-floor-fold.js |
 
 ### 4. Modules
@@ -99,6 +100,7 @@ the chat file keeps (ADR-0004).
 | N5 | Background work is written only into the chat that started it | services.isCurrent |
 | N6 | Superseded message versions are archived, never overwritten | captureHistory |
 | N7 | Evidence quoting skips text the prompt still carries | packRawEvidence |
+| N8 | Anchors and boundaries are injected only with the summary they were derived from, and are never recomputed between passes | prepare, source_revision |
 
 ### 6. What this architecture does not do yet
 
@@ -109,6 +111,11 @@ the chat file keeps (ADR-0004).
   Growth on very long chats is still unmeasured.
 - Knowledge boundaries are text, not enforcement: a character cannot be prevented from acting on a
   fact that appears in the summary.
+- The injected state block is a snapshot of the last accepted summary (N8). A state change reaches it only
+  at the next pass - measured lag 4 to 7 turns, and two changes in a measured 60-turn run never reached one
+  inside the window - and the summary re-states rather than collapses, so the bounded knowledge list spends
+  its 20 entries on several lines per character (ADR-0017). Folding is what keeps the window safe: it never
+  hides a floor the summary does not cover, so the change is still in the prompt (N1, N2).
 - v55-spine.js survives because the live memory-core.js uses it for the fact model spine bookkeeping,
   and applyMemoryOps is the migration path for old chats. Retiring it is a data decision, not a
   dead-code one (ADR-0009).
