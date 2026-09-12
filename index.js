@@ -253,9 +253,6 @@ const DEFAULT_SETTINGS = Object.freeze({
     temporal_channel_enabled: true,
     temporal_channel_limit: 6,
     metrics_enabled: true,
-    // Optional prompt-window management. Disabled by default until real-chat acceptance.
-    manage_context_window: false, // reserved; v5.4 intentionally does not mutate chat history
-    keep_recent_messages: 12,
     debug: false,
 });
 
@@ -2719,13 +2716,6 @@ function applyInjectedContextBundle(ctx, settings, bundle) {
 }
 
 
-function trimPromptHistory(_chat, _keepRecentMessages) {
-    // Deliberately disabled in v5.4. SillyTavern documents interceptor chat rows as mutable
-    // application data; splicing them can mutate real history. Context compaction must use a
-    // non-destructive host API before this feature can be enabled safely.
-    return 0;
-}
-
 async function backfillMissingExtractions(ctx, { maxMessages = 200 } = {}) {
     if (!ctx) return { processed: 0, skipped: 0 };
     const settings = getSettings(ctx);
@@ -2779,14 +2769,12 @@ async function generationInterceptor(chat, _contextSize, _abort, type) {
     // The interceptor never splices or appends fake chat messages. Both blocks are host
     // extension prompts with distinct keys and depths.
     applyInjectedContextBundle(ctx, settings, bundle);
-    const removed = settings.manage_context_window ? trimPromptHistory(chat, settings.keep_recent_messages) : 0;
     log('interceptor injected context bundle', {
         type,
         referenceChars: bundle.referenceBlock.length,
         currentStateChars: bundle.currentStateBlock.length,
         referenceDepth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
         currentStateDepth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
-        trimmedMessages: removed,
     });
 }
 
@@ -3148,7 +3136,6 @@ async function setupUi() {
     bindCheckbox('aum-v54-graph', 'graph_diffusion');
     bindCheckbox('aum-v54-evidence', 'include_evidence');
     bindCheckbox('aum-v54-auto-rebuild', 'auto_rebuild_vectors_on_history_change');
-    bindCheckbox('aum-v54-manage-window', 'manage_context_window');
     bindCheckbox('aum-v54-debug', 'debug');
     // Iteration 13 controls: cold snapshot, temporal channel, metering, batching, evidence budget.
     bindCheckbox('aum-v54-cold-snapshot', 'cold_turn_snapshot_enabled');
@@ -3196,7 +3183,6 @@ async function setupUi() {
     // Iteration 14 (architecture drift): the two directions of the setting<->memory coupling.
     bindCheckbox('aum-v54-setting-veto', 'setting_baseline_veto_enabled');
     bindCheckbox('aum-v54-setting-seed', 'setting_query_seed_from_memories');
-    bindNumber('aum-v54-keep-recent', 'keep_recent_messages', { min: 2, max: 200, integer: true });
     bindNumber('aum-v54-query-messages', 'query_messages', { min: 1, max: 12, integer: true });
     bindNumber('aum-v54-candidate-k', 'candidate_top_k', { min: 1, max: 80, integer: true });
     bindNumber('aum-v54-lexical-k', 'lexical_candidate_top_k', { min: 1, max: 120, integer: true });

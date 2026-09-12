@@ -41,9 +41,13 @@ function candidateDirs() {
     ].filter(Boolean);
 }
 
-/** Everything the host may load. Tests and docs are copied too so the deployed tree matches the repo. */
+/**
+ * Everything the host may load. Tests and docs are copied too so the deployed tree matches the repo.
+ * `html` is in the list because `manifest.json` declares the settings page and the host fetches it
+ * from the same directory; leaving it out silently deployed a settings UI that did not match the repo.
+ */
 function payload() {
-    return readdirSync(HERE).filter(name => /^(.*\.(js|mjs|json|md))$/.test(name) && !name.startsWith('.'));
+    return readdirSync(HERE).filter(name => /^(.*\.(js|mjs|json|md|html))$/.test(name) && !name.startsWith('.'));
 }
 
 /** Compare ignoring line endings, which is how the deployed tree differs without differing. */

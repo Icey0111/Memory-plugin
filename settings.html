@@ -157,12 +157,9 @@
             <label>保护最近消息<input id="aum-v54-protect-recent" class="text_pole" type="number" step="1"></label>
         </div>
 
-        <h4>上下文裁剪（暂不启用）</h4>
-        <label class="checkbox_label aum-v54-disabled-option"><input id="aum-v54-manage-window" type="checkbox" disabled> 插件直接裁剪旧聊天</label>
-        <input id="aum-v54-keep-recent" class="text_pole" type="number" step="1" hidden>
         <small>
             v5.4 不直接 splice SillyTavern 的 interceptor chat 数组，因为官方接口将其视为可变聊天数据，存在修改真实历史的风险。
-            在找到无损 host API 前，此功能保持禁用。
+            在找到无损 host API 前，插件不做上下文裁剪。
         </small>
 
         <h4>状态</h4>
