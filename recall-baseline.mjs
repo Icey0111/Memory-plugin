@@ -28,9 +28,35 @@ const flag = (name, fallback) => {
     const at = args.indexOf('--' + name);
     return at >= 0 ? Number(args[at + 1]) : fallback;
 };
-const targets = args.filter((value, index) => !value.startsWith('--') && !(index > 0 && args[index - 1] === '--limit') && !(index > 0 && args[index - 1] === '--probes'));
+/** Positional arguments are chat paths; everything else is a flag or a flag's value. */
+const flagValues = new Set();
+args.forEach((value, index) => { if (['--limit', '--probes', '--paraphrases'].includes(value)) flagValues.add(index + 1); });
+const targets = args.filter((value, index) => !value.startsWith('--') && !flagValues.has(index));
 const limit = flag('limit', 5);
 const probeBudget = flag('probes', 60);
+const paraphraseFlag = args.indexOf('--paraphrases');
+const paraphraseFile = paraphraseFlag >= 0 ? args[paraphraseFlag + 1] : null;
+
+/**
+ * A question set written by hand against a real chat, in two kinds:
+ *
+ *   entity   - the question names the person, place or object the answer is about. This is what a
+ *              player asks when they remember the scene but not the wording.
+ *   oblique  - the question describes the situation without naming it. This is the case dense
+ *              retrieval exists for, and the case the lexical generator cannot fake.
+ *
+ * Each entry is {question, needle}: the needle is the literal substring the answer has to carry. The
+ * runner checks the needle's occurrence count first, because a needle that appears twice proves
+ * nothing about which span was found.
+ */
+function loadParaphrases(file) {
+    if (!file || !fs.existsSync(file)) return null;
+    const raw = fs.readFileSync(file, 'utf8').trim();
+    const rows = raw.startsWith('[') ? JSON.parse(raw)
+        : raw.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+    return rows.filter(row => row && row.question && row.needle)
+        .map(row => ({ question: String(row.question), needle: String(row.needle), kind: row.kind === 'oblique' ? 'oblique' : 'entity' }));
+}
 
 function defaultRoot() {
     const home = os.homedir();
@@ -138,6 +164,57 @@ function measure(chat) {
     };
 }
 
+/**
+ * The paraphrase measurement. It runs the same ranking and packing as the probe set, but the question
+ * is written by a person rather than cut out of the answer, which is the only way to see the lexical
+ * floor for the question a player actually types.
+ */
+function measureParaphrases(chats, entries) {
+    const loaded = chats.map(chat => {
+        const { messages } = load(chat.file);
+        const scratch = {};
+        captureHistory(scratch, messages);
+        return { file: path.basename(chat.file), messages, history: scratch.raw_history,
+            chunks: chunkHistory(scratch.raw_history) };
+    });
+    const results = [];
+    for (const entry of entries) {
+        const occurrences = loaded.reduce((sum, chat) => sum + chat.messages
+            .filter(row => String(row.mes ?? '').includes(entry.needle)).length, 0);
+        const row = { ...entry, occurrences, found: false, rank: null, tokens: null };
+        if (occurrences >= 1) {
+            for (const chat of loaded) {
+                const ranked = rankRawChunks(chat.chunks, entry.question);
+                const rank = ranked.findIndex(item => item.chunk.text.includes(entry.needle));
+                if (rank < 0) continue;
+                const packed = packRawEvidence(ranked, chat.history, { maxTokens: 1000, visibleSources: new Set() });
+                row.rank = rank;
+                row.tokens = packed.tokens;
+                row.found = packed.text.includes(entry.needle);
+                row.found_in_candidates = true;
+                break;
+            }
+            if (row.rank === null) row.found_in_candidates = false;
+        }
+        results.push(row);
+    }
+    const kind = name => results.filter(row => row.kind === name && row.occurrences === 1);
+    const rate = rows => rows.length ? rows.filter(row => row.found).length / rows.length : null;
+    const entity = kind('entity');
+    const oblique = kind('oblique');
+    console.log('');
+    console.log('paraphrase set: ' + results.length + ' entries (entity ' + entity.length + ', oblique ' + oblique.length + ')');
+    for (const row of results) {
+        const note = row.occurrences === 0 ? 'needle not in this chat' : row.occurrences > 1 ? 'needle appears ' + row.occurrences + 'x, excluded' : '';
+        console.log('  ' + (row.found ? 'HIT ' : row.occurrences === 1 ? 'MISS' : '  --') + ' [' + row.kind + '] '
+            + (note || ('rank ' + row.rank + ', ' + row.tokens + ' tok')) + '  ' + row.question);
+    }
+    console.log('');
+    console.log('entity recall ' + pct(rate(entity)) + ' | oblique recall ' + pct(rate(oblique))
+        + ' | all ' + pct(rate(results.filter(row => row.occurrences === 1))));
+    return { entity: rate(entity), oblique: rate(oblique) };
+}
+
 const root = targets.length ? targets : [defaultRoot()].filter(Boolean);
 if (!root.length) {
     console.log('No chats found. Pass a chat file or directory: node recall-baseline.mjs <dir>');
@@ -179,3 +256,5 @@ if (rows.length) {
         + ' | evidence ' + median(rows.map(r => r.meanTokens)) + ' tokens/query');
     console.log('Derived keys now owned by the external record: ' + DERIVED_KEYS.filter(k => ['memories', 'slots', 'hierarchical_summaries'].includes(k)).join(', '));
 }
+const paraphrases = loadParaphrases(paraphraseFile);
+if (paraphrases) measureParaphrases(chats, paraphrases);

@@ -8,7 +8,13 @@ belongs in Git commits and pull requests.
 ### Added
 
 - `recall-baseline.mjs`: the committed ruler for archive cost and lexical recall, measured on real
-  chats. First results and their limits are recorded in ADR-0004.
+  chats. It also takes a hand-written question set (`--paraphrases`), which is the instrument the
+  dense-retrieval decision waits on. Results and limits are in ADR-0004 and ADR-0006.
+- Continuity anchors: promises, ownership, secrets, identities and life states are stored separately,
+  fed back to the summarizer verbatim every pass, and re-injected every generation. An anchor the model
+  stops mentioning is kept and flagged; only an explicit resolution removes it.
+- Two quiet failures are now counted and announced: a summary job that keeps failing, and an
+  unsummarized tail that keeps growing. Neither breaks the story, and both used to be invisible.
 - Narrative continuity summary: a background pass every N floors writes one compact summary of where
   the story stands (default budget 600 tokens), replacing the previous summary rather than growing it.
 - Original-text archive and retrieval: every message version is kept, chunked and indexed, and
@@ -38,6 +44,9 @@ belongs in Git commits and pull requests.
   written into the wrong chat.
 - A diagnostics read creates no stored keys, so it cannot put an empty object back into the chat file.
 - Edited or folded floors can no longer stay hidden with nothing standing in for them.
+- Evidence packing merges overlapping spans instead of discarding the second as a duplicate, gives every
+  entry a share of the budget, and trims a span that does not fit rather than dropping it. Measured on a
+  hand-written question set: oblique-question recall 17% -> 67%, in-words recall unchanged at 93-100%.
 
 ### Deprecated
 

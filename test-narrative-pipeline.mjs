@@ -11,7 +11,8 @@
 //   5. a background result that belongs to a chat the user has left is never written.
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
-    nextSummaryBatch, applyNarrativeFolds, RAW_CHUNK_SIZE } from './raw-history.js';
+    nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, formatAnchors,
+    RAW_CHUNK_SIZE } from './raw-history.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
 
@@ -377,6 +378,39 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.doesNotMatch(clipped.currentStateBlock, /\[承诺\]/, 'no anchor is injected without budget for it');
     assert.equal(clipped.diagnostics.anchors_truncated, 3, 'and the omission is counted');
     assert.equal(clipped.diagnostics.warnings.some(text => /锚点超出注入预算/.test(text)), true);
+}
+
+// --- 13. evidence packing merges, shares and trims instead of dropping ---------------------------------
+// Found by measuring a hand-written question set: the answer was in the candidate list at rank 2 and
+// never reached the prompt. Three separate ways the packer threw it away, each pinned here.
+{
+    const rowOf = (id, text, index) => ({ id, index, role: 'assistant', name: 'A', text });
+    const chunkOf = (source, start, end, index) => ({ id: source + ':' + start + ':' + end, source, start, end,
+        index, role: 'assistant', name: 'A', text: '', hash: 1, retrievalText: '' });
+    const historyOf = records => ({ version: 1, sequence: Object.keys(records).length,
+        active: Object.keys(records), records });
+
+    // 13a. a long first candidate must not spend the whole allowance.
+    const long = historyOf({ raw_1: rowOf('raw_1', '甲'.repeat(400), 1),
+        raw_2: rowOf('raw_2', '乙'.repeat(100) + '针' + '乙'.repeat(200), 2) });
+    const shared = packRawEvidence([{ chunk: chunkOf('raw_1', 0, 400, 1) }, { chunk: chunkOf('raw_2', 0, 300, 2) }],
+        long, { maxTokens: 600, maxEntries: 4, visibleSources: new Set() });
+    assert.match(shared.text, /针/, 'the second candidate is quoted even though the first wanted the whole budget');
+    assert.ok(shared.tokens <= 600, 'and the budget holds: ' + shared.tokens);
+
+    // 13b. two hits on one message merge; the second one is not a duplicate to discard.
+    const merged = historyOf({ raw_1: rowOf('raw_1', '甲'.repeat(180) + '针', 1) });
+    const overlapping = packRawEvidence([{ chunk: chunkOf('raw_1', 0, 40, 1) }, { chunk: chunkOf('raw_1', 30, 181, 1) }],
+        merged, { maxTokens: 1200, maxEntries: 4, visibleSources: new Set() });
+    assert.match(overlapping.text, /针/, 'an overlapping second hit extends the first span instead of being dropped');
+
+    // 13c. a candidate too long for its share is trimmed, not skipped.
+    const huge = historyOf({ raw_1: rowOf('raw_1', '丙'.repeat(2000), 1) });
+    const trimmed = packRawEvidence([{ chunk: chunkOf('raw_1', 0, 2000, 1) }], huge,
+        { maxTokens: 200, maxEntries: 4, visibleSources: new Set() });
+    assert.ok(trimmed.text.length > 0, 'a span longer than its share is trimmed, not dropped');
+    assert.ok(trimmed.tokens <= 200, 'and it fits the budget: ' + trimmed.tokens);
+    assert.ok(trimmed.sources[0].end < 2000, 'the quoted range is the trimmed one');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');
