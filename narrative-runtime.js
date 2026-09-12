@@ -1,10 +1,11 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
     summaryPrompt, applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
-    mergeKnowledge } from './raw-history.js';
+    mergeKnowledge, completedUserTurns } from './raw-history.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
-import { isFoldedRow } from './memory-core.js';
+import { requestSummary } from './summary-transport.js';
+import { isFoldedRow, fnv1a32 } from './memory-core.js';
 import { syncFloorFoldDom, syncFloorFoldRow } from './v55-floor-fold.js';
 
 export const NARRATIVE_SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
@@ -33,9 +34,10 @@ const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative
 // is replaced when the user switches chats, which is the scope both maps want.
 const jobs = new WeakMap();
 const indexes = new WeakMap();
+const indexJobs = new WeakMap();
+const summaryRequests = new WeakSet();
 const hostKey = ctx => ctx.chatMetadata || storeOf(ctx);
 let installed = false;
-let sharedService;
 
 export function narrativeSettings(ctx) {
     const settings = ctx.extensionSettings[NARRATIVE_SETTINGS_KEY] ??= {};
@@ -76,37 +78,24 @@ function diagnose(ctx, patch) {
     store.narrative_diagnostics = { ...store.narrative_diagnostics, ...patch };
 }
 function quiet(settings, type) {
-    return settings.enabled === false || type === 'impersonate' || settings.__narrative_summary_in_progress
+    return settings.enabled === false || type === 'impersonate'
         || (type === 'quiet' && settings.quiet_allow_third_party_injection !== true);
 }
 
 export async function generateNarrativeSummary(ctx, prompt, settings) {
-    // Measured on a live host: the completion endpoint was a reasoning model, and one summary call spent
-    // 5,798 tokens on reasoning before writing a word. At the old 2,048 default the content came back
-    // empty, silently: the summary simply never formed and the diagnostics said "No message generated".
-    const max = bound(settings.summary_max_tokens, 8192, 256, 16384);
+    summaryRequests.add(settings);
     let result;
-    settings.__narrative_summary_in_progress = true;
-    settings.__quiet_extraction_in_progress = true;
     try {
-        if (settings.summary_provider_mode === 'connection_profile') {
-            if (!settings.summary_connection_profile_id) throw new Error('请选择总结连接。');
-            sharedService ??= await import('/scripts/extensions/shared.js');
-            const service = sharedService.ConnectionManagerRequestService;
-            const id = settings.summary_connection_profile_id;
-            const messages = [{ role: 'user', content: prompt }];
-            result = await service.sendRequest(id, service.constructPrompt(messages, id), max,
-                { stream: false, extractData: true, includePreset: false, includeInstruct: false }, { temperature: 0.2 });
-        } else if (ctx.generateRaw) {
-            result = await ctx.generateRaw({ prompt, systemPrompt: '忠实压缩剧情，仅输出续接摘要。', responseLength: max });
-        } else if (ctx.generateQuietPrompt) {
-            result = await ctx.generateQuietPrompt({ quietPrompt: prompt, responseLength: max });
-        } else throw new Error('当前宿主没有可用的后台生成接口。');
+        result = await requestSummary(ctx, prompt, settings);
+        diagnose(ctx, { summary_response: result.metrics });
     } finally {
-        delete settings.__narrative_summary_in_progress;
-        delete settings.__quiet_extraction_in_progress;
+        summaryRequests.delete(settings);
     }
-    const text = String(typeof result === 'string' ? result : result?.content || '').trim();
+    const text = result.text;
+    if (['length', 'max_tokens'].includes(result.metrics.finish_reason)) {
+        throw new Error('总结输出被截断：finish_reason=' + result.metrics.finish_reason
+            + '，正文 ' + text.length + ' 字符，推理 ' + result.metrics.reasoning_tokens + ' token；保留旧状态。');
+    }
     if (!text || /^\[(?:API\s*(?:错误|error)|error|错误)\]/i.test(text)
         || (text.length < 800 && /rate limit|too many requests|quota exhausted|invalid api key|HTTP\s*[45]\d\d/i.test(text))) {
         throw new Error('总结接口没有返回正文（若模型是推理模型，token 预算可能被推理耗尽：'
@@ -122,7 +111,7 @@ async function syncIndex(ctx, chunks, services) {
     const store = storeOf(ctx);
     const host = hostKey(ctx);
     const vector = services.vector();
-    if (!vector.supported) return { available: false, reason: vector.reason || 'vector unavailable' };
+    if (!vector.supported) { indexes.delete(host); return { available: false, reason: vector.reason || 'vector unavailable' }; }
     const signature = chunks.map(row => row.id).join('|');
     const cached = indexes.get(host);
     if (cached?.signature === signature && cached.fingerprint === vector.fingerprint) return cached;
@@ -148,10 +137,21 @@ async function syncIndex(ctx, chunks, services) {
         persist(ctx);
         return state;
     } catch (error) {
+        indexes.delete(host);
         // A partially written index is not trusted. The next attempt rebuilds it in full.
         if (services.isCurrent()) { delete storeOf(ctx).narrative_vector; persist(ctx); }
         return { available: false, reason: String(error.message || error) };
     }
+}
+
+async function ensureIndex(ctx, chunks, services) {
+    const key = hostKey(ctx);
+    if (indexJobs.has(key)) await indexJobs.get(key);
+    if (!services.isCurrent()) return { available: false, reason: 'chat changed' };
+    const job = syncIndex(ctx, chunks, services);
+    indexJobs.set(key, job);
+    try { return await job; }
+    finally { if (indexJobs.get(key) === job) indexJobs.delete(key); }
 }
 
 function prepare(ctx) {
@@ -165,6 +165,25 @@ function prepare(ctx) {
         // disappeared, and the settings panel would show an empty error for a summary that was dropped.
         store.narrative_diagnostics = { ...store.narrative_diagnostics,
             summary_invalidated: 'source history changed', invalidated_at: Date.now() };
+    }
+    // All three projections have the same source lineage. A history edit must invalidate the whole
+    // state, including bindings that would otherwise outlive the prose they came from.
+    if (!store.narrative_summary) {
+        delete store.narrative_anchors;
+        delete store.narrative_knowledge;
+    } else {
+        const revision = fnv1a32(store.narrative_summary.covered.join('|')).toString(36);
+        const mismatch = [store.narrative_anchors, store.narrative_knowledge].some(value =>
+            value?.source_revision && value.source_revision !== revision);
+        if (mismatch) {
+            delete store.narrative_summary;
+            delete store.narrative_anchors;
+            delete store.narrative_knowledge;
+            store.narrative_diagnostics = { ...store.narrative_diagnostics, summary_invalidated: 'state source revision mismatch' };
+        } else {
+            // Bind migrated v1 state to its still-valid summary once. No independent authority.
+            for (const value of [store.narrative_anchors, store.narrative_knowledge]) if (value) value.source_revision = revision;
+        }
     }
     const folded = applyNarrativeFolds(ctx.chat || [], history, chunks, store.narrative_summary,
         settings.enabled !== false && settings.narrative_fold !== false);
@@ -182,7 +201,7 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
         const opts = options(state.settings);
         const batch = nextSummaryBatch(state.store.narrative_summary, state.chunks, { ...opts, force });
         if (batch.length) {
-            const before = state.chunks.map(row => row.id).join('|');
+            const before = state.chunks.map(row => row.id);
             const previous = state.store.narrative_summary;
             const previousAnchors = state.store.narrative_anchors;
             try {
@@ -192,7 +211,7 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
                         previousKnowledge?.entries), state.settings);
                 if (!services.isCurrent()) return;
                 state = prepare(ctx);
-                if (before !== state.chunks.map(row => row.id).join('|')) return;
+                if (!before.every((id, i) => id === state.chunks[i]?.id) || state.settings.enabled === false) return;
                 const parsed = parseAnchors(text);
                 if (!parsed.summary) throw new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。');
                 if (estimateTokens(parsed.summary) > opts.summaryTokens) throw new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。');
@@ -215,6 +234,8 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
                         entries: previousKnowledge.entries.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
                         parse: 'missing', updated_at: Date.now() };
                 }
+                const revision = fnv1a32(live.narrative_summary.covered.join('|')).toString(36);
+                for (const value of [live.narrative_anchors, live.narrative_knowledge]) if (value) value.source_revision = revision;
                 diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
                     anchor_parse: parsed.sections });
                 prepare(ctx);
@@ -229,7 +250,7 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
             }
         }
         if (services.isCurrent()) {
-            const index = await syncIndex(ctx, state.chunks, services);
+            const index = await ensureIndex(ctx, state.chunks, services);
             diagnose(ctx, { vector_available: index.available, vector_reason: index.reason || null });
         }
     })();
@@ -250,7 +271,7 @@ function pendingState(store, chunks) {
     const pending = chunks.slice(covered);
     return {
         covered,
-        pending_floors: new Set(pending.filter(row => row.role === 'assistant').map(row => row.source)).size,
+        pending_floors: completedUserTurns(pending),
         pending_tokens: pending.length ? estimateTokens(pending.map(row => row.retrievalText).join('\n')) : 0,
     };
 }
@@ -262,8 +283,8 @@ function warningsFor(state, opts) {
             + (state.summary_error ? ' 最后一次：' + state.summary_error : ''));
     }
     if (state.pending_tokens >= opts.pendingWarnTokens) {
-        out.push('已有 ' + state.pending_floors + ' 层 / 约 ' + state.pending_tokens
-            + ' token 原文尚未进入摘要；调低“每几楼更新摘要”或检查总结接口。');
+        out.push('已有 ' + state.pending_floors + ' 个已完成 user turns / 约 ' + state.pending_tokens
+            + ' token 原文尚未进入摘要；检查总结接口或调整总结间隔。');
     }
     if (state.anchors_unconfirmed >= opts.anchorUnconfirmedWarn) {
         out.push('有 ' + state.anchors_unconfirmed + ' 条锚点已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
@@ -331,9 +352,10 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
 }
 
 export async function buildNarrativeContext(ctx, services, { contextSize = null } = {}) {
-    await updateNarrative(ctx, services);
     if (!services.isCurrent()) return null;
     const { settings, store, history, chunks } = prepare(ctx);
+    const sync = await ensureIndex(ctx, chunks, services);
+    diagnose(ctx, { vector_available: sync.available, vector_reason: sync.reason || null });
     const opts = options(settings);
     const query = history.active.slice(-3).map(id => history.records[id].text).join('\n').slice(-5000);
     let dense = [];
@@ -378,7 +400,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     }
     const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuityBlock)));
     const fused = rankRawChunks(chunks, query, dense);
-    const reranked = await applyRerank(services, opts, query, fused, visibleSources);
+    const reranked = evidenceBudget > 0 ? await applyRerank(services, opts, query, fused, visibleSources)
+        : { ranked: fused, used: false, error: null };
     // The rerank is a host round-trip, so it needs the same guard every other await here has: a result
     // that arrives after the user changed chats must not be packed into this prompt.
     if (!services.isCurrent()) return null;
@@ -425,7 +448,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
 
 export async function runNarrativeGeneration(ctx, services, args) {
     const settings = narrativeSettings(ctx);
-    if (quiet(settings, args[3])) {
+    if (quiet(settings, args[3]) || (args[3] === 'quiet' && summaryRequests.has(settings))) {
         for (const key of NARRATIVE_PROMPTS) ctx.setExtensionPrompt?.(key, '', 1, 1, false, 0);
         if (settings.enabled === false) prepare(ctx);
         return;
@@ -459,7 +482,8 @@ export function installNarrativeRuntime(getContext, createServices) {
     installed = true;
     const schedule = () => {
         const current = getContext();
-        if (!current || narrativeSettings(current).__narrative_summary_in_progress) return;
+        if (!current) return;
+        prepare(current); // Capture edits even when another summary request is still running.
         void updateNarrative(current, createServices(current)).then(() => {
             syncFloorFoldDom(current);
             // A panel failure is a panel failure. It used to replace the whole diagnostics object, so a
@@ -498,6 +522,9 @@ export function readNarrativeReport(ctx) {
     const failures = Number(store.narrative_diagnostics?.summary_failures) || 0;
     return {
         enabled: settings.enabled !== false,
+        summary_running: jobs.has(hostKey(ctx)),
+        cadence_unit: 'completed user turns (normally two message floors)',
+        update_every_user_turns: bound(settings.narrative_every, defaults.narrative_every, 1, 100),
         update_every_floors: bound(settings.narrative_every, defaults.narrative_every, 1, 100),
         pending_floors: pending.pending_floors,
         pending_tokens: pending.pending_tokens,
@@ -515,8 +542,7 @@ export function readNarrativeReport(ctx) {
             knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length },
             options(settings)),
         messages: history ? history.active.length : 0,
-        completed_floors: history
-            ? history.active.filter(id => history.records[id].role === 'assistant').length : 0,
+        completed_floors: completedUserTurns(chunks),
         chunks: chunks.length,
         archived_versions: history ? Object.keys(history.records).length - history.active.length : 0,
         summary_valid: validSummary(summary, chunks),
@@ -543,7 +569,7 @@ export function mountNarrativeSettings(getContext, createServices) {
     const root = document.createElement('div');
     root.id = 'aum-narrative-settings';
     root.innerHTML = '<h3>剧情摘要与原文检索</h3><p>摘要保障续写，检索找回原文。未完成总结的楼层继续保留。</p>'
-        + [['narrative_every','每几楼更新摘要',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
+        + [['narrative_every','每几轮更新摘要（1 user turn 通常为 2 楼）',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
             ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000],
             ['narrative_anchor_tokens','锚点 token 预算',0,4000],
             ['narrative_pending_warn_tokens','未总结原文告警阈值',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]

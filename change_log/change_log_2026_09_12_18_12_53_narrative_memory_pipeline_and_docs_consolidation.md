@@ -466,3 +466,75 @@ candidate list and outside the slots because its span never ranked in the top fo
 ADR-0014, dev_docs/06_retrieval_research.md v3 (section 12: the frontier, the three washes, and what is
 left), dev_docs/02_development.md v5 (--evidence and --entries), dev_docs/04_roadmap.md v5,
 dev_docs/header.md v5. Tests: 32/32, with the slot derivation and its override pinned in section 18.
+## Addendum 2026-09-12 23:05 - the story-state lifecycle, the summary transport, and the doc collapse
+
+Four defects were found by reading the code after the acceptance run, not by a failing test. All four are
+about *which version of the story state is current*, which is why they stayed invisible while the tests
+passed: the tests pinned the old contract.
+
+1. **The three projections did not invalidate together.** An edit dropped `narrative_summary` and left
+   `narrative_anchors` and `narrative_knowledge` in place, so a boundary the user had just rewritten
+   ("乙不知道密码" after the edit said 乙 already knew) kept being injected as a binding constraint. That is
+   worse than a summary that fails: a failed summary leaves the raw text. Reproduced: the summary was
+   dropped, the injected current-state block stayed.
+2. **A running summary cleared the blocks for normal replies.** `quiet()` gated on
+   `__narrative_summary_in_progress`, so while a background pass was in flight every ordinary generation lost
+   its memory blocks. Reproduced with a pending summary promise: a normal generation emitted an empty
+   reference and current-state block.
+3. **Knowledge capacity dropped the newest boundaries.** `mergeKnowledge` appended unrepeated old entries
+   after the fresh ones and then kept `slice(-MAX_KNOWLEDGE)`, which keeps the old tail. Reproduced with 20
+   old entries and 1 new: the new boundary was the one discarded.
+4. **The documentation asserted the opposite of the code.** `dev_docs/01_architecture.md` said background
+   work never blocks a generation, while `buildNarrativeContext` began with `await updateNarrative(...)`.
+
+### The fixes
+
+- **One source revision for the whole state.** `prepare()` binds `narrative_anchors` and
+  `narrative_knowledge` to a revision derived from the summary's covered chunk ids. A mismatch, or a missing
+  summary, drops all three together. A late summary result cannot revive any one of them, because the write
+  path re-checks the revision it started from.
+- **The in-flight marker is memory, not a setting.** `summaryRequests` is a `WeakSet` on the settings object,
+  and only *quiet* calls are gated on it. A normal generation during a summary keeps using the last accepted
+  state. The persisted `__narrative_summary_in_progress` flag is gone.
+- **The read path no longer awaits the write path.** `buildNarrativeContext` prepares, ensures the vector
+  index once per chat (`ensureIndex`, which also dedupes concurrent rebuilds) and assembles. The summary is
+  scheduled by events and can no longer delay a reply.
+- **Capacity keeps what is current.** `mergeKnowledge` now honours `【已解决】` for boundaries, keeps the
+  freshly confirmed entries at the cap, and reports the overflow.
+- **Cadence counts user turns, not messages.** `completedUserTurns()` counts completed user turns, so the
+  greeting is not a turn, a pending user message cannot trigger a summary, and 10 means 10 user turns (about
+  20 dialogue floors). The report and panel say so.
+- **`summary-transport.js`.** The quiet request is built from a *cloned* preset with `openai_max_tokens`
+  overridden, so the foreground preset is never mutated, and it returns response metrics instead of only
+  text: `finish_reason`, content and reasoning lengths, reasoning tokens, transport and model.
+
+### The empty summary body, with the host's own evidence
+
+The earlier conclusion that an 8192-token budget rules out a budget problem was **wrong**. The host's request
+log shows the actual summary request carrying `max_tokens: 8192`, answered with `finish_reason: length`, 8191
+output tokens all spent on reasoning, and zero content. The budget was consumed, just not by the answer. The
+transport now disables thinking for DeepSeek summary calls unless the user asks to inherit it, and any
+`length`/`max_tokens` finish reason is reported as a truncation error instead of a generic empty body. On a
+real chat the summary then returned `finish_reason: stop`, 1063 characters, 838 completion tokens, 0 reasoning.
+
+### Documentation
+
+Collapsed from twenty-four development documents and roughly four thousand lines to eight current-facts files
+and about seven hundred and fifty lines. The in-file append-only versioning rule was superseded at the user's
+request - history lives in Git - and the affected text is edited in place. `05_worktree.md` still stated the
+old rule and `summary-transport.js` was missing from the work tree and the module table; both were corrected
+when this session took over.
+
+### Verification
+
+33/33 test files, 72 source files in the syntax gate. `test-summary-lifecycle.mjs` is new and pins the four
+fixes: ten completed user turns per summary with a pending turn never triggering, reading during an unresolved
+summary without waiting or losing the old state, an edit invalidating all three projections while a late
+result cannot restore them, boundary capacity keeping the newest, and the transport's metadata contract.
+
+### What this does not settle
+
+The live acceptance scenario still has to run past the first summary: three summaries on a real chat, then
+check that a rewritten question finds the exact original wording, that ownership changes are quoted from the
+right version, and that a character's knowledge boundary is respected after several passes. The offline set
+measures retrieval in isolation and cannot answer any of those.

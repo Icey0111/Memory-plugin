@@ -1,10 +1,5 @@
 # Project
 
-<!-- Versioned & append-only: never edit past versions; newest is last. -->
-
-<!-- VERSION 1 -->
-## v1 - 2026-09-12 18:10:47 - state the problem, the two products, and the boundaries
-
 ### Problem
 
 A SillyTavern roleplay outgrows the model's context window long before the story ends. Every simple

@@ -105,7 +105,7 @@ for (const type of ['quiet', 'impersonate']) {
 settings.quiet_allow_third_party_injection = true;
 assert.ok((await run('quiet')).ref?.[1], 'an opted-in third-party quiet call still gets the blocks');
 settings.__narrative_summary_in_progress = true;
-assert.equal((await run('quiet')).ref?.[1], '', 'our own background summary never re-enters our own pipeline');
+assert.ok((await run('normal')).cur?.[1], 'a persisted legacy flag cannot suppress foreground memory');
 delete settings.__narrative_summary_in_progress;
 settings.quiet_allow_third_party_injection = false;
 

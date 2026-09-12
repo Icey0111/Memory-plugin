@@ -176,6 +176,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     await updateNarrative(ctx, services, { force: true });
     assert.ok(chat.some(row => row.is_system === true), 'floors folded under the accepted summary');
     chat[1].mes = '被编辑过的第一层回复';
+    await updateNarrative(ctx, services); // Background event commits the replacement; reads never summarize.
     const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
     assert.equal(store.narrative_diagnostics.summary_invalidated, null,
         'the reported invalidation clears once a matching summary exists again');
@@ -225,6 +226,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 {
     const host = makeHost(12, { summarize: async () => '摘要：局面。' });
     const { ctx, prompts, services } = host;
+    await updateNarrative(ctx, services);
     await runNarrativeGeneration(ctx, services, [{}, 32768, () => {}, 'normal']);
     const last = key => [...prompts].reverse().find(row => row[0] === key);
     assert.ok(last(NARRATIVE_PROMPTS[0])?.[1], 'a normal generation gets the blocks');
@@ -686,6 +688,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const host = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600 } });
     const broken = { ...host.services, rerank: () => ({ supported: true, model: 'test-rerank',
         rerank: async () => { throw new Error('boom'); } }) };
+    await updateNarrative(host.ctx, host.services);
     const failed = await buildNarrativeContext(host.ctx, broken, { contextSize: 32768 });
     assert.equal(failed.diagnostics.rerank_used, false, 'a failing reranker leaves the fused order alone');
     assert.match(String(failed.diagnostics.rerank_error), /boom/, 'and the reason is reported, not swallowed');

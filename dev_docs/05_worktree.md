@@ -1,10 +1,5 @@
 # Work Tree
 
-<!-- Versioned & append-only: never edit past versions; newest is last. -->
-
-<!-- VERSION 1 -->
-## v1 - 2026-09-12 18:11:03 - the repository as it is after the narrative rewrite
-
 ### Layout
 
     <project-root>/
@@ -14,6 +9,7 @@
     |-- index.js                      host adapters + the retained v5.4-lineage runtime
     |-- raw-history.js                original-text archive, chunking, lexical rank, folds, evidence
     |-- narrative-runtime.js          the pipeline: summary job, index sync, budgeted assembly, panel
+    |-- summary-transport.js          the quiet summary request: cloned preset, no persisted job flags
     |-- v55-floor-fold.js             the transcript projection of a fold (writes no chat state)
     |-- memory-core.js                canonical store, replay, applyMemoryOps, fold markers
     |-- memory-extractor.js           retained: the v5.4 extraction prompt and response contract
@@ -33,7 +29,7 @@
 
 | Folder | Holds | Rule |
 | --- | --- | --- |
-| dev_docs/ | how the project is designed, as current facts: project, architecture, development, data model, roadmap, work tree | append-only and versioned in-file: never edit a past version |
+| dev_docs/ | how the project is designed, as current facts: project, architecture, development, data model, roadmap, work tree | edit current facts in place; version history lives in Git |
 | dev_docs/decisions/ | ADRs: one durable decision each, with its alternatives and consequences | accepted ADRs are not rewritten; supersede them with a new one |
 | change_log/ | why each change happened and what resulted | one file per session, append-only, never edited afterwards |
 | remove/ | verbatim pre-destruction snapshots (gitignored) | one directory per destructive action, named remove_<timestamp>_<slug>/ |
