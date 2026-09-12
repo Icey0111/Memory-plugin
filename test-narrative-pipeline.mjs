@@ -697,6 +697,16 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(used.diagnostics.rerank_model, 'test-rerank');
     const off = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });
     assert.equal(off.diagnostics.rerank_used, false, 'and an install with no model never calls one');
+    // A live run spent one rerank call per turn while every floor was still unfolded, which is a call
+    // that cannot change anything: no floor is hidden, so no candidate can become evidence. Count the
+    // calls instead of trusting the flag.
+    const unfolded = makeHost(4, { settings: { narrative_rerank_model: 'test-rerank', narrative_fold: false,
+        narrative_evidence_tokens: 600 } });
+    let rerankCalls = 0;
+    const counted = { ...unfolded.services, rerank: () => ({ supported: true, model: 'test-rerank',
+        rerank: async (query, documents) => { rerankCalls += 1; return documents.map((_, index) => ({ index, score: 1 })); } }) };
+    await buildNarrativeContext(unfolded.ctx, counted, { contextSize: 32768 });
+    assert.equal(rerankCalls, 0, 'an all-visible shortlist is not reranked');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

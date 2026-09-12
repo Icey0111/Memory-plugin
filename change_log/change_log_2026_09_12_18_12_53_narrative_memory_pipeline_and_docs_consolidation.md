@@ -380,6 +380,39 @@ which is the argument for building the instrument rather than hand-rolling the m
 ADR-0016, dev_docs/06_retrieval_research.md v5 (section 14: the two rejections, the rerank, and the second
 question set), dev_docs/02_development.md v7, dev_docs/04_roadmap.md v7, dev_docs/header.md v7. Tests:
 32/32 with the rerank contract pinned.
+## Addendum 2026-09-12 22:40 - the acceptance run: 20 user turns, 40 floors, ~480-character replies
+
+Run on a fresh chat (AetheriaR3) against the deployed build, with the rerank stage switched on
+(narrative_rerank_model = jina-reranker-v3).
+
+**What it proves.** 20 user turns, 40 floors, 41 rows; replies min 415 / median 479 / max 569 characters.
+History is captured on every turn and the live dense channel is up (channels lexical 22 / vector 22,
+vector_available true). The rerank stage ran on 20 of 20 turns with zero errors, which is the layer this
+round shipped, and it did so against the real host rather than the offline harness. No generation
+failures, panel_error null.
+
+**What it does not prove.** No summary formed: summary_error "No message generated", summary_failures 1,
+11 floors pending. The budget is not the cause this time - summary_max_tokens reads 8192, the ADR-0013
+value - so the quiet path is returning an empty body for another reason on this host. Until a summary
+forms nothing is folded, no floor hides, the reference block stays empty, and the retrieval path has
+nothing to quote: sources 0, evidence_tokens 0. The channels and the rerank are exercised end to end; the
+packing is not, and the offline retrieval numbers still have no live counterpart.
+
+**Two defects came out of the run.**
+
+1. Fixed in f3e0d12: a summary torn down mid-pass left __narrative_summary_in_progress set on the settings
+   object, and it was persisted with them. While it is set quiet() skips every injection and schedule()
+   skips every capture, so the entire pipeline stops and nothing says so. The second run of the day wrote
+   twenty floors and produced no archive, no summary, no anchors and no diagnostics.
+2. Fixed: the rerank stage spent one model call on each of twenty turns while every floor was still
+   visible, where no candidate could become evidence. It now reranks only when at least two candidates
+   the prompt does not already show exist.
+
+Two harness lessons, recorded because they cost the first two attempts: the accept template opens a chat
+without selecting its character first, so openCharacterChat failed silently and the run wrote into an
+id-less scratch chat; and a run started before the page finished reloading drives a host whose extension
+has not been activated. Both now precede the run: select the character by name through the host API,
+verify the chat id, then drive.
 ## Addendum 2026-09-12 21:05:40 - the budget sweep, and the one change that won
 
 With the ruler able to pin the evidence budget and the slot count separately, both were swept on the same

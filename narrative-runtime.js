@@ -306,18 +306,25 @@ function fitWholeBlocks(blocks, tokens) {
  * prompt with no retrieval is not. The shortlist is capped so the cost is a fixed number of documents per
  * generation rather than a function of the archive size.
  */
-async function applyRerank(services, opts, query, ranked) {
+async function applyRerank(services, opts, query, ranked, visibleSources) {
     const model = opts.rerankModel;
     if (!model || !opts.rerankCandidates || ranked.length < 2) return { ranked, used: false, error: null };
+    // Only candidates the prompt does not already show can become evidence, so a shortlist that is
+    // entirely visible has nothing to reorder. Measured on a live run: while every floor was still
+    // unfolded, this stage spent a model call on each of twenty turns and quoted nothing.
+    const eligible = ranked.filter(row => !visibleSources.has(row.chunk.source));
+    if (eligible.length < 2) return { ranked, used: false, error: null };
     const service = typeof services.rerank === 'function' ? services.rerank() : null;
     if (!service || !service.supported) return { ranked, used: false, error: null };
-    const shortlist = ranked.slice(0, opts.rerankCandidates);
+    const shortlist = eligible.slice(0, opts.rerankCandidates);
     try {
         const order = await service.rerank(query, shortlist.map(row => row.chunk.retrievalText), model);
         const score = new Map(order.map(row => [row.index, row.score]));
         const head = shortlist.map((row, index) => ({ ...row, rerank: score.has(index) ? score.get(index) : null }))
             .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.chunk.index - b.chunk.index);
-        return { ranked: [...head, ...ranked.slice(opts.rerankCandidates)], used: true, error: null };
+        // Reordered rows go back in front of everything the shortlist did not cover, eligible or not.
+        const rest = ranked.filter(row => !shortlist.includes(row));
+        return { ranked: [...head, ...rest], used: true, error: null };
     } catch (error) {
         return { ranked, used: false, error: String(error?.message || error) };
     }
@@ -371,7 +378,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     }
     const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuityBlock)));
     const fused = rankRawChunks(chunks, query, dense);
-    const reranked = await applyRerank(services, opts, query, fused);
+    const reranked = await applyRerank(services, opts, query, fused, visibleSources);
     // The rerank is a host round-trip, so it needs the same guard every other await here has: a result
     // that arrives after the user changed chats must not be packed into this prompt.
     if (!services.isCurrent()) return null;
