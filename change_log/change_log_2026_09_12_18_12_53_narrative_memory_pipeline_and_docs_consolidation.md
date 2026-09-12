@@ -538,3 +538,52 @@ The live acceptance scenario still has to run past the first summary: three summ
 check that a rewritten question finds the exact original wording, that ownership changes are quoted from the
 right version, and that a character's knowledge boundary is respected after several passes. The offline set
 measures retrieval in isolation and cannot answer any of those.
+## Addendum 2026-09-13 - the 30-turn lifecycle run, and the boundary it caught
+
+Ran the live continuity scenario on a real chat (30 user turns, 60 floors, cadence 10 completed user turns)
+with the fixed transport and the rerank stage enabled. It is the first run that gets past the first summary,
+and it answers the four things the offline set cannot.
+
+| probe | turn | answer | verdict |
+| --- | --- | --- | --- |
+| where must the basement key be fetched now? | 21 | "你当着沈宁的面交的…这会儿要找钥匙，得先找沈宁" - and she notices the belt is empty | correct |
+| what did I promise if you are not back by dawn? | 22 | "铜钟，三下" - and distinguishes two rings as 沈宁's signal | correct |
+| can 韩铮 state our pickup code word? | 23 | "不能…他从头到尾，人不在" | correct |
+| repeat the code word, not out loud | 30 | "松针——四十——七", whispered into her palm | correct |
+
+Delivery: 30 turns, replies 331-605 characters (median about 500), no generation failures. Summaries fired at
+user turns 10, 20 and 30 with coverage 22 -> 42 -> 62 chunks; summary block about 400 characters / 418 tokens;
+anchors 9 with 1 resolved; evidence 442 tokens from 3 cited sources; channels lexical 61 / vector 24; rerank
+used. The summary request reports finish_reason stop, 1438 characters, 1053 completion tokens, reasoning 0,
+thinking disabled, model deepseek-v4-flash - the transport fix confirmed on a real call.
+
+### The defect the run found
+
+The anchors retired the pre-transfer key ownership (it appears under 【已解决】), but the knowledge boundaries
+did not. Two lines kept saying the key was still with the first holder and were injected beside the anchor
+that contradicted them:
+
+    anchors:   所有权 | 地下室黄铜钥匙已由林昭交给沈宁保管，不再挂在林昭腰带上。
+    resolved:  所有权 | 地下室黄铜钥匙由林昭保管，挂在腰带上。
+    knowledge: 林昭/知道 | …黄铜钥匙归自己…          (unconfirmed 1, still injected)
+    knowledge: Seraphina/知道 | …黄铜钥匙在林昭身上…  (unconfirmed 1, still injected)
+
+The cause is the key, not the protocol. A boundary bundles several facts under one character, and the key is
+character plus whole text, so a single changed fact makes a new key and the previous bundle survives as
+unconfirmed. The model answered the probe correctly because the anchor and the newer line lead, but the
+prompt carried a contradiction a less careful pass could follow.
+
+Fixed: a fresh line for a subject now retires that subject's whole previous line, because the protocol
+requires still-valid facts to be restated verbatim, so the new line is the subject's current state. The
+unconfirmed mechanism keeps its original meaning: it now carries only a subject the summary did not mention at
+all, which is the case it exists for. test-summary-lifecycle.mjs pins it.
+
+### Verification
+
+33/33 test files, 72 source files. The run's own record is the chat Seraphina - 2026-09-12@22h53m20s964ms.
+
+### What is still not measured
+
+Long-horizon drift: three summaries exercise the lifecycle but cannot establish a drift rate. The live query is
+the last three messages while the offline sets ask explicit questions, so the offline retrieval numbers still
+have no live counterpart.

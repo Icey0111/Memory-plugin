@@ -75,6 +75,22 @@ function host() {
     // Resolution retires the old state; a freshly supplied replacement must survive it.
     assert.equal(closed.entries.length, 1);
     assert.equal(closed.entries[0].kind, '乙/知道');
+
+    // One line per subject, not one per statement. A fresh line for a subject replaces that subject's
+    // previous line, so a superseded bundle cannot be injected beside the current state. Measured on a
+    // live 30-turn run: the anchor retired the old key ownership while two boundary lines still placed
+    // the key with the first holder.
+    const carried = { entries: [
+        { kind: '林昭/知道', text: '取药暗号；黄铜钥匙归自己' },
+        { kind: '韩铮/不知道', text: '取药暗号' }] };
+    const updated = mergeKnowledge(carried,
+        parseAnchors('局面\n【知情边界】\n- 林昭 | 知道 | 取药暗号；黄铜钥匙已交沈宁'));
+    assert.equal(updated.entries.length, 2, 'a subject keeps one line');
+    assert.equal(updated.entries.some(item => /归自己/.test(item.text)), false,
+        'the superseded bundle is retired, not carried as unconfirmed');
+    assert.equal(updated.entries.find(item => item.kind.startsWith('林昭')).unconfirmed, 0);
+    assert.equal(updated.entries.find(item => item.kind.startsWith('韩铮')).unconfirmed, 1,
+        'a subject the summary did not mention is still kept and flagged');
 }
 
 // The current-model transport uses a cloned preset and returns metadata, not only extracted text.

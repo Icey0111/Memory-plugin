@@ -7,9 +7,11 @@ knowledge records, original-chunk BM25/dense retrieval, optional reranking, and 
 The extracted-fact generation runtime and layered-summary stack are retired.
 
 This iteration separates background summary work from foreground reads, invalidates all continuity
-projections together after history changes, keeps freshly updated knowledge ahead of old overflow,
-and uses request-local summary settings with response diagnostics. Default cadence is 10 completed
-user turns, normally 20 message floors. Summary coverage is source coverage, not proof of semantic fidelity.
+projections together after history changes, keeps one knowledge line per character - a fresh line for a
+subject retires that subject's previous line, and only a subject the summary did not mention survives as
+unconfirmed - keeps freshly updated knowledge ahead of old overflow, and uses request-local summary
+settings with response diagnostics. Default cadence is 10 completed user turns, normally 20 message floors.
+Summary coverage is source coverage, not proof of semantic fidelity.
 
 ## Validation still worth extending
 

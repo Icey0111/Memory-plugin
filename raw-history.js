@@ -279,6 +279,15 @@ export function mergeAnchors(previous, parsed, at = Date.now()) {
 export function mergeKnowledge(previous, parsed, at = Date.now()) {
     const prior = new Map((previous?.entries || []).map(item => [anchorKey(item), item]));
     for (const item of parsed.resolved) prior.delete(anchorKey(item));
+    // One line per subject, not one per statement. A boundary bundles several facts under one character,
+    // and the protocol requires the still-valid ones to be restated verbatim, so a fresh line for a
+    // subject is that subject's whole current state and its predecessor is retired rather than carried
+    // as unconfirmed. Measured on a live 30-turn run: after the key was handed to another character the
+    // anchor retired the old ownership, but two boundary lines still placed the key with the first holder
+    // and both were injected beside the anchor that contradicted them. Carrying them is the failure the
+    // unconfirmed flag exists to prevent; here the summary did speak about the subject, just differently.
+    const subject = item => String(item.kind || '其他').trim().split('/')[0].normalize('NFKC');
+    const restated = new Set(parsed.knowledge.map(subject));
     const entries = [];
     for (const item of parsed.knowledge) {
         const key = anchorKey(item);
@@ -288,7 +297,10 @@ export function mergeKnowledge(previous, parsed, at = Date.now()) {
             first_seen: before?.first_seen ?? at, last_confirmed: at,
             passes: (before?.passes || 0) + 1, unconfirmed: 0 });
     }
-    for (const item of prior.values()) entries.push({ ...item, unconfirmed: (item.unconfirmed || 0) + 1 });
+    for (const item of prior.values()) {
+        if (restated.has(subject(item))) continue;
+        entries.push({ ...item, unconfirmed: (item.unconfirmed || 0) + 1 });
+    }
     const current = entries;
     const overflow = Math.max(0, current.length - MAX_KNOWLEDGE);
     // Freshly confirmed boundaries precede unrepeated old ones. Keep that priority at the cap.
