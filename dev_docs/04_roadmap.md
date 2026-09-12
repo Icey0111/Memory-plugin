@@ -146,6 +146,25 @@ The replies show what that buys. When the innkeeper reappeared, the model said t
 seen through the fog and had a character ask the tea-seller to confirm it instead of asserting a version it
 could not see. Six checked turns are not a contradiction rate, and a guard is not justified by them.
 
+### Slot allocation, measured by replay (ADR-0021)
+
+Adding the situation and character channels pushed the general similarity channel out: the best candidate
+matching only the last three messages kept a slot on **1 of 17** turns. Replaying a recorded 26-turn chat
+through the packer under each variant - rather than generating twice - settled it:
+
+| variant at a 1000-token budget | entity recalls | similarity kept | tokens/turn |
+| --- | --- | --- | --- |
+| 3 slots (was shipped) | 84 of 136 (62%) | 1 of 17 | 611 |
+| 3 slots + a seat for similarity | 63 of 136 (46%) | 17 of 17 | 875 |
+| 5 slots | 116 of 136 (85%) | 5 of 17 | 593 |
+| 6 slots | 128 of 136 (94%) | 10 of 17 | 604 |
+
+Reserved seats are not shipped: the claiming channels already rank at the head, and a seat for similarity is
+zero-sum. The divisor changed instead - `EVIDENCE_TOKENS_PER_SLOT` 333 to 200, cap 6 to 8 - because the
+packer spends only what its candidates need, so the same budget now reaches three times as many messages for
+no more tokens. The first run of this experiment was invalid: it ran against a host page holding the previous
+build, so every variant was the baseline.
+
 ## Validation still worth extending
 
 1. Repeat the long run with other summary models and cadences. One model at one cadence follows the one-line

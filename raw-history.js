@@ -567,8 +567,15 @@ const renderEvidenceLine = (row, start, end) => '[' + row.id + ':' + start + '-'
 // fixed, so raising the evidence budget raises coverage rather than shrinking every share. ADR-0014 set
 // the floor at 400 tokens; ADR-0015 re-measured it after correcting the fusion weight, because with the
 // better ranking a third slot earns its share at a 1000-token budget (69% against 65% for two).
-export const EVIDENCE_TOKENS_PER_SLOT = 333;
-export const EVIDENCE_SLOT_CAP = 6;
+// Re-measured by replaying a recorded 26-turn chat through the packer at a fixed 1000-token budget, which
+// is where this number was wrong. The divisor assumed a slot has to be paid for, but the packer spreads
+// whatever the candidates actually need: at 1000 tokens, 3 slots spent 611 tokens a turn and 6 slots spent
+// 604, while situation-term recall went from 62% to 94% and the best similarity-only candidate kept a slot
+// on 10 turns instead of 1. The ceiling was never the budget, it was how few messages the budget could
+// reach. 200 is the conservative point of that curve - 5 slots of about 200 tokens each, 85% recall - and
+// the offline question set agrees that more slots do not hurt (97% at 3 and 4, 100% at 5 and 6).
+export const EVIDENCE_TOKENS_PER_SLOT = 200;
+export const EVIDENCE_SLOT_CAP = 8;
 
 /** The slot count the evidence budget pays for. */
 export function evidenceSlots(maxTokens) {
@@ -856,7 +863,7 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             continue;
         }
         const collected = { source: row.id, start, end, anchorStart: start, anchorEnd: end, row,
-            relevance: score, members: [chunk.id] };
+            relevance: score, members: [chunk.id], channels: entry.channels || [] };
         bySource.set(row.id, [...existing, collected]);
         ordered.push(collected);
     }
@@ -891,6 +898,13 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
     let used = estimateTokens(header);
     const room = () => maxTokens - used;
     const share = Math.max(160, Math.floor(maxTokens / Math.max(1, entries)));
+    // Reserved seats were measured and not shipped. Replaying a recorded 26-turn chat: a seat for the
+    // situation and character channels changed 3 of 24 turns and moved no metric, because those channels
+    // already rank at the head; a seat for the general similarity channel changed 17 turns and bought the
+    // similarity candidate on 16 of them by giving up 21 of 136 situation-term recalls. The contention was
+    // real but the cure was allocation, and the measurement below shows it is not: the budget reaches more
+    // messages for the same spend, which is what EVIDENCE_TOKENS_PER_SLOT now reflects.
+    const sequence = kept;
     const submodular = (policy === 'submodular' || policy === 'relevance') && Boolean(query);
     if (submodular) {
         const weights = policy === 'relevance' ? PACK_RELEVANCE_FIRST : PACK_WEIGHTS;
@@ -915,7 +929,7 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             trace.push(note(span, selected.size >= entries ? 'entry_cap' : 'not_selected', null));
         }
     } else {
-        for (const span of kept) {
+        for (const span of sequence) {
             if (sources.length >= entries) { trace.push(note(span, 'entry_cap', null)); continue; }
             const budget = Math.min(share, room());
             if (budget <= 0) { trace.push(note(span, 'budget', null)); continue; }

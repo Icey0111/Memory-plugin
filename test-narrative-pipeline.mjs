@@ -625,16 +625,17 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(first.trace.filter(row => row.outcome === 'included').length, first.sources.length,
         'the trace and the quoted spans agree on what was included');
 
-    // The slot count follows the budget: one slot per 333 tokens, capped at six. A share below about 333
-    // cannot cover a merged envelope and a share above about 500 buys nothing, so a fixed four slots is
-    // wrong at both ends - at 1000 it spends on spans that lose the answer, at 2400 it leaves slots the
-    // budget could pay for unquoted. Measured with the corrected fusion weight: 65% at two slots, 69% at
-    // three, 73% at four with a 1600-token budget.
-    assert.deepEqual([100, 600, 1000, 1599, 1600, 2400, 9000].map(evidenceSlots), [1, 1, 3, 4, 4, 6, 6]);
+    // The slot count follows the budget, one slot per 200 tokens, capped at eight. A share below about 160
+    // cannot cover a merged envelope, which is what fixes the floor; above that the divisor is not a price,
+    // because the packer spends only what its candidates need. Measured by replaying a recorded 26-turn chat
+    // at a fixed 1000-token budget: 3 slots spent 611 tokens a turn and 6 slots spent 604, while
+    // situation-term recall went from 62% to 94%. The offline question set agrees that more slots do not
+    // hurt: 97% answer-in-context at 3 and 4, 100% at 5 and 6.
+    assert.deepEqual([100, 600, 1000, 1599, 1600, 2400, 9000].map(evidenceSlots), [1, 3, 5, 7, 8, 8, 8]);
     const derived = packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set() });
-    assert.equal(derived.sources.length, 3, 'a 1000-token budget pays for three slots');
+    assert.equal(derived.sources.length, 5, 'a 1000-token budget reaches five of the candidates');
     const wide = packRawEvidence(ranked, history, { maxTokens: 2400, visibleSources: new Set() });
-    assert.equal(wide.sources.length, 5, 'a 2400-token budget pays for six, and there are five candidates');
+    assert.equal(wide.sources.length, 5, 'a wider budget is capped by the candidates it has');
     const pinned = packRawEvidence(ranked, history, { maxTokens: 1000, maxEntries: 4, visibleSources: new Set() });
     assert.equal(pinned.sources.length, 4, 'an explicit slot count still overrides the derivation');
 
