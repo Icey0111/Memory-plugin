@@ -922,6 +922,27 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
     }
     const kept = ordered.filter(span => perSource.get(span.source) === span);
     const redundant = ordered.filter(span => perSource.get(span.source) !== span);
+    // N7 is about text, not row identity. The prompt already carries the rows in visibleSources, and a
+    // candidate is a *copy* of one of them whenever the conversation repeats itself - and a repeated row
+    // is worth nothing to quote. Measured on a 100-floor run whose user turn was always "继续。": all five
+    // slots went to five older copies of that same fifty-character row, so the block carried the user's
+    // filler five times over and the story not at all, while the same state replayed offline (no vector
+    // channel, no reranker) quoted five informative replies. This is the part of that ranking the packer
+    // can settle without guessing at relevance: never quote the same text twice, and never quote text the
+    // prompt is already showing. Comparing whole-row text keeps it conservative - only a verbatim repeat,
+    // ignoring whitespace, is dropped.
+    const bareText = text => String(text).replace(/\s+/g, '');
+    const carried = new Set([...visibleSources]
+        .map(source => bareText(history.records?.[source]?.text || '')).filter(Boolean));
+    const keptUnique = [];
+    const repeated = [];
+    const packedText = new Set();
+    for (const span of kept) {
+        const key = bareText(span.text);
+        if (key && (packedText.has(key) || carried.has(key))) { repeated.push(span); continue; }
+        if (key) packedText.add(key);
+        keptUnique.push(span);
+    }
     const note = (span, outcome, slot) => ({ source: span.source, chunks: [...span.members], start: span.start,
         end: span.end, relevance: Math.round(span.rel * 1000) / 1000, cost: span.cost, outcome, slot });
     const lines = [];
@@ -936,15 +957,15 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
     // similarity candidate on 16 of them by giving up 21 of 136 situation-term recalls. The contention was
     // real but the cure was allocation, and the measurement below shows it is not: the budget reaches more
     // messages for the same spend, which is what EVIDENCE_TOKENS_PER_SLOT now reflects.
-    const sequence = kept;
+    const sequence = keptUnique;
     const submodular = (policy === 'submodular' || policy === 'relevance') && Boolean(query);
     if (submodular) {
         const weights = policy === 'relevance' ? PACK_RELEVANCE_FIRST : PACK_WEIGHTS;
-        const selected = selectSubmodular(kept, { query, budget: room(), maxEntries: entries, weights });
-        const picked = [...selected].sort((a, b) => kept[a].row.index - kept[b].row.index
-            || kept[a].start - kept[b].start);
+        const selected = selectSubmodular(keptUnique, { query, budget: room(), maxEntries: entries, weights });
+        const picked = [...selected].sort((a, b) => keptUnique[a].row.index - keptUnique[b].row.index
+            || keptUnique[a].start - keptUnique[b].start);
         for (const index of picked) {
-            const span = kept[index];
+            const span = keptUnique[index];
             // Selection charged the minimal quote; emission still grows it into a fair share, which is
             // what the greedy path does, so the two policies differ only in which spans they choose.
             const budget = Math.min(Math.max(share, span.cost), room());
@@ -956,7 +977,7 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source });
             trace.push(note(span, 'included', sources.length - 1));
         }
-        for (const [index, span] of kept.entries()) {
+        for (const [index, span] of keptUnique.entries()) {
             if (selected.has(index)) continue;
             trace.push(note(span, selected.size >= entries ? 'entry_cap' : 'not_selected', null));
         }
@@ -974,6 +995,7 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
         }
     }
     for (const span of redundant) trace.push(note(span, 'same-message', null));
+    for (const span of repeated) trace.push(note(span, 'same-text', null));
     return { text: lines.length ? header + String.fromCharCode(10, 10) + lines.join(String.fromCharCode(10, 10)) : '',
         sources, tokens: lines.length ? used : 0, trace, policy: submodular ? 'submodular' : 'greedy' };
 }

@@ -101,7 +101,7 @@ the chat file keeps (ADR-0004).
 | N4 | If the summary cannot be injected, its floors are restored in the same call | buildNarrativeContext |
 | N5 | Background work is written only into the chat that started it | services.isCurrent |
 | N6 | Superseded message versions are archived, never overwritten | captureHistory |
-| N7 | Evidence quoting skips text the prompt still carries | packRawEvidence |
+| N7 | Evidence quoting skips text the prompt still carries, and never quotes the same text twice | packRawEvidence |
 | N8 | Anchors and boundaries are injected only with the summary they were derived from, and are never recomputed between passes | prepare, source_revision |
 
 ### 6. What this architecture does not do yet

@@ -416,6 +416,29 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.ok(trimmed.text.length > 0, 'a span longer than its share is trimmed, not dropped');
     assert.ok(trimmed.tokens <= 200, 'and it fits the budget: ' + trimmed.tokens);
     assert.ok(trimmed.sources[0].end < 2000, 'the quoted range is the trimmed one');
+
+    // 13d/13e. The same text is never quoted twice, and never at all when the prompt already shows it.
+    // Found on a 100-floor live run whose user turn was always "继续。": all five slots went to five
+    // verbatim copies of that same short row, so the evidence block carried the user's filler five times
+    // and the story not once. Whether the copies come from the vector channel, the reranker or the fusion,
+    // a repeated row is worth nothing to quote, and the packer can settle that without judging relevance.
+    const filler = '继续。[导演：请写一段 300 到 400 字的回复，包含环境描写、动作细节、内心独白与对白。]';
+    const informative = '针在这里：一只停在四点一刻的黄铜潮标，底座刻着庚子年重修。';
+    const rows13 = historyOf({ raw_0: rowOf('raw_0', filler, 0), raw_1: rowOf('raw_1', filler, 1),
+        raw_2: rowOf('raw_2', filler, 2), raw_3: rowOf('raw_3', filler, 3),
+        raw_4: rowOf('raw_4', informative, 4) });
+    // chunkOf takes (source, start, end, index); the end is the row's own length so nothing is trimmed.
+    const ranked13b = ['raw_1', 'raw_2', 'raw_3', 'raw_4'].map((source, i) => ({
+        chunk: chunkOf(source, 0, rows13.records[source].text.length, i + 1) }));
+    const dedup = packRawEvidence(ranked13b, rows13, { maxTokens: 1000, maxEntries: 5, visibleSources: new Set() });
+    assert.equal(dedup.sources.filter(source => source.source !== 'raw_4').length, 1,
+        'a repeated row is quoted once, not once per copy');
+    assert.match(dedup.text, /针在这里/, 'and the slot that frees goes to the message that says something');
+    // The copies are different rows, so the row-level skip cannot catch them: the visible row they copy is.
+    const carried = packRawEvidence(ranked13b, rows13, { maxTokens: 1000, maxEntries: 5,
+        visibleSources: new Set(['raw_0']) });
+    assert.doesNotMatch(carried.text, /继续/, 'text the prompt already carries is not quoted back under another id');
+    assert.match(carried.text, /针在这里/, 'while the informative row is still quoted');
 }
 
 // --- 14. knowledge boundaries are carried, not re-derived -----------------------------------------
@@ -594,8 +617,12 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const chunkOf = source => ({ id: source + ':0:300', source, start: 0, end: 300, index: Number(source.slice(4)),
         role: 'assistant', name: 'A', text: '甲'.repeat(300), hash: Number(source.slice(4)), retrievalText: '甲'.repeat(300) });
     const ids = ['raw_1', 'raw_2', 'raw_3', 'raw_4', 'raw_5'];
+    // Five interchangeable rows, but not five copies of one string: the packer now refuses to quote the
+    // same text twice, so a fixture of identical rows would test the repeat rule instead of the slot
+    // allocation and the trace outcomes this section is about. The marker keeps each row distinct and
+    // the same length.
     const history = { version: 1, sequence: 5, active: [...ids],
-        records: Object.fromEntries(ids.map((id, i) => [id, rowOf(id, '甲'.repeat(300), i + 1)])) };
+        records: Object.fromEntries(ids.map((id, i) => [id, rowOf(id, '甲'.repeat(298) + '乙' + (i + 1), i + 1)])) };
     const ranked = ids.map((id, i) => ({ chunk: chunkOf(id), score: 1 / (i + 1), lexical: 1 / (i + 1) }));
     const known = new Set(['included', 'entry_cap', 'budget', 'too_long', 'not_selected']);
 
