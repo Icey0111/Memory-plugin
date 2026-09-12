@@ -588,7 +588,11 @@ export function readNarrativeReport(ctx) {
         summary_running: jobs.has(hostKey(ctx)),
         cadence_unit: 'completed user turns (normally two message floors)',
         update_every_user_turns: bound(settings.narrative_every, defaults.narrative_every, 1, 100),
-        update_every_floors: bound(settings.narrative_every, defaults.narrative_every, 1, 100),
+        // Message floors, not the setting repeated. The two were the same number under two names, so a
+        // cadence of ten read as "ten floors" while it is ten completed user turns - normally twenty floors,
+        // and the reader who counted hidden floors saw nineteen after the first pass and concluded the
+        // hiding was wrong. A user turn is a user message and its reply; the greeting is not a turn.
+        update_every_floors: bound(settings.narrative_every, defaults.narrative_every, 1, 100) * 2,
         pending_floors: pending.pending_floors,
         pending_tokens: pending.pending_tokens,
         summary_failures: failures,
