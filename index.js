@@ -39,9 +39,6 @@ import {
 
 // A8: the quality side of the measurement story. v55-metrics.js meters cost; this meters whether
 // memory stayed good. Pure module, no host globals, so it is fully offline-testable.
-import { injectionComposition, qualityReport as computeQualityReport } from './v55-quality-metrics.js';
-import { runTcausal, formatTcausalReport, buildTcausalCases } from './v55-tcausal.js';
-import { lengthCertificate, formatCertificate } from './v55-certificate.js';
 
 import {
     buildBaselineRecords,
@@ -53,7 +50,6 @@ import {
 } from './baseline-index.js';
 
 import { collectSemanticBaselineSources } from './baseline-host.js';
-import { planSpineReservation, spineStats } from './v55-spine.js';
 import { migrateSettingStore } from './setting-schema.js';
 import { listRevisionsForWorld, listWorlds } from './setting-store.js';
 import { commitImport, findDuplicateSources, previewImport } from './setting-importer.js';
@@ -76,11 +72,9 @@ import {
     mapDenseSettingMetadata,
     settingChunksToBaselineRecords,
 } from './setting-retriever.js';
-import { assembleGenerationContext } from './context-assembler.js';
-import { buildCanonicalState, deriveActorIdentity, orderCanonicalMemories } from './v55-runtime.js';
+import { buildCanonicalState, deriveActorIdentity } from './v55-runtime.js';
 import { pruneColdTurns, recordColdTurn } from './v55-evidence.js';
-import { writeMergedChatStore } from './v55-store-integrity.js';
-import { awaitDerivedReady, ensureDerivedHydrated, installV55DerivedStore, persistChatStore, resetDerivedHydration } from './v55-derived-store.js';
+import { persistChatStore } from './v55-derived-store.js';
 import { rerankCandidates } from './v55-rerank.js';
 import { formatMetrics, recordEmbeddingCall, recordModelCall, resetMetrics } from './v55-metrics.js';
 import { formatSelfCheck, runRetrievalSelfCheck } from './v55-selfcheck.js';
@@ -544,35 +538,6 @@ function enqueue(task) {
     return operationQueue;
 }
 
-function enqueueExtraction(task) {
-    extractionPending += 1;
-    const run = extractionQueue.then(() => task(), () => task());
-    extractionQueue = run
-        .catch(error => {
-            console.error('[Aetheria Memory v5.4] extraction task failed', error);
-            const ctx = getContext();
-            const settings = ctx ? getSettings(ctx) : DEFAULT_SETTINGS;
-            if (settings.extraction_notifications) notify('error', String(error?.message || error), '自动记忆抽取失败');
-        })
-        .finally(() => {
-            extractionPending = Math.max(0, extractionPending - 1);
-            scheduleStatusUpdate();
-        });
-    scheduleStatusUpdate();
-    return run;
-}
-
-async function waitForExtractionFreshness(ctx) {
-    const settings = getSettings(ctx);
-    const ms = Math.max(0, Math.min(5000, Number(settings.memory_freshness_wait_ms) || 0));
-    if (!ms || extractionPending <= 0) return;
-    await Promise.race([
-        extractionQueue.catch(() => {}),
-        new Promise(resolve => setTimeout(resolve, ms)),
-    ]);
-}
-
-
 function withVectorLock(task) {
     const run = vectorQueue.then(() => task(), () => task());
     vectorQueue = run.catch(error => {
@@ -591,7 +556,6 @@ function getCollectionId(ctx) {
     return id;
 }
 
-
 function getChatIdentity(ctx) {
     // The host reports the same chat with and without its .jsonl suffix depending on which path
     // opened it (a UI chat switch versus openCharacterChat / restore-at-startup). Hashing the raw
@@ -599,7 +563,6 @@ function getChatIdentity(ctx) {
     // second one and then reported the first as a stale index with no per-index space_fingerprint.
     return String(ctx?.getCurrentChatId?.() ?? ctx?.chatId ?? '').trim().replace(/\.jsonl$/i, '');
 }
-
 
 function getBaselineCollectionId(ctx) {
     const chatId = getChatIdentity(ctx);
@@ -915,20 +878,6 @@ async function filterOperationsAgainstBaseline(ctx, ops, preparedHost, pluginDed
         } else accepted.push(op);
     }
     return { accepted, rejected };
-}
-
-function isAssistantMessage(message) {
-    // Folded rows are excluded from the prompt but remain dialogue: dropping them here would make
-    // extraction and its dialogue-pair fingerprints change identity the moment a floor is folded.
-    return Boolean(message && message.is_user !== true && isDialogueRow(message) && String(message.mes ?? '').trim());
-}
-
-function findLatestAssistantIndex(chat) {
-    const rows = Array.isArray(chat) ? chat : [];
-    for (let i = rows.length - 1; i >= 0; i--) {
-        if (isAssistantMessage(rows[i])) return i;
-    }
-    return -1;
 }
 
 function buildRecentContextForExtraction(chat, assistantIndex, maxMessages = 4) {
@@ -1357,33 +1306,12 @@ ${pair.assistantText}`,
     return { record, changedIds, baselineRejections, errors: [...validationErrors, ...applyErrors] };
 }
 
-function countAssistantTurns(chat, upToIndex) {
-    const rows = Array.isArray(chat) ? chat : [];
-    let count = 0;
-    for (let i = 0; i <= upToIndex && i < rows.length; i++) {
-        if (rows[i] && !rows[i].is_user && isDialogueRow(rows[i])) count += 1;
-    }
-    return count;
-}
-
 function extractionContextMessages(settings) {
     const base = Math.max(0, Math.min(12, Number(settings.extraction_context_messages) || 0));
     const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
     // A batch of N samples the extractor every N-th turn; widen the recent-context window so the
     // skipped span is still visible to the model instead of being silently dropped.
     return Math.min(12, base + (batch - 1) * 2);
-}
-
-function scheduleLatestAssistantExtraction({ force = false } = {}) {
-    const ctx = getContext();
-    if (!ctx) return;
-    const settings = getSettings(ctx);
-    if (settings.narrative_pipeline || !settings.auto_extract) return;
-    const index = findLatestAssistantIndex(ctx.chat || []);
-    if (index < 0) return;
-    const batch = Math.max(1, Math.min(10, Math.floor(Number(settings.extraction_batch_turns) || 1)));
-    if (!force && batch > 1 && countAssistantTurns(ctx.chat || [], index) % batch !== 0) return;
-    void enqueueExtraction(() => extractMemoryForAssistant(getContext(), index, { force }));
 }
 
 function getVectorProvider(ctx) {
@@ -2293,12 +2221,6 @@ async function syncChangedVectors(ctx, changedIds = []) {
     }
 }
 
-function updateActiveSnapshot(store, chat) {
-    const active = findLatestActiveState(chat);
-    store.last_active_state = active.text;
-    store.last_active_state_source = active.source;
-}
-
 async function rebuildCanonicalFromChat(ctx, { rebuildVectors = false, silent = true } = {}) {
     const settings = getSettings(ctx);
     const previous = getStore(ctx);
@@ -2329,26 +2251,6 @@ async function rebuildCanonicalFromChat(ctx, { rebuildVectors = false, silent = 
         errors: replayed.errors.length,
     });
     return replayed;
-}
-
-async function reconcileCurrentChat(ctx, { forceRebuild = false } = {}) {
-    if (!ctx) return;
-    const settings = getSettings(ctx);
-    if (settings.narrative_pipeline) return;
-    let store = pruneStaleExtractionRecords(getStore(ctx), ctx.chat || []);
-    const currentSources = collectAutonomousExtractionSources(ctx.chat || [], store.extractions || {})
-        .map(x => ({ index: x.assistantIndex, hash: x.hash }));
-    const previousSources = Array.isArray(store.source_fingerprints) ? store.source_fingerprints : [];
-    const needsReplay = forceRebuild || !sourcesArePrefix(previousSources, currentSources) || previousSources.length !== currentSources.length;
-    if (needsReplay) {
-        await rebuildCanonicalFromChat(ctx, {
-            rebuildVectors: settings.vector_recall && settings.auto_rebuild_vectors_on_history_change,
-            silent: true,
-        });
-        return;
-    }
-    store.source_fingerprints = currentSources;
-    setStore(ctx, store);
 }
 
 function getProviderStatus(ctx, store) {
@@ -2603,109 +2505,6 @@ async function recallMemories(ctx, interceptorChat, { commit = true, startedAt =
     }
 }
 
-async function buildInjectedContextBundle(interceptorChat, contextSize = null) {
-    const ctx = getContext();
-    if (!ctx) return { referenceBlock: '', currentStateBlock: '', diagnostics: {} };
-    const settings = getSettings(ctx);
-    if (!settings.enabled) return { referenceBlock: '', currentStateBlock: '', diagnostics: {} };
-
-    await waitForExtractionFreshness(ctx);
-    await operationQueue;
-    const store = getStore(ctx);
-    const queryText = buildQueryText(interceptorChat, settings.query_messages);
-    const currentStateScope = resolveCurrentStateScope(settings);
-    const baseActive = settings.inject_current_state && currentStateScope === 'mandatory+broad'
-        ? getActiveMemories(store, queryText, settings.max_active_items)
-        : [];
-    // S4: the mandatory baseline is unioned in before assembly and marked, so the budget trim inside
-    // the assembler can never remove an irreversible change.
-    const mandatory = settings.inject_current_state && settings.mandatory_baseline_enabled !== false
-        ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
-        : [];
-    const mandatoryIds = new Set(mandatory.map(memory => memory.id));
-    // The rows are the state carrier now, so they must span everything the flat canonical summary used
-    // to carry: every live memory, in the canonical order. Handing them a query-scoped slice is what
-    // made the old block render the state twice - summary plus the subset that fit - and that subset is
-    // also why trimming the summary once dropped coverage from 10/10 to 8/10. `baseActive` is still
-    // computed because its size is the diagnostic for how much recall would have chosen on its own.
-    const activeMemories = !settings.inject_current_state
-        ? []
-        : currentStateScope === 'mandatory-only'
-            ? mandatory
-            : orderCanonicalMemories(store);
-    const settingResults = await retrieveGenerationSettings(ctx, interceptorChat, store);
-    // Prefer the ranking the host's message events already computed. It is committed here, so the
-    // recall counters and the cooldown only ever move for a generation that really happened.
-    const signature = recallSignature(ctx, interceptorChat);
-    const recalledMemories = commitPrefetchedRecall(ctx, signature) ?? await recallMemories(ctx, interceptorChat);
-    // S1/S2: the change chain rides with the current-state block, and its characters are reserved INSIDE
-    // the current-state cap rather than appended after it. See planSpineReservation for the measurement
-    // that forced this: appending made the chain the first casualty of any budget pressure, and losing it
-    // is the only way the certificate's causal dimension fails before any state omission.
-    const stateCap = Math.max(0, Number(settings.current_state_context_max_chars) || 0);
-    const reservation = settings.spine_injection_enabled === false
-        ? { spineBlock: '', currentStateCap: stateCap, reservedChars: 0 }
-        : planSpineReservation(store, {
-            stateCap,
-            maxChars: settings.spine_injection_max_chars ?? 600,
-            maxRows: settings.spine_injection_max_rows ?? 8,
-        });
-    const spineBlock = reservation.spineBlock;
-    const bundle = assembleGenerationContext({
-        scope: settingResults?.snapshot?.scope || null,
-        latestMessages: interceptorChat,
-        activeMemories,
-        mandatoryIds,
-        settingResults,
-        historyResults: recalledMemories,
-        hostContextBudget: contextSize,
-        replyReserve: settings.context_reply_reserve_tokens,
-        maxReferenceChars: settings.reference_context_max_chars,
-        maxCurrentStateChars: reservation.currentStateCap,
-        includeEvidence: settings.include_evidence,
-        constantLimit: settings.setting_retrieval_constant_limit,
-    });
-    if (spineBlock && bundle.currentStateBlock !== undefined) {
-        bundle.currentStateBlock = bundle.currentStateBlock
-            ? bundle.currentStateBlock + '\n\n' + spineBlock
-            : spineBlock;
-        bundle.diagnostics.spineChars = spineBlock.length;
-        bundle.diagnostics.spine_reserved_chars = spineBlock.length;
-        bundle.diagnostics.current_state_cap_chars = stateCap;
-    }
-    lastGenerationContextDiagnostics = {
-        ...bundle.diagnostics,
-        spine: spineStats(store),
-        mandatory_ids: [...mandatoryIds],
-        current_state_scope: currentStateScope,
-        broad_active_count: baseActive.length,
-        at: Date.now(),
-        reference_prompt_key: REFERENCE_PROMPT_KEY,
-        current_state_prompt_key: CURRENT_STATE_PROMPT_KEY,
-        reference_depth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
-        current_state_depth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
-    };
-    // The outer layers used to capture this write by swapping ctx.setExtensionPrompt on the context
-    // they were handed. That cannot work on a real host: getContext() returns a fresh object each
-    // call, so the swap mutated a throwaway and this module wrote through the real host function.
-    // v55-consistency then overwrote the block using position/depth from an empty capture, and
-    // Number(undefined) is NaN, which SillyTavern silently drops because it matches no position type.
-    // Publishing the bundle is how the outer layers now get the text they are responsible for.
-    const publishTarget = ctx.chatMetadata?.[METADATA_KEY];
-    if (publishTarget && typeof publishTarget === 'object') {
-        publishTarget.v55_inner_bundle = {
-            reference_block: String(bundle.referenceBlock || ''),
-            current_state_block: String(bundle.currentStateBlock || ''),
-            reference_position: IN_CHAT,
-            reference_depth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
-            current_state_position: IN_CHAT,
-            current_state_depth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
-            at: Date.now(),
-        };
-    }
-    return bundle;
-}
-
 function clearInjectedPrompts(ctx, settings, { includeLegacy = true } = {}) {
     const referenceDepth = normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth);
     const currentDepth = normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth);
@@ -2717,77 +2516,8 @@ function clearInjectedPrompts(ctx, settings, { includeLegacy = true } = {}) {
     ctx.setExtensionPrompt(CURRENT_STATE_PROMPT_KEY, '', IN_CHAT, currentDepth, false, SYSTEM_ROLE);
 }
 
-function applyInjectedContextBundle(ctx, settings, bundle) {
-    const referenceDepth = normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth);
-    const currentDepth = normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth);
-    ctx.setExtensionPrompt(REFERENCE_PROMPT_KEY, bundle?.referenceBlock || '', IN_CHAT, referenceDepth, false, SYSTEM_ROLE);
-    ctx.setExtensionPrompt(CURRENT_STATE_PROMPT_KEY, bundle?.currentStateBlock || '', IN_CHAT, currentDepth, false, SYSTEM_ROLE);
-}
-
-
-async function backfillMissingExtractions(ctx, { maxMessages = 200 } = {}) {
-    if (!ctx) return { processed: 0, skipped: 0 };
-    const settings = getSettings(ctx);
-    const rows = ctx.chat || [];
-    let processed = 0;
-    let skipped = 0;
-    const cap = Math.max(1, Math.min(2000, Number(maxMessages) || 200));
-    for (let i = 0; i < rows.length && processed < cap; i++) {
-        const pair = computeDialoguePairFingerprint(rows, i);
-        if (!pair) continue;
-        const store = getStore(ctx);
-        const record = store.extractions?.[pair.key];
-        if (record && Number(record.source_hash) === Number(pair.hash)) {
-            skipped += 1;
-            continue;
-        }
-        // Legacy v5.x messages already contain usable machine ops; avoid spending a second LLM call.
-        if (settings.parse_ops && /<memory_ops\b[^>]*>/i.test(String(rows[i]?.mes ?? ''))) {
-            skipped += 1;
-            continue;
-        }
-        await extractMemoryForAssistant(ctx, i, { force: false });
-        processed += 1;
-    }
-    await rebuildCanonicalFromChat(ctx, { rebuildVectors: Boolean(settings.vector_recall), silent: true });
-    return { processed, skipped };
-}
-
-async function generationInterceptor(chat, _contextSize, _abort, type) {
-    const ctx = getContext();
-    if (!ctx) return;
-    const settings = getSettings(ctx);
-    if (!settings.enabled) {
-        clearInjectedPrompts(ctx, settings);
-        lastGenerationContextDiagnostics = null;
-        return;
-    }
-    if (type === 'impersonate' || type === 'quiet') {
-        const pluginOwnedQuiet = settings.__quiet_extraction_in_progress === true;
-        const thirdPartyQuietInjection = type === 'quiet' && settings.quiet_allow_third_party_injection === true && !pluginOwnedQuiet;
-        if (!thirdPartyQuietInjection) {
-            clearInjectedPrompts(ctx, settings);
-            return;
-        }
-    }
-    // Derived chat state (cold snapshots, scene locators, diagnostics) now lives outside the chat
-    // file, and prompt assembly is the one place that must see it. Bounded so a slow backend can
-    // never stall a generation.
-    await awaitDerivedReady(ctx, settings.derived_hydration_budget_ms ?? 1500);
-    const bundle = await buildInjectedContextBundle(chat, _contextSize);
-    // The interceptor never splices or appends fake chat messages. Both blocks are host
-    // extension prompts with distinct keys and depths.
-    applyInjectedContextBundle(ctx, settings, bundle);
-    log('interceptor injected context bundle', {
-        type,
-        referenceChars: bundle.referenceBlock.length,
-        currentStateChars: bundle.currentStateBlock.length,
-        referenceDepth: normalizeDepth(settings.injection_depth, DEFAULT_SETTINGS.injection_depth),
-        currentStateDepth: normalizeDepth(settings.current_state_injection_depth, DEFAULT_SETTINGS.current_state_injection_depth),
-    });
-}
-
-globalThis[INTERCEPTOR_NAME] = generationInterceptor;
+// The single generation entry is installed by narrative-runtime.js. This module provides host
+// adapters instead, and no longer assigns globalThis[aetheriaUnifiedMemoryV54Interceptor].
 
 function scheduleStatusUpdate() {
     clearTimeout(statusTimer);
@@ -3224,46 +2954,6 @@ async function setupUi() {
         });
     });
 
-    document.getElementById('aum-v54-rebuild-baseline')?.addEventListener('click', () => {
-        void enqueueExtraction(async () => {
-            const current = getContext();
-            if (!current) return;
-            const result = await ensureSemanticBaseline(current, { force: true, silent: false });
-            notify('success', `Baseline已刷新：${result.records.length} 个分块 / ${result.sources.length} 个来源。`, 'Baseline Index');
-        });
-    });
-
-    document.getElementById('aum-v54-extract-latest')?.addEventListener('click', () => {
-        scheduleLatestAssistantExtraction({ force: true });
-    });
-    document.getElementById('aum-v54-backfill')?.addEventListener('click', () => {
-        void enqueueExtraction(async () => {
-            const result = await backfillMissingExtractions(getContext(), { maxMessages: 500 });
-            notify('success', `历史补建完成：新抽取 ${result.processed} 条，跳过 ${result.skipped} 条。`, '自动记忆');
-        });
-    });
-
-    document.getElementById('aum-v54-rebuild-memory')?.addEventListener('click', () => {
-        void enqueue(async () => {
-            await rebuildCanonicalFromChat(ctx, { rebuildVectors: false, silent: false });
-            notify('success', `Canonical Memory 已从当前聊天重放：${Object.keys(getStore(ctx).memories).length} 条。`);
-        });
-    });
-    document.getElementById('aum-v54-rebuild-vectors')?.addEventListener('click', () => {
-        void enqueue(async () => {
-            await rebuildVectorIndex(ctx, { silent: false });
-            await ensureSemanticBaseline(ctx, { force: true, silent: true });
-            await ensurePluginSettingIndex(ctx, { force: true, silent: true });
-        });
-    });
-    document.getElementById('aum-v54-rebuild-all')?.addEventListener('click', () => {
-        void enqueue(async () => {
-            await rebuildCanonicalFromChat(ctx, { rebuildVectors: true, silent: false });
-            await ensureSemanticBaseline(ctx, { force: true, silent: true });
-            await ensurePluginSettingIndex(ctx, { force: true, silent: true });
-            notify('success', 'Canonical Memory、剧情向量、Host Baseline 与 Plugin Setting Index 已完整重建。');
-        });
-    });
     document.getElementById('aum-v54-export')?.addEventListener('click', () => {
         downloadJson(`aetheria-memory-${Date.now()}.json`, getStore(ctx));
     });
@@ -3297,39 +2987,14 @@ function registerEvents() {
     // Streaming and non-streaming paths can emit different finalization events. The pair fingerprint
     // makes duplicate scheduling harmless.
     const onIf = (event, handler) => { if (event) eventSource.on(event, handler); };
-    const afterAssistant = () => {
-        scheduleLatestAssistantExtraction({ force: false });
-        // Free time: the next turn's prompt is at least one user message away, so the dense
-        // round-trip can start now and the interceptor then only has to commit the ranking.
-        try { startRecallPrefetch(getContext()); } catch (error) { log('recall prefetch failed', error); }
-    };
-    onIf(eventTypes.MESSAGE_RECEIVED, afterAssistant);
-    onIf(eventTypes.CHARACTER_MESSAGE_RENDERED, afterAssistant);
-    // Warm the credential and provider path once per chat so the first real recall does not pay for it.
-    onIf(eventTypes.CHAT_CHANGED, () => { void warmupRecallRuntime(getContext()); });
 
-    const afterHistoryMutation = () => {
-        void enqueue(async () => {
-            const current = getContext();
-            if (!current) return;
-            await reconcileCurrentChat(current, { forceRebuild: true });
-            scheduleLatestAssistantExtraction({ force: false });
-        });
-    };
-    for (const event of [eventTypes.MESSAGE_SWIPED, eventTypes.MESSAGE_EDITED, eventTypes.MESSAGE_UPDATED, eventTypes.MESSAGE_DELETED]) {
-        onIf(event, afterHistoryMutation);
-    }
-
+    // Extraction, recall prefetch and history reconciliation belonged to the retired generation
+    // path; they are gone rather than gated, because a gate keeps the code and the reader both.
     onIf(eventTypes.CHAT_CHANGED, () => {
         const current = getContext();
         if (!current) return;
-        const settings = getSettings(current);
-        clearInjectedPrompts(current, settings);
+        clearInjectedPrompts(current, getSettings(current));
         lastGenerationContextDiagnostics = null;
-        void enqueue(async () => {
-            await reconcileCurrentChat(current, { forceRebuild: true });
-            scheduleLatestAssistantExtraction({ force: false });
-        });
         scheduleStatusUpdate();
     });
 
@@ -3364,15 +3029,8 @@ async function startup() {
     await setupUi();
     // v5.2/v5.1 canonical metadata migrates automatically; old inline <memory_ops> are replayed once.
     void enqueue(async () => {
-        if (settings.narrative_pipeline) {
-            getStore(ctx); // Migrate old metadata without replaying or rewriting its facts.
-            await warmupRecallRuntime(ctx);
-            return;
-        }
-        await reconcileCurrentChat(ctx, { forceRebuild: true });
-        await ensureSemanticBaseline(ctx, { silent: true });
-        await ensurePluginSettingIndex(ctx, { silent: true });
-        scheduleLatestAssistantExtraction({ force: false });
+        getStore(ctx);                                          // migrate old metadata, replay nothing
+        await ensurePluginSettingIndex(ctx, { silent: true });  // the setting plane is live
     });
     scheduleStatusUpdate();
     console.log(`[Aetheria Memory v${MEMORY_VERSION}] autonomous plugin initialized`);
@@ -3421,10 +3079,6 @@ export async function __testExtractMemoryForAssistant(ctx, assistantIndex, optio
     return extractMemoryForAssistant(ctx, assistantIndex, options);
 }
 
-export async function __testBackfillMissingExtractions(ctx, options = {}) {
-    return backfillMissingExtractions(ctx, options);
-}
-
 export function __testGetStore(ctx) {
     return getStore(ctx);
 }
@@ -3465,18 +3119,6 @@ export async function __testRetrieveGenerationSettings(ctx, chat, store = null) 
     return retrieveGenerationSettings(ctx, chat, store);
 }
 
-export function __testGetLastSettingRetrievalDebug() {
-    return lastSettingRetrievalDebug;
-}
-
-export function __testGetLastGenerationContextDiagnostics() {
-    return lastGenerationContextDiagnostics;
-}
-
-export async function __testBuildInjectedContextBundle(chat, contextSize = null) {
-    return buildInjectedContextBundle(chat, contextSize);
-}
-
 export function __testCreatePluginBaselineDeduper(ctx, prepared = null) {
     return createPluginBaselineDeduper(ctx, prepared);
 }
@@ -3511,71 +3153,6 @@ export function __testGetLastSettingSeedDebug() {
  * the compression curve. Reads only the store and the last published bundle, so it spends no model
  * call and can be run at any time — including by the live acceptance harness.
  */
-export function getQualityReport(ctxInput = null, { everyFloors = 10, probeLimit = 60, injectedText = null, renderedBlock = null } = {}) {
-    const ctx = ctxInput || getContext();
-    if (!ctx) return null;
-    const settings = getSettings(ctx);
-    const store = getStore(ctx);
-    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
-    const dialogueTextsPerFloor = chat
-        .filter(row => isDialogueRow(row))
-        .map(row => String(row.mes ?? ''));
-    const published = ctx.chatMetadata?.[METADATA_KEY]?.v55_inner_bundle || null;
-    // A harness measuring at injection time passes the blocks it just read, which is the only moment
-    // they are guaranteed to exist.
-    const supplied = injectedText !== null || renderedBlock !== null;
-    const effectiveInjected = injectedText !== null
-        ? String(injectedText)
-        : [published?.reference_block, published?.current_state_block].filter(Boolean).join('\n\n');
-    const mandatory = settings.inject_current_state
-        ? getMandatoryMemories(store, settings.mandatory_baseline_limit ?? 24)
-        : [];
-    const report = computeQualityReport({
-        store,
-        rendered: renderedBlock !== null ? String(renderedBlock) : String(published?.current_state_block || ''),
-        injectedText: effectiveInjected,
-        // The published bundle lives in the derived record, so it can legitimately be absent — for
-        // example when this runs after the chat was reloaded. Pass that through: an unmeasured metric
-        // must not be published as a zero.
-        injectedAvailable: supplied || published !== null,
-        mandatory,
-        dialogueTextsPerFloor,
-        everyFloors,
-        probeLimit,
-    });
-    // A8's fourth number: the per-section cost of the block that was actually published. Taken apart
-    // here rather than re-derived by hand, so the number is reproducible after the run.
-    report.injection_composition = injectionComposition(effectiveInjected);
-    // T-Causal (plan section 1 / section 6): the acceptance instrument the A-list is gated on. Only the
-    // cases generated from this chat's own spine are scored here - the authored fixture in
-    // tcausal-cases.json belongs to the offline regression test, because its expectations are about a
-    // fixed scenario and would read as misses on any live chat.
-    report.tcausal = {
-        canonical: runTcausal(store, { generated: probeLimit, scope: 'canonical' }),
-        injected: runTcausal(store, {
-            generated: probeLimit,
-            scope: 'injected',
-            injectedText: effectiveInjected,
-            renderedBlock: effectiveInjected,
-            available: supplied || published !== null,
-        }),
-    };
-    report.tcausal_text = formatTcausalReport(report.tcausal.canonical);
-    // The length certificate: the judge-free ruling on this exact projection. It reads the same
-    // effective injected text as T-Causal, so the two cannot disagree about what the model was shown,
-    // and it calls no model, so the same store and projection always give the same certificate.
-    report.certificate = lengthCertificate(store, {
-        projection: effectiveInjected,
-        actor: String(ctx.name2 || '') || null,
-        cases: buildTcausalCases(store, { limit: probeLimit }),
-    });
-    report.certificate_text = formatCertificate(report.certificate);
-    return report;
-}
-
-export function __testQualityReport(ctx, options = {}) {
-    return getQualityReport(ctx, options);
-}
 
 /** Manifest lifecycle hook. Keep activation lightweight; async work is deferred. */
 export function init() {

@@ -296,11 +296,10 @@ function installAll() {
         return true;
     }
     const ctx = getContext();
-    const base = globalThis[INTERCEPTOR_NAME];
-    if (!ctx || typeof base !== 'function') return false;
+    if (!ctx) return false;
 
-    // Fixed order: compatibility runtime -> v5.5 feature finalizer -> post-runtime
-    // consistency -> provenance event stabilizer. Install exactly once.
+    // One install. This used to require globalThis[aetheriaUnifiedMemoryV54Interceptor] to exist, which
+    // only proved the legacy core had loaded; the narrative runtime is the entry now.
     installNarrativeRuntime(getContext, createNarrativeHostServices);
     stackInstalled = true;
     installDashboardEvents(ctx);

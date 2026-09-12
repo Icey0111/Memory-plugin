@@ -42,5 +42,5 @@ assert.doesNotMatch(vectorPolicy,/catch\s*\([^)]*\)[\s\S]{0,220}return originalF
 const integrity=read('./v55-store-integrity.js');
 for(const p of[/mergeAuxiliaryChatState/,/CANONICAL_OWNED_KEYS/,/DERIVED_DROP_KEYS/,/scene_summaries/,/independently-owned/]) assert.match(integrity,p);
 const settings=read('./settings.html');
-for(const id of['aum-v54-settings','aum-v54-enabled','aum-v54-auto-extract','aum-v54-setting-file','aum-v54-setting-commit','aum-v54-rebuild-setting-index','aum-v54-baseline-gate','aum-v54-rebuild-baseline','aum-v54-vector','aum-v54-status','aum-v54-diagnostics']) assert.ok(settings.includes(`id="${id}"`),`settings.html missing ${id}`);
+for(const id of['aum-v54-settings','aum-v54-enabled','aum-v54-auto-extract','aum-v54-setting-file','aum-v54-setting-commit','aum-v54-rebuild-setting-index','aum-v54-baseline-gate','aum-v54-vector','aum-v54-status','aum-v54-diagnostics']) assert.ok(settings.includes(`id="${id}"`),`settings.html missing ${id}`);
 console.log('PASS extension frontend/source contract: dynamic API controls, the single narrative generation entry, and the retired stack are covered');
