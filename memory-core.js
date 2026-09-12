@@ -18,6 +18,45 @@ export const MEMORY_KINDS = new Set([
 export const MEMORY_STATUSES = new Set(['active', 'closed', 'superseded', 'invalid']);
 export const MEMORY_IMPORTANCE = new Set(['low', 'medium', 'high', 'critical']);
 export const MEMORY_EPISTEMIC = new Set(['fact', 'observed', 'reported', 'rumor', 'belief', 'inference', 'plan']);
+
+/**
+ * How hard a memory is to recover from anywhere ELSE in the prompt, by how its holder came to know it.
+ *
+ * This orders rows WITHIN a kind. The kind ordering decides which categories survive a budget trim (see
+ * context-assembler); this decides which rows of an equally-ranked category do. It replaces recency as
+ * the tiebreak, because recency was measured to be a weak relevance signal (dev_docs 21 v3, v4).
+ *
+ * The criterion is recoverability, not importance, and it follows the same asymmetry the rest of this
+ * system uses. A "fact" is the one value whose content is routinely available from somewhere else the
+ * model can already see - the imported setting, the world book, the current scene - because that is what
+ * makes it a fact. Everything else was established in one specific past turn, and on a folded chat those
+ * turns are gone: 74 of 101 rows were hidden on the chat this was measured on. "observed" and
+ * "inference" lead because they are the two values the character's own mind produced, so contradicting
+ * them costs the character their senses or their reasoning. "reported" is second-hand but still only
+ * recoverable from the turn that said it.
+ *
+ * Measured on that chat (217 active memories): fact 60, belief 52, reported 31, inference 30,
+ * observed 29, plan 15 - so it is not a restatement of kind. Within "belief" (73 rows) it separates 26
+ * inferences from 46 held opinions; within "knowledge" (52) it separates 15 first-hand sightings from 30
+ * retellings; within "state" (64) it separates 12 personal observations from 43 restatements.
+ * "plan" is deliberately tied with "belief" rather than ranked against it: intentions are already
+ * ordered by their own kind, and commitment rows split 7 fact to 6 plan, which is too thin a margin to
+ * justify a claim that a plan outranks a promise.
+ */
+export const EPISTEMIC_RETENTION = Object.freeze({
+    observed: 5,
+    inference: 4,
+    reported: 3,
+    fact: 2,
+    belief: 2,
+    plan: 2,
+    rumor: 1,
+});
+
+/** The retention weight of a memory's epistemic value. Unknown or absent values are neutral. */
+export function epistemicRetention(memory) {
+    return EPISTEMIC_RETENTION[String(memory?.epistemic || '').toLowerCase()] ?? 2;
+}
 export const MEMORY_OPS = new Set(['add', 'update', 'close', 'supersede', 'reinforce', 'invalidate', 'noop']);
 
 /**

@@ -1112,6 +1112,109 @@ call rather than this plan's.
 **Verification.** `npm run check` clean, **81/81 test files pass** (was 80/80). Deployed with
 `node deploy-live.mjs --apply`, host reloaded, certificate line re-read from the running app.
 
+---
+
+## 16. D8 and D9: the tiebreak becomes recoverability, and the extraction prompt asks for the fields the system ranks on
+
+### Problem / Requirement
+
+Entry 15 closed D7 and promoted two successors. **D8**: the state block's render order was two-dimensional
+in name only - the kind ordering decided everything, and rows of equal kind were ordered by recency, the
+signal entries 10 and 13 had already measured to be weak. **D9**: `known_by` is empty on all 217 active
+memories and `importance` is `'medium'` on all 224 in the store, so the certificate's epistemic dimension
+and T-Causal's `who_unknown` question kind could not run, and twelve call sites across seven files keyed
+on `high`/`critical` could never fire.
+
+### Purpose of Change
+
+Give the within-kind ordering a criterion instead of an inheritance, and find out whether the two dead
+fields are a plumbing fault or something upstream.
+
+### How It Was Changed
+
+**Measurement (zero model calls)**
+
+- [expr-d8-joint.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d8-joint.js) - the joint
+  (kind, epistemic) distribution, plus the field-population counts at the extraction boundary.
+- [expr-d8-verify.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-d8-verify.js) - live
+  survival by kind and by epistemic, at two caps.
+
+**Product code**
+
+- [memory-core.js L39-L59](file:///D:/memory_plugin/memory-core.js#L39) - `EPISTEMIC_RETENTION` and
+  `epistemicRetention()`.
+- [context-assembler.js L403-L408](file:///D:/memory_plugin/context-assembler.js#L403) - the within-kind
+  tiebreak, replacing recency.
+- [memory-extractor.js L218](file:///D:/memory_plugin/memory-extractor.js#L218) - the prompt now requires
+  `op.importance` and `op.known_by`.
+- [test-v55-extractor-fields.mjs](file:///D:/memory_plugin/test-v55-extractor-fields.mjs) - new.
+- [test-v55-state-priority.mjs](file:///D:/memory_plugin/test-v55-state-priority.mjs) - extended with the
+  within-kind ordering contract and the "epistemic ranks below kind" check.
+
+**Documentation**
+
+- [dev_docs/21_memory_thesis.md L761](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L761) - v7.
+- [dev_docs/22_plan_after_compression.md L486](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L486) - v7.
+
+### Result
+
+**D8 is shipped and verified live.** The within-kind tiebreak is now `EPISTEMIC_RETENTION`, whose criterion
+is **how hard the memory is to recover from anywhere else in the prompt**: `observed` 5 > `inference` 4 >
+`reported` 3 > `fact` 2 = `belief` 2 = `plan` 2 > `rumor` 1. A `fact` is the one value whose content the
+imported setting, the world book or the current scene can supply again - that is what makes it a fact -
+while everything else was established in one past turn, and on this chat **74 of 101 rows are folded
+away**.
+
+The distribution is not a restatement of kind, which is what made it worth doing: `state` (64 rows) splits
+fact 43 / observed 12 / belief 6 / inference 2 / reported 1, and `belief` (73) splits belief 46 /
+**inference 26**. Measured live, survival by epistemic:
+
+| cap | kind | observed | inference | reported | fact |
+|---|---|---|---|---|---|
+| 20000 | knowledge | **12 / 12** | **2 / 2** | 19 / 27 | **0 / 5** |
+| 20000 | state | **12 / 12** | **1 / 1** | **1 / 1** | 38 / 38 |
+| 12000 | state | **12 / 12** | **1 / 1** | **1 / 1** | 30 / 38 |
+
+At a 20,000 cap the cut falls inside `knowledge` and every first-hand sighting and every deduction
+survives while all five objective restatements are dropped. **Stated honestly: this changes which rows
+survive, not how many** - coverage is unchanged at 69/197 and 117/197. D8's value is that the reallocation
+is now argued rather than inherited.
+
+**D9's diagnosis is a proof, and it is the more valuable half.** Inside one dataset of 246 stored
+operations:
+
+| field | asked for in the prompt's prose? | populated |
+|---|---|---|
+| `epistemic` | **yes** - "必填 op.epistemic" | **245 / 246** |
+| `importance` | **no** | **0 / 246** |
+| `known_by` | **no** | **0 / 246** |
+
+**The model fills what the prompt asks for in prose and nothing else.** Both dead fields are declared in
+the JSON schema, and a schema is not an instruction: `op.importance || 'medium'` has been filling
+`importance` for the store's whole life. **This project had already learned the lesson once**, for
+`epistemic` - the note is in `memory-core.js`, *"Measured over 844 real operations, the model wrote
+channel ... every time and epistemic never"* - and it was never applied to the other two fields in the
+same schema.
+
+**Fixed**: the prompt now requires `op.importance` with a definition per level and an explicit "do not
+write the same value for every operation", and requires `op.known_by` on `knowledge` rows with the
+cognitive-boundary consequence stated. The invariant is pinned by `test-v55-extractor-fields.mjs`:
+**every field the memory system ranks, gates or certifies on must be asked for in prose.**
+
+**D9 is not verified, and cannot be without a real extraction**, which costs a model call. The safeguard
+is entry 15's: if the prose does not work, the certificate reports `checked: false` rather than claiming
+clean.
+
+**One coupling stated rather than discovered later.** Populating `known_by` enlarges the certificate's
+protected set, because `protectedRows` includes any memory with a holder set, and the mandatory baseline
+is bounded at 24 rows. If extraction starts writing holder sets widely, the protected set can outgrow the
+baseline and `commitment` will be the measurement that notices.
+
+**Verification.** `npm run check` clean, **82/82 test files pass** (was 81/81). Deployed with
+`node deploy-live.mjs --apply`, host reloaded, and D8's survival table read from the running app. D9's
+prompt change takes effect on the next extraction and is therefore unverified by construction.
+
+
 
 
 

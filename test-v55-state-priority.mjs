@@ -111,5 +111,45 @@ for (const cap of [1400, 1500, 1700, 2000, 2400, 3000]) {
     assert.ok(headings.length >= 5, 'the block is still grouped: got ' + headings.length + ' headings');
 }
 
+// 7. Within one kind, the tiebreak is recoverability-by-epistemic, not recency.
+//
+// The kind ordering decides which categories survive a trim; this decides which rows of an equally
+// ranked category do. Recency used to be the tiebreak and was measured to be a weak relevance signal.
+// The replacement ranks by how hard the memory is to recover from elsewhere in the prompt: content the
+// character personally observed or reasoned to exists only in the turn that produced it, while a plain
+// fact is by definition the kind of thing the setting, the world book or the scene can supply again.
+{
+    const rows = [];
+    for (let i = 0; i < 30; i += 1) rows.push({ id: 'f' + i, kind: 'state', slot: 'state.fact_' + i, epistemic: 'fact', text: '客观事实记录' + i + '：' + '甲'.repeat(28), source_message: i });
+    for (let i = 0; i < 10; i += 1) rows.push({ id: 'o' + i, kind: 'state', slot: 'state.seen_' + i, epistemic: 'observed', text: '亲眼所见记录' + i + '：' + '乙'.repeat(28), source_message: 100 + i });
+    const block = assembleGenerationContext({
+        activeMemories: rows, historyResults: [], settingResults: null,
+        maxReferenceChars: 0, maxCurrentStateChars: 2000,
+    }).currentStateBlock;
+    const seen = rows.filter(r => r.epistemic === 'observed' && block.includes(r.text)).length;
+    const facts = rows.filter(r => r.epistemic === 'fact' && block.includes(r.text)).length;
+    assert.equal(seen, 10, 'every first-hand row survives before any restatement: got ' + seen + '/10');
+    assert.ok(facts < 30, 'and the trim lands on the restatements: ' + facts + ' of 30 kept');
+    assert.ok(facts > 0, 'without discarding them entirely while room remains');
+}
+
+// 8. Epistemic ranks below kind: a low-retention kind never outranks a high-retention one.
+{
+    // The commitment carries the HIGHER retention (observed 5) and the state the lower (fact 2). If
+    // epistemic outranked kind, the commitment would be rendered first. It must not be.
+    const rows = [
+        { id: 'c', kind: 'commitment', slot: 'commitment.seen', epistemic: 'observed', text: '承诺记录：' + '甲'.repeat(30) },
+        { id: 's', kind: 'state', slot: 'state.fact', epistemic: 'fact', text: '亲眼所见：' + '乙'.repeat(30) },
+    ];
+    const block = assembleGenerationContext({
+        activeMemories: rows, historyResults: [], settingResults: null,
+        maxReferenceChars: 0, maxCurrentStateChars: 900,
+    }).currentStateBlock;
+    assert.ok(block.includes(rows[0].text) && block.includes(rows[1].text), 'a small fixture carries both');
+    assert.ok(block.indexOf('亲眼所见') < block.indexOf('承诺记录'),
+        'state (kind weight 7) must precede commitment (kind weight 5) even though the commitment has the '
+        + 'higher epistemic retention - the kind order is the primary key');
+}
+
 assert.equal(kindOf('nothing'), undefined);
 console.log('PASS v5.5 state priority: the budget trims the least consequential memory, and ' + total + ' rows stay ordered');

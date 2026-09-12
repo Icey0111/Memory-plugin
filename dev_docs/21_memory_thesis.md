@@ -758,6 +758,100 @@ label. Two successors, in order:
   epistemic dimension and T-Causal's `who_unknown` kind are decorative. This one may cost model calls and
   is therefore the user's call, not this plan's.
 
+<!-- VERSION 7 -->
+## v7 - 2026-09-12 07:55:00 - D8 and D9 both land: the tiebreak is now recoverability, and the prompt asks for the fields it needs
+
+Measurements on the same 51-floor chat (101 rows, 217 active memories, 197 slot-bearing). Probes:
+`expr-d8-joint.js`, `expr-d8-verify.js`. No model calls were made in this version.
+
+### D9 first, because its diagnosis is a proof
+
+The question was why `known_by` and `importance` are never populated. The answer is at the extraction
+boundary, and the proof is a controlled comparison inside one dataset:
+
+| field | asked for in the prompt's prose? | populated in 246 stored operations |
+|---|---|---|
+| `epistemic` | **yes** — "必填 op.epistemic" | **245** |
+| `channel` | **yes** | 246 (per the existing measurement) |
+| `importance` | **no** | **0** — every one unset |
+| `known_by` | **no** | **0** |
+
+**The model fills what the prompt asks for in prose and nothing else.** Both fields are declared in the
+JSON schema, and the schema is not an instruction. `memory-core`'s `op.importance || 'medium'` default is
+what has been filling `importance` all along, which is why all 224 memories in the store are medium and
+none has ever been anything else.
+
+**This project had already learned this lesson, for one field.** `memory-core.js` carries the note:
+*"Measured over 844 real operations, the model wrote channel ... every time and epistemic never"* - and
+the fix then was to require `epistemic` in the prompt. It worked, and it was never applied to the other
+two fields sitting in the same schema.
+
+**Fixed**: the prompt now requires `op.importance` with a definition per level and an explicit instruction
+not to write the same value for every operation, and requires `op.known_by` on `knowledge` rows with the
+cognitive-boundary consequence stated. The invariant is now pinned by
+`test-v55-extractor-fields.mjs`: **every field the memory system ranks, gates or certifies on must be
+asked for in prose.**
+
+**Not yet verified, and it cannot be without a real extraction**, which costs a model call. The safeguard
+is the one v6 shipped: if the instruction does not work, the certificate now reports `checked: false`
+rather than claiming clean.
+
+### D8: the within-kind tiebreak is now recoverability, not recency
+
+The kind ordering decides which *categories* survive a budget trim. It says nothing about which rows of an
+equally-ranked category do, and that tiebreak was recency - the signal v3 and v4 measured to be weak.
+
+**The replacement is `EPISTEMIC_RETENTION`, and its criterion is recoverability, not importance**, which is
+the same asymmetry the rest of this system uses:
+
+| epistemic | retention | why |
+|---|---|---|
+| `observed` | 5 | the character's own senses; contradicting it denies them their experience |
+| `inference` | 4 | their own reasoning, and the plot |
+| `reported` | 3 | second-hand, but still recoverable only from the turn that said it |
+| `fact` | 2 | objective - and therefore the one value the setting, the world book or the scene can supply again |
+| `belief` | 2 | held opinion |
+| `plan` | 2 | intended; already ordered by its own kind |
+| `rumor` | 1 | unverified |
+
+`plan` is tied with `belief` rather than ranked: commitment rows split 7 `fact` to 6 `plan`, too thin a
+margin to justify claiming a plan outranks a promise.
+
+**The distribution is not a restatement of kind**, which is what made this worth doing: `state` (64 rows)
+splits fact 43 / observed 12 / belief 6 / inference 2 / reported 1; `knowledge` (52) splits reported 30 /
+observed 15 / fact 5 / inference 2; `belief` (73) splits belief 46 / **inference 26** / observed 1.
+
+**Measured live, and it does exactly what it was built to do.** Survival by epistemic, on the real store:
+
+| cap | kind | observed | inference | reported | fact |
+|---|---|---|---|---|---|
+| 20000 | knowledge | **12 / 12** | **2 / 2** | 19 / 27 | **0 / 5** |
+| 20000 | state | **12 / 12** | **1 / 1** | **1 / 1** | 38 / 38 |
+| 12000 | state | **12 / 12** | **1 / 1** | **1 / 1** | 30 / 38 |
+
+At a 20,000 cap the cut falls inside `knowledge` and **every first-hand sighting and every deduction
+survives while all five objective restatements are dropped**. At the default cap the cut falls inside
+`state` and takes only restatements there too.
+
+**Stated honestly: this changes which rows survive, not how many.** Coverage is still 69/197 at the
+default cap and 117/197 at 20,000. D8 is a reallocation, and its value is that the reallocation is now
+argued rather than inherited.
+
+### What this closes
+
+Both of v6's successors are done. The priority is two-dimensional: kind decides the category, epistemic
+decides the row, and the second dimension is the one channel the store actually discriminates on - the
+one that was being ignored while the dead channel (`importance`) and the empty one (`known_by`) were the
+only other candidates.
+
+**One thing to watch, stated rather than discovered later.** Populating `known_by` will enlarge the
+certificate's protected set, because `protectedRows` includes any memory with a holder set. The mandatory
+baseline is bounded at 24 rows. If extraction starts writing holder sets on many knowledge rows, the
+protected set can outgrow the baseline and `commitment 15/15` will be the measurement that notices.
+That is the correct behaviour - a holder set is a claim about who may see something - but it is a
+coupling worth knowing before it fires.
+
+
 
 
 

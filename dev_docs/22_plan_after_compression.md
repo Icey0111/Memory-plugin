@@ -483,6 +483,72 @@ Live, on the 51-floor chat, before and after:
 The stop-doing list, the cost rule, B1/B2, C1's 56% target, A3's narrowing to the named-thing lookup, and
 the verification discipline: measure on the real app, and write down the corrections.
 
+<!-- VERSION 7 -->
+## v7 - 2026-09-12 07:55:00 - D8 and D9 are done
+
+Measurements in `21_memory_thesis.md` v7. No model calls in this version.
+
+### D8 — shipped, verified live
+
+The within-kind tiebreak is no longer recency. It is `EPISTEMIC_RETENTION`, whose criterion is **how hard
+the memory is to recover from anywhere else in the prompt** rather than how important it seems:
+`observed` 5 > `inference` 4 > `reported` 3 > `fact` 2 = `belief` 2 = `plan` 2 > `rumor` 1.
+
+The kind ordering still decides the category; this decides the row. Measured live on the 51-floor chat,
+at a 20,000 cap the cut falls inside `knowledge` and **observed 12/12 and inference 2/2 survive while
+fact 0/5 is dropped**; at the default cap the cut falls inside `state` and takes restatements only
+(`observed` 12/12 kept, `fact` 30/38).
+
+**It changes which rows survive, not how many** — coverage stays 69/197 and 117/197. That is the honest
+scope of it, and `test-v55-state-priority.mjs` now pins both halves: epistemic ranks below kind, and
+first-hand rows survive ahead of restatements.
+
+### D9 — shipped, and the diagnosis was a proof
+
+**The model fills what the prompt asks for in prose and nothing else.** Inside one dataset of 246 stored
+operations: `epistemic`, which the prompt requires, is populated 245 times; `importance` and `known_by`,
+which the schema declares and the prose never mentions, are populated **zero** times each. The JSON schema
+is not an instruction, and `op.importance || 'medium'` has been filling that field for the store's whole
+life — which is why twelve call sites across seven files special-case `high`/`critical` and can never
+fire.
+
+**This project already learned the lesson once**, for `epistemic`, and the note is in `memory-core.js`.
+It was never applied to the other two fields in the same schema.
+
+**Fixed**: the prompt now requires `op.importance` (with a definition per level and an explicit "do not
+write the same value for every operation") and `op.known_by` on `knowledge` rows (with the
+cognitive-boundary consequence stated). `test-v55-extractor-fields.mjs` pins the invariant that matters:
+**every field the memory system ranks, gates or certifies on must be asked for in prose.**
+
+**Not yet verified — it cannot be without a real extraction, which costs a model call.** The safeguard is
+v6's: if the prose does not work, the certificate reports `checked: false` instead of claiming clean.
+
+### Watch item, stated rather than discovered later
+
+Populating `known_by` enlarges the certificate's protected set, because `protectedRows` includes any
+memory with a holder set, and the mandatory baseline is bounded at 24 rows. If extraction starts writing
+holder sets widely, the protected set can outgrow the baseline and `commitment` will be the measurement
+that notices. That is correct behaviour — a holder set is a claim about who may see something — but it is
+a coupling worth knowing before it fires.
+
+### Closed
+
+D7's successors are both done. There is no open item in this plan that can be advanced without either a
+model call or the user's decision:
+
+- **Anything requiring a model call**: D9's verification (one extraction), H3, H4, and the LongMemEval
+  pass in phase E. All billed to the user.
+- **Anything requiring a decision**: whether to raise the state cap from 12,000 (the coverage curve in
+  `21` v4 prices every step), and whether to keep spending on the compression work C1 needs.
+- **Available with neither**: nothing left that the measurements say would help. C1's remaining 56% gap
+  cannot be closed deterministically — v6 sized the two strategies and one saved 9%, the other 0%.
+
+### Unchanged
+
+The stop-doing list, the cost rule, B1/B2, C1's 56% target, A3's narrowing to the named-thing lookup, and
+the verification discipline: measure on the real app, and write down the corrections.
+
+
 
 
 

@@ -8,6 +8,7 @@
 
 import { estimateTokens, tokensToChars } from './v55-tokenizer.js';
 import { canonicalKindWeight, compareCanonicalMemories } from './v55-runtime.js';
+import { epistemicRetention } from './memory-core.js';
 
 function cleanText(value, max = 100_000) {
     return String(value ?? '')
@@ -402,6 +403,7 @@ function buildCurrentStateBlock({ activeMemories, maxCurrentStateChars, mandator
     // and the heading is not re-emitted row by row; the weight is what the trim actually depends on.
     const byPriority = (a, b) => canonicalKindWeight(b?.kind) - canonicalKindWeight(a?.kind)
         || CURRENT_STATE_GROUP_LABEL[currentMemoryGroup(a)].localeCompare(CURRENT_STATE_GROUP_LABEL[currentMemoryGroup(b)])
+        || epistemicRetention(b) - epistemicRetention(a)
         || compareCanonicalMemories(a, b);
     must.sort(byPriority);
     rest.sort(byPriority);
