@@ -228,3 +228,68 @@ What is left needs a live model, and it is the owner’s to run:
 - No external memory service or server-side database.
 - No function calling from inside the story: the model reads and writes text, the host parses it.
 - No revival of the layered summary stack without a superseding ADR.
+
+<!-- VERSION 5 -->
+## v5 - 2026-09-12 21:05:40 - record the budget frontier and the slot count it decided
+
+
+
+
+
+### Shipped (2026-09-12, branch codex/narrative-raw-retrieval)
+
+| Item | Evidence |
+| --- | --- |
+| One generation entry, replacing four layered installs | index-v55.js, test-extension-frontend-contract.mjs |
+| The original text is archived with versions, chunked and indexed | raw-history.js, test-narrative-pipeline.mjs |
+| One continuity summary every N floors, bounded and validated | narrative-runtime.js, test-narrative-pipeline.mjs |
+| A floor is hidden only while the summary covers all of it | test-narrative-pipeline.mjs, test-narrative-bootstrap-lifecycle.mjs |
+| Evidence quoting cites the original span and skips what the prompt still shows | packRawEvidence, test-narrative-pipeline.mjs |
+| The layered summary/consistency/provenance stack is retired | ADR-0002, remove/ |
+| The syntax gate is a discovered file list, not a hand-maintained one | check-syntax.mjs |
+| The legacy generation runtime and the fact subsystem are retired | ADR-0007, ADR-0009 |
+| Knowledge boundaries are an explicit, injected section of the summary | ADR-0008, test-narrative-pipeline.mjs |
+| The replayable fact set left the chat file, measured at 53-188 KB per chat | ADR-0004, test-v55-derived-store.mjs |
+| Lexical recall over original text has a committed baseline | recall-baseline.mjs, ADR-0004 |
+| The ruler reports per-channel entropy and margin, the drop rule and the carrying slot, and compares two runs as paired questions | recall-baseline.mjs |
+| The lexical score is BM25: recall is unchanged and the probe set costs 18% fewer evidence tokens | raw-history.js, test-narrative-pipeline.mjs |
+| Budgeted submodular packing is implemented and measured; it loses the A/B, so it is not the default | dev_docs/06_retrieval_research.md, test-narrative-pipeline.mjs |
+| The evidence slot count derives from the evidence budget, one slot per 400 tokens (ADR-0014) | raw-history.js, test-narrative-pipeline.mjs |
+| Continuity anchors survive an arbitrary number of summary rewrites | ADR-0005, test-narrative-pipeline.mjs |
+| The two quiet failures (repeated failure, unsummarized tail) are counted and announced | ADR-0005, test-narrative-pipeline.mjs |
+| Evidence packing merges, shares and trims; oblique recall 17% -> 67% | ADR-0006, test-narrative-pipeline.mjs |
+
+### Next, in order
+
+The four items this roadmap carried are closed. The paraphrase set was grown from 6 countable
+questions to 12 and the retrieval decision made (ADR-0010); the archive rate was measured and the
+growth policy is "no pruning, because superseded versions measured zero" (ADR-0011); the end-to-end
+questions were answered offline - the resident block stays inside its budget across ten rewrites, and
+evidence precision is a measured 15% (ADR-0010) - and the boundary question is decided as a record
+rather than a filter (ADR-0012).
+
+What is left needs a live model, and it is the owner’s to run:
+
+1. **The entropy and margin layer needs a second channel.** Layer 1 measured recall-neutral and layer 3 lost
+   its A/B; layer 2 fuses channels by their margin, so it waits on a configured backend. Both channels are
+   reported separately, so it is a before/after on the same question set rather than a judgement call.
+2. **A drift run against the real summarizer**: ten rewrites on a long chat, checking the same anchors
+   and boundaries the offline experiment checks with a stub summarizer.
+3. **Re-run the ruler once a story passes a few hundred floors.** The per-floor rates are in its output,
+   and the assumption they carry - superseded versions stay negligible - is stated in ADR-0011.
+
+### Open risks
+
+| Risk | State |
+| --- | --- |
+| Summary drift over many regenerations | Bounded offline: anchors and boundaries survive ten lossy rewrites (ADR-0005, ADR-0012). A run against the real summarizer is outstanding |
+| Chat file size | Closed by measurement: the archive costs 3.8 KB per floor and superseded versions measured zero, so nothing is pruned (ADR-0011) |
+| Lexical-only recall on oblique questions | Measured at 49-60% with 15-16% span precision on a rebuilt 52-question set (dev_docs/06_retrieval_research.md v2). The older 45% is not comparable: the denominator changed with the needle rule |
+| The unsummarized tail | Guarded: counted, thresholded and announced (ADR-0005) |
+| Evidence precision | Measured at 32% of quoted spans at the shipped two slots, falling to 13% at six (ADR-0014). It rises when fewer, larger spans are quoted, so it is a proxy for signal-to-noise rather than for recall |
+### Explicitly not planned
+
+- No model training or fine-tuning.
+- No external memory service or server-side database.
+- No function calling from inside the story: the model reads and writes text, the host parses it.
+- No revival of the layered summary stack without a superseding ADR.

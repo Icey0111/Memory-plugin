@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
     nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
-    RAW_CHUNK_SIZE } from './raw-history.js';
+    RAW_CHUNK_SIZE, evidenceSlots } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
@@ -605,6 +605,18 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     for (const row of first.trace) assert.equal(known.has(row.outcome), true, 'unknown outcome ' + row.outcome);
     assert.equal(first.trace.filter(row => row.outcome === 'included').length, first.sources.length,
         'the trace and the quoted spans agree on what was included');
+
+    // The slot count follows the budget: one slot per 400 tokens, capped at six. A share below about 400
+    // cannot cover a merged envelope and a share above about 500 buys nothing, so a fixed four slots is
+    // wrong at both ends - at 1000 it spends on spans that lose the answer, at 2400 it leaves slots the
+    // budget could pay for unquoted. Measured: 63% at two slots, 69% at four, 75% at six.
+    assert.deepEqual([100, 600, 1000, 1599, 1600, 2400, 9000].map(evidenceSlots), [1, 1, 2, 3, 4, 6, 6]);
+    const derived = packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set() });
+    assert.equal(derived.sources.length, 2, 'a 1000-token budget pays for two slots');
+    const wide = packRawEvidence(ranked, history, { maxTokens: 2400, visibleSources: new Set() });
+    assert.equal(wide.sources.length, 5, 'a 2400-token budget pays for six, and there are five candidates');
+    const pinned = packRawEvidence(ranked, history, { maxTokens: 1000, maxEntries: 4, visibleSources: new Set() });
+    assert.equal(pinned.sources.length, 4, 'an explicit slot count still overrides the derivation');
 
     // A policy nobody implements falls back to the one the runtime uses, not to nothing.
     const unknown = packRawEvidence(ranked, history, { maxTokens: 600, maxEntries: 2,

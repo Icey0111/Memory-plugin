@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence } from './raw-history.js';
+import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, evidenceSlots } from './raw-history.js';
 import { DERIVED_KEYS } from './v55-derived-store.js';
 import { estimateTokens } from './v55-tokenizer.js';
 
@@ -39,7 +39,8 @@ const word = (name, fallback) => {
 /** Positional arguments are chat paths; everything else is a flag or a flag's value. */
 const flagValues = new Set();
 args.forEach((value, index) => {
-    if (['--limit', '--probes', '--paraphrases', '--scorer', '--pack', '--dump', '--against'].includes(value)) {
+    if (['--limit', '--probes', '--paraphrases', '--scorer', '--pack', '--dump', '--against',
+        '--evidence', '--entries'].includes(value)) {
         flagValues.add(index + 1);
     }
 });
@@ -52,7 +53,11 @@ const againstFile = word('against', null);
 const SCORER = word('scorer', 'bm25') === 'idf' ? 'idf' : 'bm25';
 const PACK = word('pack', 'greedy');
 const POLICY = ['submodular', 'relevance'].includes(PACK) ? PACK : 'greedy';
-const EVIDENCE_TOKENS = 1000;
+const EVIDENCE_TOKENS = flag('evidence', 1000);
+// Zero means the slot count the budget pays for, which is what the plugin uses when nobody overrides it.
+const EVIDENCE_ENTRIES = flag('entries', 0) || evidenceSlots(EVIDENCE_TOKENS);
+// Zero is passed through so the library default - the slot count the budget pays for - is what gets tested.
+const SLOTS = flag('entries', 0) || undefined;
 
 /**
  * A question set written by hand against a real chat, in two kinds:
@@ -239,8 +244,8 @@ function measure(chat) {
     const margins = [];
     for (const probe of probes) {
         const ranked = rankRawChunks(chunks, probe.query, [], { scorer: SCORER });
-        const packed = packRawEvidence(ranked, history, { maxTokens: EVIDENCE_TOKENS, visibleSources: new Set(),
-            policy: POLICY, query: probe.query });
+        const packed = packRawEvidence(ranked, history, { maxTokens: EVIDENCE_TOKENS,
+            maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: probe.query });
         if (packed.text.includes(probe.needle)) found += 1;
         const rank = ranked.findIndex(entry => entry.chunk.text.includes(probe.needle));
         if (rank >= 0) { candidateHit += 1; ranks.push(rank); }
@@ -312,7 +317,7 @@ function measureParaphrases(chats, entries) {
                 || searched[0];
             const ranked = rankRawChunks(chat.chunks, entry.question, [], { scorer: SCORER });
             const packed = packRawEvidence(ranked, chat.history, { maxTokens: EVIDENCE_TOKENS,
-                visibleSources: new Set(), policy: POLICY, query: entry.question });
+                maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: entry.question });
             const where = attribute(ranked, packed, entry.needle, chat.history.records, chat.chunks);
             const signals = rankingSignals(ranked);
             row.rank = where.rank;
@@ -375,7 +380,8 @@ function measureParaphrases(chats, entries) {
         all: rate(counted), precision: spans ? carrying / spans : null, tokens: median(counted.map(row => row.tokens)),
         drops: Object.fromEntries(byRule) };
     if (dumpFile) {
-        fs.writeFileSync(dumpFile, JSON.stringify({ scorer: SCORER, pack: POLICY, summary,
+        fs.writeFileSync(dumpFile, JSON.stringify({ scorer: SCORER, pack: POLICY,
+            evidenceTokens: EVIDENCE_TOKENS, entries: EVIDENCE_ENTRIES, pinnedEntries: Boolean(SLOTS), summary,
             rows: results.map(row => ({ question: row.question, kind: row.kind, chat: row.chat,
                 occurrences: row.occurrences, found: row.found, rank: row.rank, slot: row.slot, drop: row.drop,
                 tokens: row.tokens, entropy: row.entropy, margin: row.margin, lexical: row.lexical,
@@ -448,7 +454,8 @@ if (!chats.length) {
 
 const pct = value => value === null ? '  n/a' : (value * 100).toFixed(0).padStart(4) + '%';
 console.log('scorer ' + SCORER + ' | pack ' + POLICY + ' | evidence budget ' + EVIDENCE_TOKENS
-    + ' tokens | top ' + limit + ' chats by size');
+    + ' tokens in ' + EVIDENCE_ENTRIES + ' slots' + (SLOTS ? ' (pinned)' : ' (derived from the budget)')
+    + ' | top ' + limit + ' chats by size');
 console.log('chat'.padEnd(40) + 'fileKB  msgs  floors  storeKB  moved  archive  chunks  probes  recall  cand  rank   tok');
 const rows = [];
 for (const chat of chats) {

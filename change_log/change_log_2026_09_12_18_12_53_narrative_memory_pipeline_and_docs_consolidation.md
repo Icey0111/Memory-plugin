@@ -286,3 +286,56 @@ dev_docs/06_retrieval_research.md v2 (the measurements, the three faults, what t
 left), dev_docs/02_development.md v4 (the switches, the attribution, the paired comparison, the entry's
 chat field), dev_docs/04_roadmap.md v4 (three shipped rows and the restated open items), dev_docs/header.md
 v4. Tests: 32/32, with two new sections pinning the scorer arithmetic and the packer's policy contract.
+## Addendum 2026-09-12 21:05:40 - the budget sweep, and the one change that won
+
+With the ruler able to pin the evidence budget and the slot count separately, both were swept on the same
+52 questions. Three allocation rules were tried first and all three measured as washes; the sweep then
+found a Pareto win that had nothing to do with allocation arithmetic.
+
+### Three rules inside the fixed four-slot shape, all washes
+
+The diagnostic named the defect precisely: all six answers that sat inside a quoted span and outside its
+quoted range were in spans that had merged two or three candidates, and a merged span was spending one
+entry's 250-token share on its best-ranked member.
+
+- **Member-first absorption** (quote the other members before padding outward): changed no outcome at all -
+  32 included and 6 trimmed out either way - because the outward growth already fills whatever budget it is
+  given. Reverted.
+- **One share per merged member**: repaired exactly the defect it targeted (trimmed_out 6 -> 2, entry_cap
+  12 -> 3) and converted it into 12 spans that could not be quoted at all. Recall 62% -> 63%, 2 lost against
+  3 won, p=1.0; tokens 932 -> 971.
+- **The same with a minimum-quote guard**, so a slot is never spent on nothing: 63%, precision 20%, 961
+  tokens. Still no resolvable recall win.
+
+Each rule repaired what it targeted and turned it into another failure, because four slots of 250 tokens is
+the entire budget. That is the finding: inside a fixed four-slot shape the allocation arithmetic has no room
+to matter. All three were reverted, and they are recorded in dev_docs/06_retrieval_research.md v3 section 12
+so the next session does not re-derive them.
+
+### The sweep, and what it decided (ADR-0014)
+
+| budget | slots | answer-in-context | span precision | evidence |
+| --- | --- | --- | --- | --- |
+| 1000 | 2 | 63% | 32% | 886 tokens |
+| 1200 | 3 | 63% | 21% | 1075 tokens |
+| 1600 | 4 | 69% | 17% | 1437 tokens |
+| 2000 | 5 | 71% | 14% | 1777 tokens |
+| 2400 | 6 | 75% | 13% | 2108 tokens |
+
+Two mechanisms: a share below about 400 tokens cannot cover a merged envelope, and a share above about 500
+buys nothing. With the share pinned at what it needs, recall tracks the slot count and precision runs the
+other way. The shipped four slots at 1000 tokens (62%, 15%, 932) is dominated by two slots at the same
+budget (63%, 32%, 886). raw-history.js now has evidenceSlots(maxTokens) - one slot per 400 tokens, minimum
+one, maximum six - and an explicit maxEntries still overrides it. Nothing about the setting changes; only
+what the packer does with it.
+
+It also answers a question the earlier notes asserted rather than measured. Raising the budget used to make
+the same four quotations longer; the frontier above is what the setting should have been buying. And the 12
+losses that no budget reaches are ranking losses - at every budget from 600 to 2400 the answer was in the
+candidate list and outside the slots because its span never ranked in the top four.
+
+### Docs
+
+ADR-0014, dev_docs/06_retrieval_research.md v3 (section 12: the frontier, the three washes, and what is
+left), dev_docs/02_development.md v5 (--evidence and --entries), dev_docs/04_roadmap.md v5,
+dev_docs/header.md v5. Tests: 32/32, with the slot derivation and its override pinned in section 18.

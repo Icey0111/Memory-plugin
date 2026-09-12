@@ -15,6 +15,8 @@ belongs in Git commits and pull requests.
   JSON and `--against <dump>` compares two runs as paired questions with an exact McNemar test, and
   `--scorer`/`--pack` switch the rule under test. A question entry may name its chat, so its needle is
   checked for uniqueness where it matters - inside that chat - and for containment in one chunk.
+  `--evidence` and `--entries` pin the evidence budget and the slot count, which is how the budget frontier
+  below was measured.
 - Continuity anchors: promises, ownership, secrets, identities and life states are stored separately,
   fed back to the summarizer verbatim every pass, and re-injected every generation. An anchor the model
   stops mentioning is kept and flagged; only an explicit resolution removes it.
@@ -61,6 +63,12 @@ belongs in Git commits and pull requests.
   frequency saturates and length is normalised. Measured paired on 52 hand-written questions: one question
   moved and none were won, so recall is unchanged; on the probe set the same 100% recall costs 737
   evidence tokens a query instead of 904. The change buys cost, not recall, and is reported that way.
+- The evidence slot count is derived from the evidence budget - one slot per 400 tokens, between one and
+  six - instead of being fixed at four. Swept on 52 hand-written questions: a share below about 400 tokens
+  cannot cover a merged message envelope, and a share above about 500 buys nothing, so at 1000 tokens four
+  slots was quoting twice as much junk for the same answers. Two slots at the shipped budget measures 63%
+  answer-in-context against 62%, 886 evidence tokens against 932, and 32% span precision against 15%; a
+  larger budget now buys more slots rather than longer quotations (1600 -> 69%, 2400 -> 75%). ADR-0014.
 - Budgeted submodular evidence packing (arXiv 2607.00725) is implemented behind the ruler's `--pack`
   switch and is deliberately not the default: it measured 54% answer-in-context against the greedy
   packer's 62% on the same 52 questions (7 against 3 discordant, p=0.34), trading oblique recall
