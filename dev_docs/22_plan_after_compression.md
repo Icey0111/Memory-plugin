@@ -280,3 +280,82 @@ renders, the "why is it like this" record must not be the thing a tail trim remo
 The stop-doing list, W0, A1 (now done — see 21 v3), B1, B2, C1's situation-model row, and the cost rule:
 **no per-turn model call, and no model output may mean "do not retrieve".**
 
+<!-- VERSION 4 -->
+## v4 - 2026-09-12 06:05:00 - the corpus exists, the gate question is closed, and compression becomes the binding constraint
+
+Measurements and the correction of this version's own first draft are in `21_memory_thesis.md` v4.
+
+### The corpus was already on disk
+
+v2 and v3 kept saying A2 "needs a corpus where the cap binds". Scanning every chat the host owns found one
+immediately: `Seraphina - 2026-09-11@22h56m08s521ms`, 101 rows / 51 assistant floors / **224 memories / 197
+slot-bearing**, against the acceptance chat's 28 floors and 12 slot memories. **No corpus had to be built;
+nobody had looked.** Every future "we need different data" claim in this plan now has to survive
+`node chat-scan.mjs` first, which lists every chat with its store size in one command.
+
+### A3a and A3b are closed
+
+Both were tested on the real corpus, alongside recency, the production dialogue query, and a random baseline:
+
+| cap | required / dropped | recency@8 | dialogue@8 | state@8 | lastUser@8 | random@8 |
+|---|---|---|---|---|---|---|
+| 12000 | 128 / 142 | 0.039 | 0.039 | 0.039 | 0.055 | **0.056** |
+| 9000 | 146 / 163 | 0.034 | 0.034 | 0.041 | 0.048 | **0.049** |
+| 7000 | 157 / 174 | 0.032 | 0.032 | 0.038 | 0.045 | **0.046** |
+| 4500 | 172 / 192 | 0.041 | 0.029 | 0.029 | 0.041 | **0.042** |
+| 2500 | 184 / 204 | 0.038 | 0.027 | 0.033 | 0.038 | **0.039** |
+
+Every arm at or below chance, at every cap. **This is not a verdict on the query sources; it is a verdict on
+the target.** 90% of dropped memories are certificate-required, so recall@B is about B/|D| for any ordering.
+The gate question **cannot be answered with the certificate as ground truth** and is closed rather than
+deferred.
+
+**A3 is redefined for the last time.** Not "recover what the budget dropped" — that target is 90% of the pool
+and unrankable. The gate's real and only job is the **narrow named-thing lookup**: the current turn named
+something specific, go get it. That target is small by definition, and testing it needs ground truth that is
+small too — a planted fact, or a held-out turn whose content is known to depend on one memory. **H4's
+protocol, not the certificate's.**
+
+### The binding constraint is capacity, and it now has a number
+
+At the default 12,000-character cap the block carries **69 of 197 slot values (35%)**, and it is already
+rendering 11,965 of 12,000 characters. Rendering all 197 in the current one-row-per-memory form needs about
+**27,300 characters**. So:
+
+> **The state block needs ~56% compression to be sufficient at 51 assistant floors.** No retrieval design
+> reaches that, because retrieval selects and selection is not a capacity mechanism.
+
+Where the 12,000 characters go today, measured: **69% row text, 31% row labels** — but only 5% is the repeated
+`owner.` prefix and 5% the repeated `kind:`. Hoisting both is worth **1,048 characters, about 7.5 extra
+rows: 4% of the gap.** It is worth doing and it is not the answer.
+
+(This version's first draft claimed 3,004 characters and 22 rows from label hoisting. **Wrong** — the sum was
+taken over the 4 distinct owners instead of the 81 rendered rows, overstating the saving fivefold. Corrected
+above. It is the same class of error as v2's "89 names", which is why both are written down rather than
+quietly fixed.)
+
+### Plan changes
+
+- **C1 is promoted to the critical path and given a target: 56%.** It is no longer "the situation-model row";
+  it is *the* mechanism by which the state fits. Its acceptance test is now concrete — the same 197 slot
+  values, rendered at a fidelity the certificate still scores green, inside 12,000 characters.
+- **A3a and A3b: closed**, with the table above. The gate's scope narrows to the named-thing lookup and its
+  test protocol becomes H4's.
+- **New defect, undiagnosed: `causal` is 9/16 at a 20,000-character cap** with the block nowhere near tight.
+  Seven chains are broken structurally, not by pressure. v3's reservation fixed the *budget* failure mode; this
+  is a different one. Do not assume the chain renders what the certificate needs.
+- **New D6: the certificate's ground truth cannot test retrieval.** `state` is a binary sufficiency ideal over
+  every live slot, which is 90% of any dropped set at scale. Any future retrieval experiment needs a small,
+  independent target — not this.
+- **`chat-scan.mjs` is a prerequisite for any "we need more data" claim.** It reads the store straight
+  from each chat file, so it costs nothing and needs no browser. Writing it also caught a real trap: the store
+  is serialised **columnar** on disk (`v55-store-compact.js`), so a naive `Object.values(store.memories)`
+  returns the four structural keys and reports a memory count of **4** for a chat that holds **224**. The
+  script now decodes both shapes and reproduces the live counts exactly.
+
+### Unchanged
+
+The stop-doing list, the cost rule (**no per-turn model call; no model output may mean "do not retrieve"**),
+B1/B2, and the verification discipline: measure on the real app, and write down the corrections.
+
+

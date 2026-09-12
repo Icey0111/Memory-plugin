@@ -398,3 +398,110 @@ beats recency on this corpus) and its successor question is where the gate's que
 recent-dialogue query cannot by construction outrank recency. The certificate's coverage gap and the
 reference block's composition are both promoted from "unknown" to measured inputs.
 
+<!-- VERSION 4 -->
+## v4 - 2026-09-12 06:05:00 - on a real 51-floor chat the state block is 65% short, and no gate can fix that
+
+v3 tested the gate on the 28-assistant-floor acceptance chat and concluded "no gate beats recency". That
+chat turned out to be the wrong corpus for a second reason: at its size **nothing overflows**. Scanning every
+chat the host owns found the corpus the question needs:
+
+| chat | rows | assistant floors | memories | active | slot-bearing |
+|---|---|---|---|---|---|
+| acceptance chat (v2, v3) | 55 | 28 | 76 | 73 | 12 |
+| **`Seraphina - 2026-09-11@22h56m08s521ms`** | **101** | **51** | **224** | **217** | **197** |
+
+The second is 1.8x the floors and **16x the slot-bearing memories**. Everything below is measured there.
+Probes: `expr-open224.js`, `expr-a2-breakdown.js`, `expr-a3-arms.js`, `expr-state-compose2.js`.
+
+### The state contract fails at this length, and the certificate says so
+
+Sweeping the state cap on the 51-floor chat:
+
+| state cap | tokens | state | commitment | causal | tcausal | active dropped |
+|---|---|---|---|---|---|---|
+| 20000 | 14143 | 112/197 | 15/15 | 9/16 | 16/40 | 92 |
+| **12000 (default)** | **9436** | **69/197** | **15/15** | **9/16** | **14/40** | **142** |
+| 9000 | 7754 | 51/197 | 15/15 | 9/16 | 14/40 | 163 |
+| 7000 | 6635 | 40/197 | 15/15 | 9/16 | 14/40 | 174 |
+| 4500 | 5250 | 25/197 | 8/15 | 9/16 | 10/40 | 192 |
+| 2500 | 4083 | 13/197 | 3/15 | 4/16 | 5/40 | 204 |
+
+**At the default setting the block carries 69 of 197 slot values — 35%.** The certificate has been reporting
+`state 12/12` on the acceptance chat because that chat only *has* 12 slot memories; on a chat of ordinary
+length the same metric reads **0.35**, and the shortfall is not reachable by any budget that also leaves room
+for dialogue: even at a **20,000-character cap the block is 112/197**, because the 197 rows need about
+**27,300 characters** to render as they are written.
+
+Two things survive, and they are the important ones. **`commitment` is 15/15 at every cap down to 7,000** —
+the irreversible set is carried in full at the default, which is the promise that matters. And `stale` is 0
+at every budget.
+
+**A third thing does not survive, and is not a budget problem.** `causal` is **9/16 at a 20,000-character cap
+with 19,965 characters rendered** — seven causal chains are broken with the block nowhere near tight. That is
+structural, not pressure, and v3's reservation fix does not address it. Recorded as a defect to investigate;
+not diagnosed here.
+
+### The gate test, on a corpus where it finally has power
+
+Ground truth is still machine-generated: the certificate's `state.omitted` ∪ `commitment.missing`, ranked
+inside the dropped set. Four query sources plus recency:
+
+| cap | dropped | required | ratio | recency@8 | dialogue@8 | state@8 | lastUser@8 | **random@8** |
+|---|---|---|---|---|---|---|---|---|
+| 12000 | 142 | 128 | 0.90 | 0.039 | 0.039 | 0.039 | 0.055 | **0.056** |
+| 9000 | 163 | 146 | 0.90 | 0.034 | 0.034 | 0.041 | 0.048 | **0.049** |
+| 7000 | 174 | 157 | 0.90 | 0.032 | 0.032 | 0.038 | 0.045 | **0.046** |
+| 4500 | 192 | 172 | 0.90 | 0.041 | 0.029 | 0.029 | 0.041 | **0.042** |
+| 2500 | 204 | 184 | 0.90 | 0.038 | 0.027 | 0.033 | 0.038 | **0.039** |
+
+**Every arm is at or below random at every budget.** Paired bootstrap at B=8 (2,000 resamples) puts
+dialogue−recency at [−0.016, +0.023] and state−recency at [−0.047, +0.047] at the default cap, and the
+pattern holds at every cap. A3a (query from the state block's own content) and A3b (query from the last user
+message) were both tested and both fail identically.
+
+**The reason is the `ratio` column, and it is not a defect in the gates.** **90% of dropped memories are
+required by the certificate.** When the target is 90% of the pool, recall@B is ≈ B/|D| for *any* ordering,
+because there is almost nothing to rank *against*. A ranking cannot select "most of everything", so the
+measurement is informationless by construction — and that is a property of the problem, not of the scorer.
+
+### The conclusion this forces, and it revises v3
+
+v3 said: *retrieval is the overflow mechanism of a bounded state block*. On a 28-floor chat that reads well,
+where the overflow is a handful of rows. **On a real chat the overflow is 65% of the state**, and no ranking
+recovers 65% of anything.
+
+> **Retrieval is the mechanism for the last mile, not the overflow.** It answers "the current turn named
+> something specific — where is it?". It cannot answer "the state does not fit", because that is a capacity
+> problem and selection is not a capacity mechanism.
+
+The capacity gap is now quantified rather than asserted: **197 slot rows need ~27,300 characters against a
+12,000-character cap — 56% compression — and the block already renders 11,965 of 12,000.**
+
+### A correction to this version's own first draft
+
+The first draft of this version claimed the block spends **3,004 characters on repeated slot labels and could
+fit 22 more rows** by hoisting them. **That was an arithmetic error** — the sum was taken over the 4 *distinct*
+owners instead of the 81 rendered rows. Measured properly:
+
+| | chars | share |
+|---|---|---|
+| row text | 7,742 | 69% |
+| row labels (`[kind:slot] `) | 3,501 | **31%** |
+| — of which the repeated `owner.` prefix | 584 | 5% |
+| — of which the repeated `kind:` prefix | 576 | 5% |
+
+Hoisting the owner prefix saves **553 characters, about 4 extra rows** at 139 characters per row; hoisting
+kind as well saves **1,048, about 7.5 rows**. So **label micro-optimisation is worth 4% of the gap**, not the
+31% the label share suggests. It is worth doing and it is not the answer. **The answer has to be compressing
+the 81-character memory text itself**, which is C1's situation-model row and the compression-rate knob the
+thesis already identifies.
+
+### What this changes
+
+The compression axis is promoted from "one of the phases" to **the binding constraint**, and it now has a
+number to hit. A3a and A3b are **closed** (both tested, both at chance, and the reason is structural). The
+gate's remaining honest scope is the narrow named-thing lookup, which still has to be shown to beat recency —
+and on this evidence it will only do so when the target is *small*, which the certificate's binary sufficiency
+definition can never produce.
+
+

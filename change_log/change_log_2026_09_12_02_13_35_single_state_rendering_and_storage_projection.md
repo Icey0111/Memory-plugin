@@ -804,5 +804,101 @@ untouched rather than starving the state block. That is exactly the behaviour
 **Status: verified.** The fix is committed (`7fa405e`), scripted for deployment (`f399e81`), covered offline
 (79/79), and now measured working in the running app.
 
+---
+
+## 13. The corpus was already on disk, the state block is 65% short at 51 floors, and the gate question is closed
+
+### Problem / Requirement
+
+Three plan revisions in a row — `22_plan_after_compression.md` v2, v3 and v4 — deferred a question with the
+same sentence: *this needs a corpus where the state cap actually binds*. Nothing checked whether one was
+already on the machine. It was:
+
+| chat | rows | assistant floors | memories | active | slot-bearing |
+|---|---|---|---|---|---|
+| the acceptance chat used since entry 9 | 55 | 28 | 76 | 73 | **12** |
+| `Seraphina - 2026-09-11@22h56m08s521ms` | 101 | 51 | 224 | 217 | **197** |
+
+Sixteen times the slot-bearing memories. Every question that had been deferred for want of a corpus was
+measurable within a minute of finding it.
+
+### Purpose of Change
+
+Measure the two open questions on a corpus with real power — *where does the state actually break?* and *can
+any query source recover what the budget dropped?* — and record what the answers force, including a
+correction to this session's own v3 conclusion and to a wrong number written into v4's first draft.
+
+### How It Was Changed
+
+**Measurement (no product code, zero model calls)**
+
+- [chat-scan.mjs](file:///D:/memory_plugin/chat-scan.mjs) - new, tracked. Lists every chat the host owns
+  with its memory store, read straight from the chat files, so "we need a longer corpus" can be checked
+  instead of asserted. Writes nothing.
+- [expr-open224.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-open224.js) - opens the
+  51-floor chat and confirms its live shape.
+- [expr-a2-breakdown.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a2-breakdown.js) -
+  re-run on the new corpus: the certificate across ten state caps.
+- [expr-a3-arms.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-a3-arms.js) - new. Five arms
+  ranked inside the dropped set against the certificate's required set, with a paired bootstrap.
+- [expr-state-compose2.js](file:///D:/memory_plugin/remove/.audit-v55/live-check/expr-state-compose2.js) -
+  new. Where the 12,000 characters of the state block actually go.
+
+**Documentation**
+
+- [dev_docs/21_memory_thesis.md L401](file:///D:/memory_plugin/dev_docs/21_memory_thesis.md#L401) - v4.
+- [dev_docs/22_plan_after_compression.md L283](file:///D:/memory_plugin/dev_docs/22_plan_after_compression.md#L283) - v4.
+
+### Result
+
+**The state contract fails at 51 assistant floors, and the certificate says so.** At the default
+12,000-character cap the block renders 11,965 characters and carries **69 of 197 slot values — 35%**.
+`commitment` is **15/15**, so the irreversible set is intact, which is the promise that matters and it holds.
+`stale` is 0 at every budget. But `state` goes from "12/12" on the acceptance chat to **0.35** here, and the
+shortfall is not a tuning error: rendering all 197 rows as they are written needs about **27,300 characters**,
+and even a 20,000-character cap only reaches **112/197**.
+
+**The gate question is closed, and not in the gate's favour.** Five arms — recency, the production dialogue
+query, a query built from the state block's own content (A3a), the last user message (A3b), and random —
+ranked inside the dropped set, with the certificate's `state.omitted` ∪ `commitment.missing` as ground truth:
+
+| cap | required / dropped | recency@8 | dialogue@8 | state@8 | lastUser@8 | random@8 |
+|---|---|---|---|---|---|---|
+| 12000 | 128 / 142 | 0.039 | 0.039 | 0.039 | 0.055 | **0.056** |
+| 9000 | 146 / 163 | 0.034 | 0.034 | 0.041 | 0.048 | **0.049** |
+| 7000 | 157 / 174 | 0.032 | 0.032 | 0.038 | 0.045 | **0.046** |
+| 4500 | 172 / 192 | 0.041 | 0.029 | 0.029 | 0.041 | **0.042** |
+| 2500 | 184 / 204 | 0.038 | 0.027 | 0.033 | 0.038 | **0.039** |
+
+**Every arm is at or below chance at every cap.** The reason is in the second column: **90% of dropped
+memories are required**, so recall@B is about B/|D| for any ordering — there is almost nothing to rank
+against. The measurement is informationless by construction, which is a property of the target, not of the
+scorers. A3a and A3b are therefore **closed rather than deferred**, and the gate's remaining honest scope is
+the narrow named-thing lookup, whose test protocol has to be H4's rather than the certificate's.
+
+**This revises entry 10's own conclusion.** Entry 10 said *retrieval is the overflow mechanism of a bounded
+state block*. On a 28-floor chat, where the overflow is a handful of rows, that reads well. On a real chat the
+overflow is **65% of the state**, and no ranking recovers 65% of anything: **retrieval is the mechanism for
+the last mile, not the overflow**, because selection is not a capacity mechanism. The capacity gap is now a
+number — **~56% compression** — and **C1 is promoted to the critical path with that target**.
+
+**A wrong number in this version's first draft, corrected.** The draft claimed the block spends **3,004
+characters on repeated slot labels and could fit 22 more rows** by hoisting them. That was an arithmetic
+error: the sum was taken over the 4 *distinct* owners instead of the 81 rendered rows, overstating the saving
+**fivefold**. Measured properly, the labels are 31% of the row characters but the repeated `owner.` prefix is
+5% and `kind:` another 5%; hoisting both is worth **1,048 characters, about 7.5 extra rows — 4% of the gap.**
+Worth doing, not the answer. It is the same class of error as entry 9's "89 names", and both are written down
+rather than quietly fixed.
+
+**Two things found on the way.** `causal` is **9/16 at a 20,000-character cap** with the block nowhere near
+tight — seven chains broken structurally rather than by pressure, a failure mode entry 10's reservation fix
+does not address and this entry does not diagnose. And the on-disk store is serialised **columnar**, so a
+naive `Object.values(store.memories)` returns four structural keys and reports a memory count of **4** for a
+chat holding **224**; `chat-scan.mjs` decodes both shapes and reproduces the live counts exactly.
+
+**Verification.** All numbers measured against the running app over CDP. `npm run check` clean, **79/79 test
+files pass**. No product code changed in this entry, so the live deployment is unchanged.
+
+
 
 
