@@ -63,9 +63,15 @@ The 421757c acceptance run separated four failures the numbered-operation protoc
   ledger is asked to establish the initial anchors its continuation needs, judged by whether the ledger has
   recorded a fact rather than by whether the story just changed; a non-empty ledger keeps the delta question.
   Neither branch imposes a minimum count or asks for an exhaustive list, and an empty ledger may still answer
-  '无'. A fixed three-call contrast found the branch extracts more anchors (10 vs 6 on the frozen first batch),
-  but a no-anchor counterexample was still given two anchors, so the branch trades some precision for recall and
-  the single-sample difference between the arms is not attributed to the branch.
+  '无'. A fixed 4-material x 2-prefix x 3-run experiment (24 calls, annotations frozen before running) decided
+  the branch: on the material with conditions and unresolved items the old prefix preserved the necessary facts
+  in 1 of 3 runs (once committing an explicit empty ledger, once losing every line to empty_statement) while the
+  branch preserved them in all 3; on the long first batch both preserved, and the branch's third run hit the
+  completion cap and drifted. On the two no-anchor counterexamples both prefixes over-added, the old prefix
+  returned '无' once each while the branch never did, and the branch emitted a 【当前锚点】 echo block in 4 of 6
+  runs. The branch is therefore kept as the empty-ledger default for the preservation gain, with the emptiness
+  and drift costs recorded as open; no further prompt rules are added, and the drift is left to the existing
+  one-repair path. The narrow prose-completion path stays deferred.
 - The narrow prose-completion path is documented as a candidate and is not implemented: the only evidence is one
   missing-body probe failure, while the larger evidenced problem is over-annotation and protocol drift, which the
   existing one-repair path already reaches.
