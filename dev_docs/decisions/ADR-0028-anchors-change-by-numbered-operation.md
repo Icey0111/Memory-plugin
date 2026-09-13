@@ -59,6 +59,20 @@ is the point.
    comparison. The threshold is deleted rather than left dead, because a rule that cannot tell a new value
    (0.021) from an unrelated fact (0.014) has no measured job left.
 
+### The tolerance the live run forced
+
+Two 40-turn acceptance runs were needed, and the second one changed the parser. The summarizer wrote
+**nine lines in the shape `更新 | 类型 | 主体 | 来源 raw_N | 陈述`** - the update word with a type and a label
+where the id belongs. Under the first parser each of those refused the whole batch: three batches were
+refused, three extra model calls were spent, and the summary stalled for a cadence each time before the model
+happened to write the word the host wanted.
+
+An update word with no target names nothing, so nothing can be retired by accepting it: the line is an add,
+and it is now applied as one and counted as `reinterpreted` in `anchors_ops` so the operator can see the word
+is being misused. This is not the forbidden fallback - "only a target that was named and verified may retire
+a value" is untouched, a `结束` with no target is still refused (there is no record it could mean), and a
+valid alias that has moved is still a conflict.
+
 ## Alternatives rejected
 
 - **An LLM dedup pass over the ledger.** Mem0 resolves a candidate with a second model call and Graphiti

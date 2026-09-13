@@ -776,7 +776,25 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
                 truncated: statement.truncated, source });
             continue;
         }
-        if (!alias) { fail(line, 'alias_required'); continue; }
+        if (!alias) {
+            // The update word without a target. Nothing is named, so nothing can be retired: whatever the
+            // model called it, what it wrote is an add. Measured on a live 40-turn run, the summarizer wrote
+            // nine lines in exactly this shape - "更新 | 类型 | 主体 | 来源 raw_N | 陈述" - which cost the run
+            // three refused batches and three extra model calls before it happened to get the word right.
+            // This is not the forbidden fallback: the check that matters, "only a target that was named and
+            // verified may retire a value", is untouched, and a *valid* alias pointing at the wrong record
+            // stays exactly as strict as it was.
+            if (op === 'end') { fail(line, 'alias_required'); continue; }
+            if (!head.length) { fail(line, 'missing_kind'); continue; }
+            const subject = String(head[1] || '').trim();
+            if (subject.length > ANCHOR_SUBJECT_MAX || ANCHOR_SUBJECT_FORBIDDEN.test(subject)) {
+                fail(line, 'bad_subject', subject); continue;
+            }
+            if (!statement.text) { fail(line, 'empty_statement'); continue; }
+            changes.push({ op: 'add', line, kind: anchorKind(head[0]), subject, text: statement.text,
+                truncated: statement.truncated, source, reinterpreted: true });
+            continue;
+        }
         const target = byAlias.get(alias);
         if (!target) { fail(line, 'unknown_alias', alias); continue; }
         if (targeted.has(String(target.id))) { fail(line, 'duplicate_target', alias); continue; }
@@ -929,12 +947,13 @@ export function mergeAnchors(previous, changes, { plan = [], at = Date.now() } =
     const frozen = new Map((plan || []).map(row => [String(row.id), row]));
     const errors = [];
     const stats = { total: (changes || []).length, added: 0, updated: 0, ended: 0, restated: 0,
-        truncated: 0, invalid: 0 };
+        reinterpreted: 0, truncated: 0, invalid: 0 };
     const superseded = [];
     const resolved = [];
     const touched = new Set();
     for (const change of changes || []) {
         if (change.truncated) stats.truncated += 1;
+        if (change.reinterpreted) stats.reinterpreted += 1;
         if (change.op === 'add') {
             const duplicate = [...live.values()].find(item => restates(item, change));
             if (duplicate) {

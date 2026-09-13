@@ -74,7 +74,8 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.equal(changes[2].id, 'p');
     const applied = mergeAnchors({ version: 1, active, superseded: [], resolved: [] }, changes, { plan, at: 5000 });
     assert.equal(applied.ok, true);
-    assert.deepEqual(applied.stats, { total: 3, added: 1, updated: 1, ended: 1, restated: 0, truncated: 0, invalid: 0 });
+    assert.deepEqual(applied.stats, { total: 3, added: 1, updated: 1, ended: 1, restated: 0,
+        reinterpreted: 0, truncated: 0, invalid: 0 });
     const live = applied.ledger.active;
     assert.equal(live.length, 2, 'one record was replaced in place, one was added, one left');
     const knife = live.find(row => row.id === 'k');
@@ -173,6 +174,36 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.equal(twice.errors[0].reason, 'duplicate_target', 'two different updates for one record are a conflict');
     const updateOnly = changeOf('局面。\n【锚点变更】\n- 更新 A1 | 来源 raw_4 | 甲。', plan, ['raw_4']);
     assert.deepEqual(updateOnly.errors, []);
+}
+
+// --- 8b. the update word without a target is an add, not a refusal ----------------------------------
+{
+    // Measured on the live 40-turn acceptance: the summarizer wrote nine lines shaped
+    // "更新 | 类型 | 主体 | 来源 raw_N | 陈述" - the update word with a type and a label instead of an id -
+    // and the run paid three refused batches and three extra model calls before it got the word right.
+    // Nothing is named in that line, so nothing can be retired by accepting it.
+    const plan = planAnchors([rec('only', '秘密', '口令', '口令是青铜月亮。')]);
+    const { changes, errors } = changeOf('局面。\n【锚点变更】\n'
+        + '- 更新 | 类型 | Seraphina | 来源 raw_4 | 她赠予的木坠与自己的孪坠相互感应。', plan, ['raw_4']);
+    assert.deepEqual(errors, []);
+    assert.equal(changes[0].op, 'add', 'an update with no target is an add, whatever it called itself');
+    assert.equal(changes[0].reinterpreted, true, 'and the report says the word was reinterpreted');
+    assert.equal(changes[0].kind, '类型');
+    assert.equal(changes[0].subject, 'Seraphina');
+    const applied = mergeAnchors({ version: 1, active: [rec('only', '秘密', '口令', '口令是青铜月亮。')],
+        superseded: [], resolved: [] }, changes, { plan });
+    assert.equal(applied.ledger.active.length, 2, 'the existing record is not retired');
+    assert.equal(applied.ledger.superseded.length, 0);
+    assert.equal(applied.stats.added, 1);
+    assert.equal(applied.stats.reinterpreted, 1);
+    // The dangerous shape is unchanged: a *valid* alias that has moved is still a conflict, and an "结束"
+    // with no target is still refused, because there is no record it could mean.
+    const named = changeOf('局面。\n【锚点变更】\n- 更新 A1 | 来源 raw_4 | 口令改了。', plan, ['raw_4']);
+    const moved = mergeAnchors({ version: 2, active: [rec('only', '秘密', '口令', '换过了。', { revision: 9 })],
+        superseded: [], resolved: [] }, named.changes, { plan });
+    assert.equal(moved.ok, false);
+    const ended = changeOf('局面。\n【锚点变更】\n- 结束 | 来源 raw_4 | 不再生效。', plan, ['raw_4']);
+    assert.equal(ended.errors[0].reason, 'alias_required');
 }
 
 // --- 9. a record that moved since the freeze is a conflict ------------------------------------------

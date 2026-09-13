@@ -1136,7 +1136,8 @@ function renderNarrativePanel(root, ctx) {
         const ops = report.anchors_ops;
         const parts = [];
         if (ops) parts.push('上一批锚点变更：共 ' + ops.total + ' 条（新增 ' + ops.added + '，更新 ' + ops.updated
-            + '，结束 ' + ops.ended + '，重复 ' + ops.restated + '）');
+            + '，结束 ' + ops.ended + '，重复 ' + ops.restated
+            + (ops.reinterpreted ? '，把“更新”当“新增”用了 ' + ops.reinterpreted + ' 条' : '') + '）');
         parts.push('锚点活值 ' + report.anchors_active + ' 条，注入 ' + report.anchors_injected + ' 条'
             + (report.anchors_parked ? '（搁置 ' + report.anchors_parked + '）' : '')
             + '，退场记录 ' + report.anchors_superseded + ' 条（最多保留 ' + report.anchors_superseded_limit + ' 条）');

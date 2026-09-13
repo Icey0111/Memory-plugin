@@ -42,6 +42,14 @@ long-run narrative acceptance are a separate task; this retrieval iteration does
   10. The batch text is 93% of the request, so a protocol change of a few hundred characters is enough to
   block a chat that was already near the input budget. The block is now 744 characters and the change is
   +66 characters over the old protocol.
+- **Measured live, and corrected a second time:** on the first run of the corrected build the summarizer wrote
+  nine lines shaped `更新 | 类型 | 主体 | 来源 raw_N | 陈述` - the update word with a label where the id
+  belongs - and each one refused the whole batch: three refused batches, three extra model calls and three
+  cadences of delay before the model happened to use the right word. An update word with no target names no
+  record, so it cannot retire anything and is now applied as an add and counted as `reinterpreted`. The
+  same run's batch three measured 43,351 characters of original text (45,468 for the whole request) and was
+  blocked by the 40,000 input budget from floor 20 to floor 40 - with the old protocol it would have been
+  45,402, so that limit is the chat, not this change.
 
 ### What this work has not established
 
