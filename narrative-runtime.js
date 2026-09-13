@@ -173,6 +173,22 @@ function prepare(ctx) {
     }
     const { history, changed } = captureHistory(store, ctx.chat || []);
     const chunks = chunkHistory(history);
+    const legacy = store.narrative_summary;
+    if (validSummary(legacy, chunks) && !legacy.fixed_batch) {
+        const prefix = chunks.slice(0, legacy.covered.length);
+        const count = completedUserTurns(prefix);
+        const end = prefix.at(-1);
+        if (!count || count % options(settings).every !== 0 || end.role !== 'assistant'
+            || chunks[prefix.length]?.source === end.source) {
+            delete store.narrative_summary;
+            store.narrative_diagnostics = { ...store.narrative_diagnostics,
+                summary_invalidated: 'legacy summary is not aligned to complete N-turn batches' };
+            knowledgeNormalized = true;
+        } else {
+            legacy.fixed_batch = true;
+            knowledgeNormalized = true;
+        }
+    }
     if (store.narrative_summary && !validSummary(store.narrative_summary, chunks)) {
         delete store.narrative_summary;
         // Merged, not replaced: the next diagnostics write would otherwise erase the reason continuity
@@ -205,7 +221,7 @@ function prepare(ctx) {
     return { settings, store, history, chunks };
 }
 
-export function updateNarrative(ctx, services, { force = false } = {}) {
+export function updateNarrative(ctx, services) {
     storeOf(ctx);
     const host = hostKey(ctx);
     if (jobs.has(host)) return jobs.get(host);
@@ -213,10 +229,17 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
         let state = prepare(ctx);
         if (state.settings.enabled === false) return;
         const opts = options(state.settings);
-        const batch = nextSummaryBatch(state.store.narrative_summary, state.chunks, { ...opts, force });
+        let batch;
+        try { batch = nextSummaryBatch(state.store.narrative_summary, state.chunks, opts); }
+        catch (error) {
+            diagnose(ctx, { summary_error: String(error.message || error),
+                summary_failures: (Number(storeOf(ctx).narrative_diagnostics?.summary_failures) || 0) + 1 });
+            persist(ctx);
+            return;
+        }
         if (batch.length) {
-            const before = state.chunks.map(row => row.id);
             const previous = state.store.narrative_summary;
+            const before = [...(previous?.covered || []), ...batch.map(row => row.id)];
             const previousAnchors = state.store.narrative_anchors;
             try {
                 const previousKnowledge = state.store.narrative_knowledge;
@@ -232,8 +255,8 @@ export function updateNarrative(ctx, services, { force = false } = {}) {
                 // prepare() above may have persisted and swapped the store object, so write through
                 // a fresh read rather than through the reference it returned.
                 const live = storeOf(ctx);
-                live.narrative_summary = { version: 1, text: parsed.summary,
-                    covered: [...(previous?.covered || []), ...batch.map(row => row.id)] };
+                live.narrative_summary = { version: 1, fixed_batch: true, text: parsed.summary,
+                    covered: before };
                 // A missing section is not a resolution: without it the anchors are left exactly as they
                 // were, because dropping them on a format slip would lose the facts this feature exists
                 // to protect.
@@ -604,8 +627,7 @@ export function readNarrativeReport(ctx) {
         // and the reader who counted hidden floors saw nineteen after the first pass and concluded the
         // hiding was wrong. A user turn is a user message and its reply; the greeting is not a turn.
         update_every_messages: bound(settings.narrative_every, defaults.narrative_every, 1, 100) * 2,
-        // The count a reader compares against the setting. Hidden rows are messages; a floor is two of them,
-        // and the newest floor is never hidden, which is why the first pass hides nine and a half floors.
+        // Count complete committed turns, excluding the greeting and any unanswered user rows.
         folded_floors: Math.round(rows.filter(row => row?.is_system === true && isFoldedRow(row)).length / 2),
         pending_floors: pending.pending_floors,
         pending_tokens: pending.pending_tokens,
@@ -673,11 +695,12 @@ export function mountNarrativeSettings(getContext, createServices) {
         + [['narrative_every','每几楼更新摘要（1 楼 = user 消息 + 角色回复）',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
             ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000],
             ['narrative_anchor_tokens','锚点 token 预算',0,4000],
+            ['narrative_input_chars','每批总结输入字符预算（必须容纳完整批次）',2000,100000],
             ['narrative_pending_warn_tokens','未总结原文告警阈值',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]
             .map(([key,label,min,max]) => `<label>${label}<input type="number" data-key="${key}" min="${min}" max="${max}"></label>`).join('')
         + '<label>重排模型（留空则关闭，例如 jina-reranker-v3）<input type="text" data-key="narrative_rerank_model" data-text="1"></label>'
         + '<label><input type="checkbox" data-key="narrative_fold">折叠已总结的历史楼层</label>'
-        + '<button class="menu_button" data-action="summarize">立即更新摘要</button>'
+        + '<button class="menu_button" data-action="summarize">总结下一完整批次</button>'
         + '<button class="menu_button" data-action="restore">恢复原文显示</button>'
         + '<div data-warning class="aum-v51-status"></div><pre data-status></pre>';
     const settings = narrativeSettings(ctx);

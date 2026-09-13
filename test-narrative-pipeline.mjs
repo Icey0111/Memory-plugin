@@ -156,7 +156,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const lastUser = chat.length - 2;
     assert.equal(chat[lastUser].is_system, undefined, 'the last user turn is never hidden');
     assert.equal(chat[chat.length - 1].is_system, undefined, 'nor is the newest assistant floor');
-    assert.equal(hidden, chat.length - 2, 'everything the summary covers and nothing more');
+    assert.equal(hidden, 10, 'only the configured five completed turns are summarized and hidden');
 
     const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
     assert.match(bundle.currentStateBlock, /摘要：主角已经在大厅与管家谈过话/,
@@ -196,7 +196,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 {
     // 6b. too little material to rebuild: the summary is dropped and the original text comes back,
     //     because a chat with neither its text nor a stand-in is the one state folding must not reach.
-    const host = makeHost(3, { summarize: async () => '摘要：三层的局面。' });
+    const host = makeHost(3, { settings: { narrative_every: 3 }, summarize: async () => '摘要：三层的局面。' });
     const { ctx, store, chat, services } = host;
     await updateNarrative(ctx, services, { force: true });
     assert.ok(chat.some(row => row.is_system === true), 'the forced summary folded the covered floor');
@@ -252,9 +252,9 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         'four floors are not a batch when the threshold is five');
     const pending = nextSummaryBatch(undefined, chunks, { every: 3 });
     assert.equal(pending.at(-1).role, 'assistant', 'a batch never ends on a user turn with no reply');
-    const capped = nextSummaryBatch(undefined, chunks, { every: 3, inputChars: 200 });
-    assert.ok(capped.length < pending.length, 'the input budget bounds how much is summarized at once');
-    assert.ok(capped.length > 0, 'but it always summarizes something');
+    assert.equal(pending.length, 6, 'exactly three complete pairs, even with a backlog');
+    assert.throws(() => nextSummaryBatch(undefined, chunks, { every: 3, inputChars: 200 }), /超过输入预算/,
+        'an undersized budget must not split a complete batch');
     const half = { version: 1, text: 'x', covered: chunks.slice(0, 2).map(c => c.id) };
     assert.equal(nextSummaryBatch(half, chunks, { every: 3 })[0].id, chunks[2].id,
         'an existing summary is not re-summarized, only extended');
@@ -309,7 +309,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     report = readNarrativeReport(ctx);
     assert.equal(report.summary_failures, 0, 'a success clears the run');
     assert.deepEqual(report.warnings, [], 'and the warning with it');
-    assert.equal(report.pending_tokens, 0, 'nothing is left unsummarized');
+    assert.equal(report.pending_floors, 7, 'one success covers five turns, leaving the backlog pending');
 }
 {
     // The other quiet failure: the tail grows because the threshold is never reached.
@@ -338,7 +338,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     ];
     const prompts = [];
     let call = 0;
-    const host = makeHost(12, { summarize: async (ctx, prompt) => { prompts.push(prompt); return replies[Math.min(call++, replies.length - 1)]; } });
+    const host = makeHost(12, { settings: { narrative_every: 2 }, summarize: async (ctx, prompt) => { prompts.push(prompt); return replies[Math.min(call++, replies.length - 1)]; } });
     const { ctx, services } = host;
     const addFloor = n => {
         host.chat.push({ name: 'User', is_user: true, mes: '第' + n + '层：主角走回大厅。' });
@@ -493,7 +493,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const ANCHOR = '- 承诺 | 林舟答应苏晚不把钥匙的事说出去';
     const BOUNDARY = '- 苏晚 | 不知道 | 钥匙来自林舟';
     let pass = 0;
-    const host = makeHost(12, { summarize: async () => {
+    const host = makeHost(12, { settings: { narrative_every: 1 }, summarize: async () => {
         pass += 1;
         return '局面：第' + pass + '次重写之后的场景。\n【锚点】\n' + ANCHOR + '\n【已解决】\n无'
             + '\n【知情边界】\n' + BOUNDARY;

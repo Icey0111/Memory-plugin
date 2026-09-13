@@ -18,7 +18,7 @@ two chats can never read each other's vectors.
 | raw_history.sequence | integer | captureHistory | Id counter; ids are never reused |
 | raw_history.records | id -> { id, index, role, name, text } | captureHistory | Every version ever seen, including superseded ones |
 | raw_history.active | [id] | captureHistory | The lineage that is in the chat right now, in message order |
-| narrative_summary | { version, text, covered } | updateNarrative | The continuity summary and the chunk ids it read |
+| narrative_summary | { version, fixed_batch, text, covered } | updateNarrative | The continuity summary and the exact frozen chunk prefix it read |
 | narrative_diagnostics | object | updateNarrative, buildNarrativeContext | What the last pass delivered, cost, and what failed |
 | narrative_vector | { fingerprint, hashes } | syncIndex | Which chunks the vector collection holds, for this embedding space |
 
@@ -29,6 +29,11 @@ stored hash identifies an exact span of an exact message version. Chunks are ~70
 **Coverage is a prefix, not a set.** `narrative_summary.covered` must equal the first N chunk ids of
 the current chunk list, in order. Anything else is rejected and the summary is dropped, which is what
 makes an edited or reordered history safe.
+
+`fixed_batch: true` marks coverage committed under the complete-N-turn policy. Legacy summaries are
+retained only when their coverage ends on a complete message and represents a multiple of the current
+cadence. Otherwise the summary and its projections are invalidated and plugin-owned folds are restored.
+Changing cadence does not invalidate already accepted fixed batches; it applies to the next batch.
 
 ### 3. Retained legacy keys
 

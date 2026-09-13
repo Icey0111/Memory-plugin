@@ -2,6 +2,9 @@
 
 ## What is measured
 
+The measurements below describe commit 2f2a4b3, before ADR-0023 changed folding to exact completed batches.
+The replay's newest-pair visibility policy is a historical comparison condition, not today's folding rule.
+
 Two instruments answer different questions:
 
 - **Prefix replay:** user-target and character-description coverage of the actual quoted span.

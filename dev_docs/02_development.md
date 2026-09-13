@@ -17,6 +17,9 @@ twenty dialogue message rows. The setting, the report and the hidden count all u
 are the derived number.
 A character greeting is not a user turn; an unanswered user message is not completed. Tests of
 specific boundaries may explicitly use another interval, but live acceptance must retain 10.
+Each successful call covers exactly N completed turns and hides their complete messages. Manual calls
+obey the same threshold. An over-budget batch fails without shrinking or hiding any part of it.
+Freeze the request before dispatch; append/edit outside that batch must not extend its coverage.
 
 Run at least 30 completed turns to exercise three automatic summaries. Record summary responses
 (requested output cap, finish reason, body length, reasoning usage when returned), covered sources,

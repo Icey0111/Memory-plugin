@@ -23,6 +23,9 @@ function host() {
         assert.equal(calls, Math.floor((n - 1) / 10), 'a pending user message cannot trigger a summary');
         h.ctx.chat.push(pair(n)[1]); await updateNarrative(h.ctx, h.services);
         assert.equal(calls, Math.floor(n / 10), 'one summary at ten turns, then another at twenty');
+        assert.equal(h.ctx.chat.filter(row => row.is_system).length, Math.floor(n / 10) * 20,
+            'each committed ten-turn batch hides exactly twenty message rows');
+        assert.equal(h.ctx.chat[0].is_system, undefined, 'the greeting is not part of the hidden quota');
     }
     assert.equal(readNarrativeReport(h.ctx).completed_floors, 20);
     assert.equal(h.ctx.chat.length, 41);
@@ -35,7 +38,9 @@ function host() {
     const h = host(); h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i)).flat());
     await updateNarrative(h.ctx, h.services);
     h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i + 10)).flat());
-    let release; h.services.summarize = () => new Promise(resolve => { release = resolve; });
+    let release, captured; h.services.summarize = (_ctx, prompt) => {
+        captured = prompt; return new Promise(resolve => { release = resolve; });
+    };
     const job = updateNarrative(h.ctx, h.services);
     const bundle = await buildNarrativeContext(h.ctx, h.services);
     assert.match(bundle.currentStateBlock, /钥匙属于甲/);
@@ -44,15 +49,46 @@ function host() {
     assert.equal(h.ctx.extensionSettings[K].__narrative_summary_in_progress, undefined);
     // Appending during the request does not invalidate the unchanged source prefix.
     h.ctx.chat.push(...pair(21)); release(body); await job;
+    assert.doesNotMatch(captured, /第21轮/);
     assert.equal(h.store().narrative_summary.covered.length, 41);
     assert.equal(h.store().raw_history.active.length, 43);
+    assert.equal(h.ctx.chat.filter(row => row.is_system).length, 40);
+    assert.ok(h.ctx.chat.slice(-2).every(row => !row.is_system), 'messages appended during the call stay visible');
+}
+
+// Backlog is consumed in exact batches; force cannot bypass cadence or the input budget.
+{
+    const h = host(); let prompts = [];
+    h.services.summarize = async (_ctx, prompt) => { prompts.push(prompt); return body; };
+    h.ctx.chat.push(...Array.from({ length: 9 }, (_, i) => pair(i + 1)).flat());
+    await updateNarrative(h.ctx, h.services, { force: true });
+    assert.equal(prompts.length, 0);
+    h.ctx.chat.push(...Array.from({ length: 4 }, (_, i) => pair(i + 10)).flat());
+    await updateNarrative(h.ctx, h.services);
+    assert.equal(prompts.length, 1);
+    assert.doesNotMatch(prompts[0], /第11轮|第12轮|第13轮/);
+    assert.equal(h.ctx.chat.filter(row => row.is_system).length, 20);
+    assert.equal(readNarrativeReport(h.ctx).pending_floors, 3);
+    await updateNarrative(h.ctx, h.services, { force: true });
+    assert.equal(prompts.length, 1);
+}
+{
+    const h = host(); let calls = 0;
+    h.ctx.extensionSettings[K].narrative_input_chars = 2000;
+    h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i)).flat());
+    h.ctx.chat[2].mes += '完整原文'.repeat(600);
+    h.services.summarize = async () => { calls++; return body; };
+    await updateNarrative(h.ctx, h.services);
+    assert.equal(calls, 0);
+    assert.ok(h.ctx.chat.every(row => !row.is_system));
+    assert.match(readNarrativeReport(h.ctx).diagnostics.summary_error, /超过输入预算/);
 }
 
 // Edits invalidate all projections immediately. A late result cannot bring any one of them back.
 {
     const h = host(); h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i)).flat());
     await updateNarrative(h.ctx, h.services);
-    h.ctx.chat.push(...pair(11));
+    h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i + 11)).flat());
     let release; h.services.summarize = () => new Promise(r => { release = r; });
     const job = updateNarrative(h.ctx, h.services, { force: true });
     h.ctx.chat[2].mes = '钥匙现在属于乙；乙已知道密码。';
@@ -63,6 +99,23 @@ function host() {
     assert.ok(h.ctx.chat.every(row => !row.is_system));
     release(body); await job;
     assert.equal(h.store().narrative_summary, undefined);
+}
+
+// Knowledge capacity and explicit resolution preserve new/current information first.
+{
+    const h = host();
+    h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i)).flat());
+    await updateNarrative(h.ctx, h.services);
+    delete h.store().narrative_summary.fixed_batch;
+    h.store().narrative_summary.covered = h.store().narrative_summary.covered.slice(0, 8);
+    await buildNarrativeContext(h.ctx, h.services);
+    assert.equal(h.store().narrative_summary, undefined, 'legacy partial batches must not retain authority');
+    assert.ok(h.ctx.chat.every(row => !row.is_system), 'legacy partial coverage restores all plugin folds');
+}
+{
+    let quietCalls = 0;
+    await assert.rejects(() => requestSummary({ generateQuietPrompt: async () => { quietCalls++; } }, 'fixed', {}), /固定输入/);
+    assert.equal(quietCalls, 0, 'a quiet channel that may assemble live chat is never a fixed-input fallback');
 }
 
 // Knowledge capacity and explicit resolution preserve new/current information first.

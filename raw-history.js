@@ -359,24 +359,35 @@ export function completedChunks(chunks) {
 }
 
 export function completedUserTurns(chunks) {
-    // A greeting is an assistant message, not a user turn. A pending user message has not completed.
-    return new Set(completedChunks(chunks).filter(row => row.role === 'user').map(row => row.source)).size;
+    return completeTurnRanges(chunks).length;
 }
 
-export function nextSummaryBatch(summary, chunks, { every = 10, inputChars = 18000, force = false } = {}) {
+function completeTurnRanges(chunks) {
+    const ranges = [];
+    let start = -1;
+    for (let index = 0; index < chunks.length;) {
+        const row = chunks[index];
+        let end = index + 1;
+        while (chunks[end]?.source === row.source) end++;
+        if (row.role === 'user') start = index;
+        else if (row.role === 'assistant' && start >= 0) {
+            ranges.push({ start, end });
+            start = -1;
+        }
+        index = end;
+    }
+    return ranges;
+}
+
+export function nextSummaryBatch(summary, chunks, { every = 10, inputChars = 18000 } = {}) {
     const completed = completedChunks(chunks);
     const offset = validSummary(summary, chunks) ? summary.covered.length : 0;
     const pending = completed.slice(offset);
-    const floors = completedUserTurns(pending);
-    if (!pending.length || (!force && floors < every)) return [];
-    const selected = [];
-    let used = 0;
-    for (const row of pending) {
-        const cost = row.retrievalText.length + 60;
-        if (selected.length && used + cost > inputChars) break;
-        selected.push(row);
-        used += cost;
-    }
+    const turns = completeTurnRanges(pending);
+    if (turns.length < every) return [];
+    const selected = pending.slice(0, turns[every - 1].end);
+    const used = selected.reduce((sum, row) => sum + row.retrievalText.length + 60, 0);
+    if (used > inputChars) throw new Error(`完整 ${every} 轮总结需要 ${used} 字符，超过输入预算 ${inputChars}；请提高总结输入预算，原文保持可见。`);
     return selected;
 }
 
@@ -593,7 +604,7 @@ export function summaryPrompt(previous, batch, maxTokens, anchors, knowledge) {
         + batch.map(row => `[${row.id}] ${row.retrievalText}`).join('\n\n');
 }
 
-// Keep the newest complete pair and all material not covered by the current summary visible.
+// Hide committed complete turns only. The greeting is context, not one of the counted turns.
 export function applyNarrativeFolds(chat, history, chunks, summary, enabled = true) {
     const valid = enabled && validSummary(summary, chunks);
     const covered = new Set(valid ? summary.covered : []);
@@ -604,11 +615,13 @@ export function applyNarrativeFolds(chat, history, chunks, summary, enabled = tr
         bySource.set(chunk.source, values);
     }
     const active = history.active.map(id => history.records[id]);
-    const lastAssistant = active.findLastIndex(row => row.role === 'assistant');
-    let recentStart = lastAssistant;
-    while (recentStart > 0 && active[recentStart - 1].role === 'user') recentStart--;
-    const foldable = new Map(active.slice(0, Math.max(0, recentStart)).filter(row =>
-        bySource.get(row.id)?.every(id => covered.has(id))).map(row => [row.index, row]));
+    const sources = new Set();
+    for (const range of completeTurnRanges(chunks)) {
+        const turn = chunks.slice(range.start, range.end);
+        if (turn.every(chunk => covered.has(chunk.id))) for (const chunk of turn) sources.add(chunk.source);
+    }
+    const foldable = new Map(active.filter(row => sources.has(row.id)
+        && bySource.get(row.id)?.every(id => covered.has(id))).map(row => [row.index, row]));
     let changed = 0;
     for (const [index, row] of chat.entries()) {
         const marker = row.extra?.[FOLD_EXTRA_KEY];

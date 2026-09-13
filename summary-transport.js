@@ -43,8 +43,7 @@ export async function requestSummary(ctx, prompt, settings, { loadOpenAI = () =>
     } else {
         transport = 'legacy_raw';
         if (ctx.generateRaw) result = await ctx.generateRaw({ prompt, systemPrompt: '忠实压缩剧情，仅输出续接摘要。', responseLength: max });
-        else if (ctx.generateQuietPrompt) result = await ctx.generateQuietPrompt({ quietPrompt: prompt, responseLength: max });
-        else throw new Error('当前宿主没有可用的后台生成接口。');
+        else throw new Error('当前宿主没有支持固定输入的后台生成接口；请配置总结连接。');
     }
     const parsed = summaryResponse(result);
     return { ...parsed, metrics: { ...parsed.metrics, requested_max_tokens: max, model: model || null,

@@ -97,6 +97,11 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- Summary cadence is now a strict complete-turn batch: wait for N turns, summarize exactly N, then hide
+  only those complete turns. Backlogs cannot enlarge a batch; input limits cannot cut it mid-message.
+  New messages stay outside an in-flight request. Misaligned legacy coverage is invalidated and unfolded.
+  Manual summary calls obey the same threshold; the input budget is exposed for oversized batches.
+
 - Knowledge boundaries accept bracketed, pipe-delimited and `character/state: fact` forms consistently;
   old format duplicates are normalized while distinct same-pass assertions remain visible.
 - Recall diagnostics count only the quoted span. User-target coverage is reported separately from
