@@ -516,6 +516,8 @@ for (const [body, reason] of [['', 'empty_section'], ['我改了刀的位置。'
     assert.match(request.text, /其他活值是否与你的新状态矛盾/, 'the contradiction check is present');
     assert.match(request.text, /角色认知与未证猜测/, 'fact, belief and guess are told apart');
     assert.match(request.text, /一条事实依赖多条原文时可以并排写多个来源/, 'the multi-source shape is taught');
+    assert.match(request.text, /“更新”会自动归档旧值/, 'an update is told not to end its own number');
+    assert.match(request.text, /“结束”表示整条事实不再有效/, 'and end is defined as the whole fact ceasing to hold');
     assert.doesNotMatch(request.text, /空账本必须|必须新增至少|至少新增一条/, 'no non-empty mandate is imposed');
     // An empty ledger that truly has no new fact may still answer none, and the host adds nothing of its own.
     const parsed = parseAnchors('局面。\n【锚点变更】\n- 无');
@@ -523,6 +525,26 @@ for (const [body, reason] of [['', 'empty_section'], ['我改了刀的位置。'
     const applied = mergeAnchors({ active: [] }, [], { plan: [] });
     assert.equal(applied.ok, true);
     assert.equal(applied.stats.added, 0);
+}
+
+// --- 22. an update and an end may not name the same record in one batch --------------------------------
+{
+    const previous = { active: [rec('k', '位置', '刀的位置', '刀在井底。')] };
+    const plan = planAnchors(previous.active);
+    const checked = parseAnchorChanges([
+        '更新 A1 | 来源 raw_7 | 刀被捞出，放在井边。',
+        '结束 A1 | 来源 raw_8 | 旧状态已被取代。',
+    ], { plan, batchSources: new Set(['raw_7', 'raw_8']) });
+    assert.equal(checked.errors.length, 1);
+    assert.equal(checked.errors[0].reason, 'duplicate_target');
+    assert.equal(checked.changes.filter(c => c.op === 'end').length, 0,
+        'a later end may not retire a record this batch already updated');
+    // The trailing-label spelling the model actually wrote does not parse at all. The repair fixes it; the
+    // operator is not relaxed, because stripping "旧状态" would execute the conflicting end it is hiding.
+    const trailing = parseAnchorChanges(['结束 A1 旧状态 | 来源 raw_8 | 旧状态已被取代。'],
+        { plan, batchSources: new Set(['raw_8']) });
+    assert.equal(trailing.errors[0].reason, 'unknown_op');
+    assert.equal(trailing.changes.length, 0);
 }
 
 console.log('anchor-changes: ok');

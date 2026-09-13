@@ -54,11 +54,16 @@ The 421757c acceptance run separated four failures the numbered-operation protoc
   adds nothing on its own. Label-based merging is not restored.
 - 'anchors_same_subject' is documented and reported as a same-label record count. It is not a contradiction
   detector.
+- The prompt states the update/end distinction explicitly: an update already archives the old value, so the same
+  number must not be ended in the same batch; an end means the whole fact no longer holds. The operator is
+  deliberately not relaxed to accept a trailing label such as '结束 A1 旧状态', because stripping the label would
+  execute the conflicting end it hides; the line reaches the repair instead, and the duplicate-target check still
+  refuses an end that names a record the same batch updated.
 
-The instruction block grew from 760 characters (ADR-0028's measurement) to 977 with the three ledger checks and
-the multi-source shape. The input-budget pressure the acceptance run recorded is therefore slightly worse by
-construction. Raising the input budget or adding an explicit capacity setting is a separate decision and is not
-made here; a blocked batch still calls no model, hides no floor and stays visible.
+The instruction block grew from 760 characters (ADR-0028's measurement) to 1,018 with the three ledger checks,
+the multi-source shape and the update/end distinction. The input-budget pressure the acceptance run recorded is
+therefore slightly worse by construction. Raising the input budget or adding an explicit capacity setting is a
+separate decision and is not made here; a blocked batch still calls no model, hides no floor and stays visible.
 
 ## Runtime precondition
 
@@ -78,8 +83,14 @@ operations preserved when the repair answers '无' (including the review defect 
 the repair's own summary being ignored, kept-plus-replacement merged and re-validated as one batch, an atomic
 refusal when the replacement is still invalid, the pre-send input-budget block, a repair transport failure that
 keeps the attempt beside the original refusal with usage marked unknown, disabling the plugin, editing a covered
-row and switching chat during the repair, and the non-format failure that is not repaired.
+row and switching chat during the repair, and the non-format failure that is not repaired. It also pins the
+update/end conflict: a repair that returns a valid '结束 A1' naming a record the same batch updated is refused
+as a duplicate target.
 'test-runtime-precheck.mjs' pins the comparison with the stale signature this run recorded.
+A local no-model verification ('verify-commit-merge.mjs', under the ignored acceptance directory) reconstructs
+each batch's ledger from its frozen alias table and applies the captured probe responses to it: five updates
+with sources and superseded provenance, no opposing live value, retained qualifiers, duplicate-target refusal of
+a conflicting end, and stale_version on a repeated submission.
 'replay-anchor-evidence.mjs' replays the run's frozen requests and responses through the current parser with no
 model call: the five probe cases pass, seven multi-source operations that were refused now parse, none remain
 refused, and prose mentioning 更新 stays prose. Whether the new ledger checks reduce semantic omission or

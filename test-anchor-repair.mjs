@@ -233,4 +233,51 @@ const invalidLine = prompt => '更新 A9 | 来源 ' + src(prompt) + ' | 钥匙�
     assert.equal(report.anchors_ops.added, 2);
 }
 
+// --- 12. a redundant "结束 A1 旧状态" line is repaired away; the legal update still commits -------------
+{
+    const calls = [];
+    const h = host(async (ctx, prompt) => {
+        calls.push(prompt);
+        if (calls.length === 1) return '局面。\n【锚点变更】\n- 新增 | 物品状态 | 银钥匙 | 来源 ' + src(prompt)
+            + ' | 钥匙在袋中。\n【知情边界】\n- 无';
+        if (calls.length === 2) return '局面。\n【锚点变更】\n- 更新 A1 | 来源 ' + src(prompt)
+            + ' | 钥匙并未失踪。\n- 结束 A1 旧状态 | 来源 ' + src(prompt) + ' | 旧值已被取代。\n【知情边界】\n- 无';
+        return '【锚点变更】\n- 无';
+    });
+    fill(h, 1, 10);
+    await updateNarrative(h.ctx, h.services, { force: true });
+    fill(h, 11, 20);
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const report = readNarrativeReport(h.ctx);
+    assert.equal(calls.length, 3, 'one repair for the second batch');
+    assert.equal(report.summary_failures, 0);
+    assert.equal(report.anchors_active, 1);
+    assert.equal(report.anchors_resolved, 0, 'the redundant end is gone, not applied');
+    assert.equal(h.store().narrative_anchors.active[0].text, '钥匙并未失踪。');
+    assert.equal(report.anchor_repair.valid_preserved, 1, 'the legal update was host-held');
+}
+
+// --- 13. a repair that ends a record this batch already updated is refused -----------------------------
+{
+    const calls = [];
+    const h = host(async (ctx, prompt) => {
+        calls.push(prompt);
+        if (calls.length === 1) return '局面。\n【锚点变更】\n- 新增 | 物品状态 | 银钥匙 | 来源 ' + src(prompt)
+            + ' | 钥匙在袋中。\n【知情边界】\n- 无';
+        if (calls.length === 2) return '局面。\n【锚点变更】\n- 更新 A1 | 来源 ' + src(prompt)
+            + ' | 钥匙并未失踪。\n- 结束 A1 旧状态 | 来源 ' + src(prompt) + ' | 旧值已被取代。\n【知情边界】\n- 无';
+        return '【锚点变更】\n- 结束 A1 | 来源 ' + src(calls[1]) + ' | 旧值已被取代。';
+    });
+    fill(h, 1, 10);
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const before = readNarrativeReport(h.ctx).summary_covered_floors;
+    fill(h, 11, 20);
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const report = readNarrativeReport(h.ctx);
+    assert.equal(report.summary_covered_floors, before, 'the batch is not committed');
+    assert.equal(report.anchors_active, 1);
+    assert.equal(report.anchor_repair.errors_after[0].reason, 'duplicate_target');
+    assert.equal(report.anchor_repair.valid_preserved, 1);
+}
+
 console.log('anchor-repair: ok');
