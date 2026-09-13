@@ -316,10 +316,13 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(report.summary_failures, 0, 'a success clears the run');
     assert.deepEqual(report.warnings, [], 'and the warning with it');
     assert.equal(report.pending_floors, 7, 'one success covers five turns, leaving the backlog pending');
+    assert.equal(report.summary_state, 'backlog', 'a full batch is waiting and nothing is running');
+    assert.deepEqual(report.warnings, [], 'with a small tail that is a state, not an alarm');
 }
 {
-    // The other quiet failure: the tail grows because the threshold is never reached.
-    // Long enough floors that the tail crosses the threshold the settings clamp allows (200 tokens).
+    // The tail is the material the next batch will read, so its size is not a fault. It is announced only
+    // once a whole batch is waiting and nothing is consuming it - that is a stall, and the size then says
+    // how much has piled up. Long enough floors that the tail crosses the settings clamp (200 tokens).
     const host = makeHost(3, { settings: { narrative_every: 20, narrative_pending_warn_tokens: 200 } });
     host.chat.forEach(row => { row.mes += '填充'.repeat(80); });
     const { ctx, services } = host;
@@ -328,7 +331,18 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(report.summary_valid, false, 'the fixture has no summary yet');
     assert.equal(report.pending_floors, 3, 'the tail is counted in floors');
     assert.ok(report.pending_tokens > 200, 'and in tokens: ' + report.pending_tokens);
-    assert.match(report.warnings[0], /尚未进入摘要/, 'and it is announced with its size');
+    assert.equal(report.summary_state, 'accumulating', 'three turns against a cadence of twenty is normal');
+    assert.deepEqual(report.warnings, [], 'and a large tail alone no longer raises one');
+
+    // The same size with a full batch waiting and nothing running is the stall the warning is for.
+    const stalled = makeHost(3, { settings: { narrative_every: 3, narrative_pending_warn_tokens: 200,
+        narrative_summary_failure_warn: 9 }, summarize: async () => { throw new Error('offline'); } });
+    stalled.chat.forEach(row => { row.mes += '填充'.repeat(80); });
+    await updateNarrative(stalled.ctx, stalled.services);
+    const stuck = readNarrativeReport(stalled.ctx);
+    assert.equal(stuck.pending_floors, 3);
+    assert.equal(stuck.summary_state, 'backlog', 'a whole batch is waiting and the pass is not running');
+    assert.match(stuck.warnings[0], /等待总结/, 'the stall is named once both conditions hold');
     const quiet = makeHost(3, { settings: { narrative_every: 20, narrative_pending_warn_tokens: 200000 } });
     assert.deepEqual(readNarrativeReport(quiet.ctx).warnings, [], 'a threshold above the tail stays quiet');
 }

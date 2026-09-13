@@ -109,6 +109,17 @@ belongs in Git commits and pull requests.
 - The injected state block counts floors: a first batch of ten turns now reads "current as of floor 10"
   instead of floor 21, and it updates on the next assembly. The panel reports the committed coverage and
   the coverage the last injection carried as separate numbers with separate revisions (ADR-0024).
+- A failed summary says which failure it was - transport or provider error, empty body, truncated body,
+  summary over its own budget, or anchors without prose - and keeps the last one, its input cost and the
+  response status after a retry succeeds, marked recovered. Staleness now compares content versions rather
+  than floor counts, "injected" is recorded only once the host has the block, and a summary that commits
+  while a prompt is being assembled re-composes that prompt instead of leaving the rows it hid neither
+  summarized nor visible (ADR-0025).
+- The unsummarized tail is reported as a condition (accumulating, summarizing, failing, blocked, backlog)
+  rather than a size. A tail below the cadence never warns however large it is; the old 4,000-token
+  threshold no longer raises a fault on its own.
+- `narrative_input_chars` defaults to 40000 for new installs, the measured size of a ten-turn batch. An
+  install still on the old 18000 default keeps it and is told, not silently changed.
 
 - Knowledge boundaries accept bracketed, pipe-delimited and `character/state: fact` forms consistently;
   old format duplicates are normalized while distinct same-pass assertions remain visible.

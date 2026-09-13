@@ -10,6 +10,21 @@ the measured query and packing failures.
 The default remains ten completed user turns (normally twenty message rows). Summary quality and
 long-run narrative acceptance are a separate task; this retrieval iteration does not establish them.
 
+## Completed summary-diagnostics work
+
+- Classify a failed summary (transport, empty body, truncated, over the accept budget, format) and keep a
+  bounded record of the last one with its input cost and response status; a success marks it recovered
+  instead of clearing it (ADR-0025).
+- Separate the source version from the content version of the committed state, compare `injected_stale` by
+  version, and record "injected" only after the host has received the block (ADR-0025).
+- Re-read the committed state after the last await of prompt assembly and again synchronously before the
+  prompt is set, so a commit that lands mid-assembly cannot pair an old block with newly hidden rows. The
+  defect reproduced with a controllable pause before the fix: 40 rows hidden, block still at floor 10.
+- Name the condition behind the tail: idle, accumulating, summarizing, failing, blocked or backlog. The
+  4,000-token threshold no longer raises a fault on its own - a stalled, oversized full batch does.
+- `narrative_input_chars` defaults to 40000 for new installs; an existing 18000 is kept and reported as a
+  notice rather than overwritten.
+
 ## Completed summary-batching work
 
 - Count the state header in floors, and report committed coverage separately from the coverage the last
@@ -56,6 +71,15 @@ request that fits the character budget can still be refused by the provider (ADR
 | Is vector recall independently better? | It changes candidates, but adds no answer on its own in that 12-question set; combined with reranking it adds one. Keep the existing weak vote, not a newly tuned weight. |
 | Are profiles unaffected by focused requests? | No. Actual-span profile coverage fell from 13/17 to 11/17 in the file holdout. Better user-target coverage is a measured tradeoff. |
 | Are 200+ message rows and summary decay accepted? | Not by this task. Existing archive measurements and older story runs do not establish long-run narrative quality. |
+
+## Open question: the 600-token summary budget
+
+Two live runs recorded three single summary failures across four batch commits, each followed by a
+successful retry. The cause is unproven: the summaries landed at 532 of 600 tokens, which is close enough
+to the ceiling to be plausible, and the failure reason was not retained at the time. It is retained now
+(`summary_last_error`), so the next occurrence can be read instead of guessed at. Raising the 600-token
+budget first would spend more context on an unknown. The commit that fixed the retained evidence also
+confirms the batch request itself is well inside its budget: 23,742 characters against 40,000.
 
 ## Architectural limits
 

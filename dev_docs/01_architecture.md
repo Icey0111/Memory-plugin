@@ -79,7 +79,7 @@ elapsed time, estimated input tokens and provider tokens when available, includi
 | May this floor leave the prompt? | Only if its entire complete turn is covered by a committed batch; exclude the greeting | raw-history.js, applyNarrativeFolds |
 | What if the summary cannot be injected? | Every floor it covered comes back, and the reason is recorded | narrative-runtime.js, buildNarrativeContext |
 | What if the history changed under the summary? | The summary is dropped, the invalidation is reported, and the floors come back | narrative-runtime.js, prepare |
-| How current is the injected state block? | It is the projection of the last accepted summary, and it says so in floors: "current as of floor N; anything later in the transcript wins". The panel reports the committed coverage and the injected coverage separately (ADR-0024) | narrative-runtime.js, raw-history.js |
+| How current is the injected state block? | It is the projection of the last accepted summary, and it says so in floors: "current as of floor N; anything later in the transcript wins". The panel reports the committed coverage and the injected coverage separately, and compares their content versions rather than their floor counts (ADR-0024, ADR-0025) | narrative-runtime.js, raw-history.js |
 | Who writes the transcript styling? | Only the projection of the markers; it never writes chat state | v55-floor-fold.js |
 
 ### 4. Modules
@@ -123,6 +123,9 @@ the chat file keeps (ADR-0004).
 | N8 | Anchors and boundaries are injected only with the summary they were derived from, and are never recomputed between passes | prepare, source_revision |
 | N9 | The summary request is assembled from original messages, one entry per source, and the text that is measured is the text that is sent (ADR-0024) | nextSummaryBatch, summaryMessages, summaryRequest |
 | N10 | A local input-budget block calls no model, hides no floor, and is one record per frozen batch and budget; a character budget is never reported as proof the context window fits (ADR-0024) | updateNarrative, summaryBlockState |
+| N11 | A failed summary records its stage - transport, empty body, truncated, over budget, format - with the input cost and response status, and a later success marks it recovered instead of erasing it (ADR-0025) | tagged, summary_last_error |
+| N12 | A committed state has a source version and a content version; the prompt is called injected only after the host has been given it, and assembly re-composes if the state commits while it waits (ADR-0025) | stateRevisionOf, runNarrativeGeneration, composeContinuity |
+| N13 | The unsummarized tail is a state (idle, accumulating, summarizing, failing, blocked, backlog) and only a block, a real run of failures, or a stalled oversized backlog warns (ADR-0025) | summarizeState, warningsFor |
 
 ### 6. What this architecture does not do yet
 
@@ -135,6 +138,9 @@ the chat file keeps (ADR-0004).
 - The archive keeps every superseded version, and nothing prunes it. Measured at about one copy of the
   conversation text (41-351 KB per chat, 4-33% of the file), which is why it stays lossless (ADR-0004).
   Growth on very long chats is still unmeasured.
+- Whether the three unexplained single summary failures in the two live runs were caused by the 600-token
+  summary budget is still open. The failures are now classified and kept, so the next occurrence is
+  answerable; the live summaries landed at 532 of 600 tokens, which is suggestive and not proof (ADR-0025).
 - The model context window is unknown to the plugin. `narrative_input_chars` bounds the request the
   plugin builds; it is reported with `context_tokens_status: 'unknown'` and never as proof the provider
   will accept the call (ADR-0024). Measured on the chat that failed: the ten-turn request is 23,742

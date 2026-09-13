@@ -18,8 +18,8 @@ two chats can never read each other's vectors.
 | raw_history.sequence | integer | captureHistory | Id counter; ids are never reused |
 | raw_history.records | id -> { id, index, role, name, text } | captureHistory | Every version ever seen, including superseded ones |
 | raw_history.active | [id] | captureHistory | The lineage that is in the chat right now, in message order |
-| narrative_summary | { version, fixed_batch, text, covered } | updateNarrative | The continuity summary and the exact frozen chunk prefix it read |
-| narrative_diagnostics | object | updateNarrative, buildNarrativeContext | What the last pass delivered, cost, and what failed. `state_horizon_floors` and `injected_summary_revision` describe the injection that actually happened; `summary_covered_floors` and `summary_revision` describe the committed summary; `summary_block` records a local input-budget block, which is not an interface failure |
+| narrative_summary | { version, fixed_batch, text, covered, source_revision, state_revision } | updateNarrative | The continuity summary and the exact frozen chunk prefix it read. `source_revision` hashes the covered chunk ids; `state_revision` (`stateRevisionOf`) hashes coverage plus prose, anchors and boundaries, and is what an injection is compared against |
+| narrative_diagnostics | object | updateNarrative, buildNarrativeContext, runNarrativeGeneration | What the last pass delivered, cost, and what failed. `state_horizon_floors`, `injected_source_revision`, `injected_state_revision` and `injected_at` describe the injection that actually happened, written only after the host received the block; `summary_covered_floors`, `summary_revision` and `summary_state_revision` describe the committed summary; `summary_block` records a local input-budget block, which is not a failure; `summary_last_error` keeps the last classified failure after it recovers |
 | narrative_vector | { fingerprint, hashes } | syncIndex | Which chunks the vector collection holds, for this embedding space |
 
 A chunk id is `<raw_id>:<start>:<end>`; its index hash is `fnv1a32(chunkId + '|' + text)`, so a

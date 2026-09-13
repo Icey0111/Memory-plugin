@@ -459,6 +459,28 @@ export function summaryPrompt(previous, messages, maxTokens, anchors, knowledge)
     return summaryRequest(previous, messages, maxTokens, anchors, knowledge).text;
 }
 
+/** The default this key shipped with before the exact-batch design measured what a batch costs. */
+export const LEGACY_INPUT_CHARS_DEFAULT = 18000;
+
+/**
+ * The version of the committed state as content, not as coverage.
+ *
+ * `source_revision` answers "which chunks did this summary read", and because coverage is always a prefix
+ * of the chunk list, two different states covering the same number of floors share it. That cannot tell
+ * an old injection from the current state: the same twenty floors can be described differently, and the
+ * anchors and boundaries are merged on every pass without the coverage moving at all. This hashes what is
+ * actually injected - the prose, the anchors and the boundaries - so "injected" and "committed" can be
+ * compared as versions instead of as counts.
+ */
+export function stateRevisionOf(summary, anchors, knowledge) {
+    // Coverage is part of the version on purpose. The hidden range is decided by coverage, so a state with
+    // the same prose over more floors is a different state: the injected block's horizon moved even though
+    // its text did not, and a comparison that ignored that would call the older block current.
+    const covered = Array.isArray(summary?.covered) ? summary.covered.join('|') : '';
+    return fnv1a32([summary?.source_revision || covered, summary?.text || '',
+        formatAnchors(anchors) || '', formatAnchors(knowledge) || ''].join('\u0001')).toString(36);
+}
+
 /**
  * The record of a batch the local character budget cannot hold.
  *

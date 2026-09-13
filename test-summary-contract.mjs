@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, nextSummaryBatch, summaryMessages, summaryRequest,
     summaryBlockState, validSummary, completedUserTurns, RAW_CHUNK_SIZE } from './raw-history.js';
-import { updateNarrative, buildNarrativeContext, readNarrativeReport } from './narrative-runtime.js';
+import { updateNarrative, buildNarrativeContext, runNarrativeGeneration, readNarrativeReport } from './narrative-runtime.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
 const SUMMARY_BODY = '局面稳定。\n【锚点】\n- 无\n【已解决】\n- 无\n【知情边界】\n- 无';
@@ -162,7 +162,7 @@ const add = (h, n) => h.ctx.chat.push(...pair(n));
     const h = host();
     for (let n = 1; n <= 10; n += 1) add(h, n);
     await updateNarrative(h.ctx, h.services);
-    const first = await buildNarrativeContext(h.ctx, h.services);
+    const first = await runNarrativeGeneration(h.ctx, h.services, [{}, 32768, () => {}, 'normal']);
     assert.match(first.currentStateBlock, /current as of floor 10;/, 'ten turns are floor ten');
     assert.doesNotMatch(first.currentStateBlock, /floor 21/, 'not the twenty-first message row');
     let report = readNarrativeReport(h.ctx);
@@ -176,13 +176,14 @@ const add = (h, n) => h.ctx.chat.push(...pair(n));
     assert.equal(report.summary_covered_floors, 20, 'the committed summary now reaches floor twenty');
     assert.equal(report.injected_floors, 10, 'while the last injection still carried the first batch');
     assert.equal(report.injected_stale, true, 'and the report says which of the two is stale');
-    assert.notEqual(report.summary_revision, report.injected_revision);
-    const second = await buildNarrativeContext(h.ctx, h.services);
+    assert.notEqual(report.summary_state_revision, report.injected_state_revision);
+    const second = await runNarrativeGeneration(h.ctx, h.services, [{}, 32768, () => {}, 'normal']);
     assert.match(second.currentStateBlock, /current as of floor 20;/);
     report = readNarrativeReport(h.ctx);
     assert.equal(report.injected_floors, 20);
     assert.equal(report.injected_stale, false);
-    assert.equal(report.summary_revision, report.injected_revision, 'the injected version is the committed one');
+    assert.equal(report.summary_state_revision, report.injected_state_revision,
+        'the injected version is the committed one');
 }
 
 // --- 7. the batch is frozen against appends and edits ---------------------------------------------

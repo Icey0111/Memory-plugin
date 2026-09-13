@@ -217,10 +217,14 @@ function host() {
     assert.match(bundle.currentStateBlock, /KNOWLEDGE BOUNDARIES[^\]]*current as of floor \d+/);
     // Ten turns is floor ten. This used to print the covered message-row index plus one, so the same
     // acceptance run said "current as of floor 21" and stayed at 21 after the second batch.
-    assert.equal(bundle.diagnostics.state_horizon_floors, 10, 'the horizon is ten floors, not a row index');
+    assert.equal(bundle.injection.floors, 10, 'the horizon is ten floors, not a row index');
     assert.match(bundle.currentStateBlock, /current as of floor 10;/);
     assert.doesNotMatch(bundle.currentStateBlock, /floor 21/);
     assert.equal(bundle.diagnostics.summary_covered_floors, 10);
+    // The build does not claim the injection; the generation entry does, after the host got the block.
+    assert.equal(readNarrativeReport(h.ctx).injected_floors, null);
+    await runNarrativeGeneration(h.ctx, h.services, [{}, 32768, () => {}, 'normal']);
+    assert.equal(readNarrativeReport(h.ctx).injected_floors, 10);
     assert.equal(bundle.diagnostics.knowledge_duplicate_subjects, h.store().narrative_knowledge.duplicate_subjects);
     assert.equal(bundle.diagnostics.knowledge_max_per_subject, 1);
 }

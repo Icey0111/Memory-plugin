@@ -1,5 +1,5 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
-    summaryMessages, summaryRequest, summaryBlockState,
+    summaryMessages, summaryRequest, summaryBlockState, stateRevisionOf, LEGACY_INPUT_CHARS_DEFAULT,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
@@ -13,8 +13,12 @@ import { syncFloorFoldDom, syncFloorFoldRow } from './v55-floor-fold.js';
 
 export const NARRATIVE_SETTINGS_KEY = 'aetheriaUnifiedMemoryV54';
 export const NARRATIVE_PROMPTS = ['aetheria_unified_memory_v5_4_reference', 'aetheria_unified_memory_v5_4_current_state'];
+// narrative_input_chars is the default a NEW install gets. It is the measured size of a ten-turn batch on
+// the chat that failed the first batching acceptance (23,742 characters), not the old 18000 that could not
+// hold it. An install that already stored 18000 keeps it - that value may be a deliberate choice, and a
+// silent overwrite would be a config change nobody asked for - and is told about the discrepancy instead.
 const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative_evidence_tokens: 1000,
-    narrative_setting_tokens: 400, narrative_input_chars: 18000, narrative_fold: true,
+    narrative_setting_tokens: 400, narrative_input_chars: 40000, narrative_fold: true,
     // Guards. The pipeline can fail quietly in exactly two ways, and both are worse than an error,
     // because the story keeps working while the memory behind it stops: the summary job keeps failing
     // while the unsummarized tail grows into the prompt, or the tail simply outgrows what anyone
@@ -85,24 +89,49 @@ function quiet(settings, type) {
         || (type === 'quiet' && settings.quiet_allow_third_party_injection !== true);
 }
 
+/**
+ * A failed summary is one of several different problems, and calling them all "the interface failed" is
+ * how a size limit gets mistaken for a provider outage. Each throw names its stage here, where the
+ * evidence still exists; the record that survives is built from it in updateNarrative.
+ */
+const FAILURE_STAGES = { transport: '传输或服务商错误', empty_body: '接口没有返回正文',
+    truncated: '总结输出被截断', over_budget: '摘要正文超过接受预算', format: '只有锚点、没有摘要正文',
+    input_budget: '本地输入预算不足', unknown: '未分类的失败' };
+const stageLabel = stage => FAILURE_STAGES[stage] || FAILURE_STAGES.unknown;
+const tagged = (stage, error, extra) => {
+    const wrapped = error instanceof Error ? error : new Error(String(error));
+    wrapped.stage = stage;
+    if (extra) Object.assign(wrapped, extra);
+    return wrapped;
+};
+/** One bounded string: a provider can answer with a paragraph, and this rides in the chat file. */
+const bounded = (value, limit = 300) => {
+    const text = String(value ?? '');
+    return text.length > limit ? text.slice(0, limit) + '…' : text;
+};
+
 export async function generateNarrativeSummary(ctx, prompt, settings) {
     summaryRequests.add(settings);
     let result;
     try {
         result = await requestSummary(ctx, prompt, settings);
         diagnose(ctx, { summary_response: result.metrics });
+    } catch (error) {
+        throw tagged('transport', error);
     } finally {
         summaryRequests.delete(settings);
     }
     const text = result.text;
     if (['length', 'max_tokens'].includes(result.metrics.finish_reason)) {
-        throw new Error('总结输出被截断：finish_reason=' + result.metrics.finish_reason
-            + '，正文 ' + text.length + ' 字符，推理 ' + result.metrics.reasoning_tokens + ' token；保留旧状态。');
+        throw tagged('truncated', new Error('总结输出被截断：finish_reason=' + result.metrics.finish_reason
+            + '，正文 ' + text.length + ' 字符，推理 ' + result.metrics.reasoning_tokens + ' token；保留旧状态。'),
+            { response: result.metrics, summary_tokens: estimateTokens(text) });
     }
     if (!text || /^\[(?:API\s*(?:错误|error)|error|错误)\]/i.test(text)
         || (text.length < 800 && /rate limit|too many requests|quota exhausted|invalid api key|HTTP\s*[45]\d\d/i.test(text))) {
-        throw new Error('总结接口没有返回正文（若模型是推理模型，token 预算可能被推理耗尽：'
-            + '请提高总结 token 预算，或为总结单独配置一个非推理连接）；未总结原文继续保留。');
+        throw tagged('empty_body', new Error('总结接口没有返回正文（若模型是推理模型，token 预算可能被推理耗尽：'
+            + '请提高总结 token 预算，或为总结单独配置一个非推理连接）；未总结原文继续保留。'),
+            { response: result.metrics, summary_tokens: estimateTokens(text) });
     }
     recordModelCall(ctx, { kind: 'summary', promptText: prompt, completionText: text,
         promptChars: prompt.length, completionChars: text.length });
@@ -203,7 +232,8 @@ function prepare(ctx) {
         delete store.narrative_anchors;
         delete store.narrative_knowledge;
     } else {
-        const revision = fnv1a32(store.narrative_summary.covered.join('|')).toString(36);
+        const revision = store.narrative_summary.source_revision
+            || fnv1a32(store.narrative_summary.covered.join('|')).toString(36);
         const mismatch = [store.narrative_anchors, store.narrative_knowledge].some(value =>
             value?.source_revision && value.source_revision !== revision);
         if (mismatch) {
@@ -256,6 +286,9 @@ export function updateNarrative(ctx, services) {
             return;
         }
         const before = [...(previous?.covered || []), ...batch.covered];
+        // The response record belongs to one attempt. Without this, a transport failure would report the
+        // metrics of the last call that did return, which is a different failure entirely.
+        diagnose(ctx, { summary_response: null });
         try {
             const text = await (services.summarize || generateNarrativeSummary)(ctx, request.text, state.settings);
             if (!services.isCurrent()) return;
@@ -264,8 +297,13 @@ export function updateNarrative(ctx, services) {
             // the call: an append during the request must not be summarized by a result it predates.
             if (!before.every((id, i) => id === state.chunks[i]?.id) || state.settings.enabled === false) return;
             const parsed = parseAnchors(text);
-            if (!parsed.summary) throw new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。');
-            if (estimateTokens(parsed.summary) > opts.summaryTokens) throw new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。');
+            const attemptResponse = storeOf(ctx).narrative_diagnostics?.summary_response || null;
+            if (!parsed.summary) throw tagged('format', new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。'),
+                { response: attemptResponse, summary_tokens: estimateTokens(text) });
+            const acceptedTokens = estimateTokens(parsed.summary);
+            if (acceptedTokens > opts.summaryTokens) throw tagged('over_budget',
+                new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。'),
+                { response: attemptResponse, summary_tokens: acceptedTokens });
             // prepare() above may have persisted and swapped the store object, so write through
             // a fresh read rather than through the reference it returned.
             const live = storeOf(ctx);
@@ -284,19 +322,55 @@ export function updateNarrative(ctx, services) {
                     entries: previousKnowledge.entries.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
                     parse: 'missing', updated_at: Date.now() };
             }
-            const revision = fnv1a32(live.narrative_summary.covered.join('|')).toString(36);
-            for (const value of [live.narrative_anchors, live.narrative_knowledge]) if (value) value.source_revision = revision;
-            // Committing clears the block and the interface-failure counter: this batch is done.
+            // Two versions, because they answer two questions: which sources this state read, and what
+            // this state says. Only the second can tell an old injection from the current state, since
+            // coverage is a count of floors and two different states can share it.
+            const sourceRevision = fnv1a32(before.join('|')).toString(36);
+            for (const value of [live.narrative_anchors, live.narrative_knowledge]) if (value) value.source_revision = sourceRevision;
+            live.narrative_summary.source_revision = sourceRevision;
+            live.narrative_summary.state_revision = stateRevisionOf(live.narrative_summary,
+                live.narrative_anchors?.active, live.narrative_knowledge?.entries);
+            const pastFailure = live.narrative_diagnostics?.summary_last_error;
+            // Committing clears the current error, the block and the counter. It marks the last failure
+            // recovered rather than erasing it: a failure that disappears the moment the retry works is
+            // exactly the failure nobody can diagnose afterwards.
             diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
-                summary_block: null, anchor_parse: parsed.sections });
+                summary_block: null, anchor_parse: parsed.sections,
+                summary_last_error: pastFailure ? { ...pastFailure, recovered: true, recovered_at: Date.now(),
+                    recovered_by: { source_revision: sourceRevision,
+                        state_revision: live.narrative_summary.state_revision } } : null });
             prepare(ctx);
             persist(ctx);
         } catch (error) {
             if (services.isCurrent()) {
                 // Counted, not just recorded: one failure is noise, a run of them is the warning. This
-                // counter is for interface failures only; a local budget block never reaches here.
-                const failures = Number(storeOf(ctx).narrative_diagnostics?.summary_failures) || 0;
-                diagnose(ctx, { summary_error: String(error.message || error), summary_failures: failures + 1 });
+                // counter is for model-call failures only; a local budget block never reaches here.
+                const live = storeOf(ctx);
+                const stage = error?.stage || 'transport';
+                const previousFailure = live.narrative_diagnostics?.summary_last_error;
+                const batchId = [batch.sources[0], batch.sources.at(-1), batch.covered.length].join('|');
+                const sameBatch = previousFailure && !previousFailure.recovered && previousFailure.batch_id === batchId;
+                const failures = Number(live.narrative_diagnostics?.summary_failures) || 0;
+                const response = error?.response || null;
+                diagnose(ctx, { summary_error: String(error.message || error), summary_failures: failures + 1,
+                    summary_last_error: {
+                        at: Date.now(), stage, stage_label: stageLabel(stage),
+                        reason: bounded(error?.message || error),
+                        batch_id: batchId,
+                        batch: { first: batch.sources[0], last: batch.sources.at(-1), turns: batch.turns,
+                            covered: batch.covered.length, messages: batch.sources.length },
+                        input_chars: request.text.length, input_tokens_estimated: estimateTokens(request.text),
+                        budget_chars: opts.inputChars,
+                        context_tokens: null, context_tokens_status: 'unknown',
+                        summary_tokens: Number.isFinite(error?.summary_tokens) ? error.summary_tokens : null,
+                        summary_budget_tokens: opts.summaryTokens,
+                        response: response ? { finish_reason: response.finish_reason ?? null,
+                            content_chars: response.content_chars ?? null,
+                            completion_tokens: response.completion_tokens ?? null,
+                            reasoning_tokens: response.reasoning_tokens ?? null,
+                            model: response.model ?? null, transport: response.transport ?? null } : null,
+                        attempt: sameBatch ? (Number(previousFailure.attempt) || 1) + 1 : 1,
+                        recovered: false, recovered_at: null } });
                 persist(ctx);
             }
         }
@@ -310,12 +384,13 @@ export function updateNarrative(ctx, services) {
 }
 
 /**
- * How much original text the accepted summary has not reached yet, and the warnings that follow.
+ * How much original text the accepted summary has not reached yet, and which condition that is.
  *
  * A summary that keeps failing does not break the story: the floors stay visible, which is the safe
  * direction. What it does break is the premise - the prompt grows with the chat again, and the only
- * symptom is a diagnostic nobody reads. These two numbers are that symptom, stated where a user will
- * see them.
+ * symptom is a diagnostic nobody reads. The number alone cannot say which condition it is, though: the
+ * same "nine turns pending" is a healthy batch filling up, a batch that is being written right now, or a
+ * pipeline that has stopped. So the number is paired with a state, and only some states are faults.
  */
 function pendingState(store, chunks) {
     const covered = validSummary(store.narrative_summary, chunks) ? store.narrative_summary.covered.length : 0;
@@ -327,8 +402,38 @@ function pendingState(store, chunks) {
     };
 }
 
+/**
+ * One word for "what is the summary subsystem doing", because the same pending count means different
+ * things. Blocked and summarizing outrank the rest: a block will not clear itself, and a running pass is
+ * progress rather than a fault however much text is waiting behind it.
+ */
+function summarizeState(state) {
+    if (state.summary_block) return 'blocked';
+    if (state.summarizing) return 'summarizing';
+    if (state.summary_failures >= state.failureWarn) return 'failing';
+    if (state.every && state.pending_floors >= state.every) return 'backlog';
+    if (state.pending_floors > 0) return 'accumulating';
+    return 'idle';
+}
+
+/**
+ * Settings that are not wrong but are worth saying out loud once. The input budget is the one case: an
+ * install that has the value this key used to default to cannot hold a ten-turn batch of long replies, and
+ * guessing whether the user chose it would be worse than saying so. It is never overwritten.
+ */
+function noticesFor(settings) {
+    const out = [];
+    if (Number(settings.narrative_input_chars) === LEGACY_INPUT_CHARS_DEFAULT) {
+        out.push('每批总结输入字符预算是旧默认值 ' + LEGACY_INPUT_CHARS_DEFAULT
+            + '，完整十轮批次可能装不下（实测约 23,742 字符，需要约 24000 以上）。该值没有被自动覆盖，请按需调整。');
+    }
+    return out;
+}
+
 function warningsFor(state, opts) {
     const out = [];
+    state = { ...state, failureWarn: opts.failureWarn,
+        summary_state: summarizeState({ ...state, failureWarn: opts.failureWarn }) };
     // Two blockers that look alike to a user and are not: a request the local character budget cannot
     // hold (nothing was sent) and an interface that failed (something was). They are reported apart so
     // the fix is not guessed at, and a budget block is not counted as a model failure.
@@ -342,9 +447,13 @@ function warningsFor(state, opts) {
         out.push('摘要连续 ' + state.summary_failures + ' 次失败；原文保持可见，但常驻提示词会随楼层增长。'
             + (state.summary_error ? ' 最后一次：' + state.summary_error : ''));
     }
-    if (state.pending_tokens >= opts.pendingWarnTokens) {
-        out.push('已有 ' + state.pending_floors + ' 个已完成 user turns / 约 ' + state.pending_tokens
-            + ' token 原文尚未进入摘要；检查总结接口或调整总结间隔。');
+    // The tail is not a fault by itself: it is exactly the material the next batch will read, and right
+    // after a commit a whole batch is normally waiting for the next event to consume it. The warning needs
+    // both conditions - a full batch with nothing running, AND a tail past the size threshold. The size
+    // alone no longer raises one, which is what made every batch cycle look like a fault.
+    if (state.summary_state === 'backlog' && state.pending_tokens >= opts.pendingWarnTokens) {
+        out.push('已有 ' + state.pending_floors + ' 个已完成 user turns（约 ' + state.pending_tokens
+            + ' token）等待总结，但没有正在进行的总结任务；检查总结接口或调整总结间隔。');
     }
     if (state.anchors_unconfirmed >= opts.anchorUnconfirmedWarn) {
         out.push('有 ' + state.anchors_unconfirmed + ' 条锚点已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
@@ -419,9 +528,63 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
     }
 }
 
+/**
+ * The three continuity blocks, composed for whatever state is committed right now.
+ *
+ * It is a function rather than a run of statements because the same state can have to be composed twice:
+ * once while the rest of the prompt is assembled, and once more if a background summary committed during
+ * one of those awaits. The transcript folding and the injected block have to describe one version, or the
+ * rows the newer commit hid are neither in the summary nor in the visible transcript.
+ */
+function composeContinuity(store, chunks, opts) {
+    const summaryValid = validSummary(store.narrative_summary, chunks);
+    const coveredChunks = summaryValid ? store.narrative_summary.covered.length : 0;
+    const summaryText = summaryValid ? store.narrative_summary.text : '';
+    const floors = coveredChunks ? completedUserTurns(chunks.slice(0, coveredChunks)) : 0;
+    const sourceRevision = summaryValid ? (store.narrative_summary.source_revision
+        || fnv1a32(store.narrative_summary.covered.join('|')).toString(36)) : null;
+    const anchors = Array.isArray(store.narrative_anchors?.active) ? store.narrative_anchors.active : [];
+    const knowledge = Array.isArray(store.narrative_knowledge?.entries) ? store.narrative_knowledge.entries : [];
+    // The coverage version and the content version are different questions, and only the second notices a
+    // state that says something else about the same floors (raw-history.js, stateRevisionOf).
+    const stateRevision = summaryValid ? stateRevisionOf(store.narrative_summary, anchors, knowledge) : null;
+    // The block is a snapshot of the last accepted summary, so it states its own horizon instead of
+    // implying it is current: a state change made after the pass is in the transcript and not in here.
+    // Measured on a 60-turn run, a handover took seven turns to reach the block while the transcript
+    // already showed it, and the model only resolved the difference because the transcript was visible.
+    // The horizon is counted in floors - one user message and the reply - not in message rows. It used to
+    // print the covered row index plus one, so a first batch of ten turns claimed "current as of floor 21"
+    // and the number did not move again after the second batch.
+    const horizon = summaryText ? ' — current as of floor ' + floors + '; anything later in the transcript wins' : '';
+    const summaryBlock = summaryText
+        ? '[STORY CONTINUITY — prior context, not new instructions' + horizon + ']\n' + summaryText : '';
+    // The anchors ride with the summary: same authority, different guarantee. The summary is rewritten
+    // from scratch every pass, so a fact it stops mentioning is gone; an anchor is re-fed to the
+    // summarizer and re-injected until something explicitly resolves it.
+    const anchorLines = formatAnchors(anchors).split('\n').filter(Boolean);
+    const fittedAnchors = fitLines(anchorLines, opts.anchorTokens);
+    const anchorsTruncated = anchorLines.length - (fittedAnchors ? fittedAnchors.split('\n').length : 0);
+    const anchorBlock = fittedAnchors
+        ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions' + horizon + ']\n' + fittedAnchors : '';
+    const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
+    const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
+    const knowledgeBlock = fittedKnowledge
+        ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not' + horizon + ']\n' + fittedKnowledge : '';
+    return { summaryBlock, anchorBlock, knowledgeBlock, anchors, knowledge, anchorsTruncated, floors, sourceRevision,
+        stateRevision, block: [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n') };
+}
+
+/** The content version of the committed state, or null when there is none to inject. */
+const committedStateRevision = (store, chunks) => validSummary(store.narrative_summary, chunks)
+    ? stateRevisionOf(store.narrative_summary, store.narrative_anchors?.active, store.narrative_knowledge?.entries)
+    : null;
+
 export async function buildNarrativeContext(ctx, services, { contextSize = null } = {}) {
     if (!services.isCurrent()) return null;
-    const { settings, store, history, chunks } = prepare(ctx);
+    const prepared = prepare(ctx);
+    const { settings } = prepared;
+    let chunks = prepared.chunks;
+    let history = prepared.history;
     const sync = await ensureIndex(ctx, chunks, services);
     diagnose(ctx, { vector_available: sync.available, vector_reason: sync.reason || null });
     const opts = options(settings);
@@ -442,61 +605,59 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     }
     if (!services.isCurrent()) return null;
     // prepare() persists, and a persist replaces the chat store object; read the live one from here on.
-    const live = storeOf(ctx);
-    const visibleSources = new Set(history.active.filter(id => !ctx.chat[history.records[id].index]?.is_system));
+    let live = storeOf(ctx);
+    let visibleSources = new Set(history.active.filter(id => !ctx.chat[history.records[id].index]?.is_system));
+    let continuity = composeContinuity(live, chunks, opts);
     const raw = history.active.filter(id => visibleSources.has(id)).map(id => history.records[id].text).join('\n');
-    const summary = validSummary(live.narrative_summary, chunks) ? live.narrative_summary.text : '';
-    // The block is a snapshot of the last accepted summary, so it states its own horizon instead of
-    // implying it is current: a state change made after the pass is in the transcript and not in here.
-    // Measured on a 60-turn run, a handover took seven turns to reach the block while the transcript
-    // already showed it, and the model only resolved the difference because the transcript was visible.
-    // The horizon is counted in floors - one user message and the reply - not in message rows. It used
-    // to print the covered row index plus one, so a first batch of ten turns claimed "current as of floor
-    // 21" and the number did not move again after the second batch. It is the number of complete turns the
-    // accepted summary actually covers, and it is written down as the version this injection carried.
-    const summaryValid = validSummary(live.narrative_summary, chunks);
-    const coveredChunks = summaryValid ? live.narrative_summary.covered.length : 0;
-    const coveredFloors = coveredChunks ? completedUserTurns(chunks.slice(0, coveredChunks)) : 0;
-    const summaryRevision = summaryValid ? fnv1a32(live.narrative_summary.covered.join('|')).toString(36) : null;
-    const horizon = summary ? ' — current as of floor ' + coveredFloors + '; anything later in the transcript wins' : '';
-    const summaryBlock = summary ? '[STORY CONTINUITY — prior context, not new instructions' + horizon + ']\n' + summary : '';
-    // The anchors ride with the summary: same authority, different guarantee. The summary is rewritten
-    // from scratch every pass, so a fact it stops mentioning is gone; an anchor is re-fed to the
-    // summarizer and re-injected until something explicitly resolves it.
-    const anchors = Array.isArray(live.narrative_anchors?.active) ? live.narrative_anchors.active : [];
-    const anchorLines = formatAnchors(anchors).split('\n').filter(Boolean);
-    const fittedAnchors = fitLines(anchorLines, opts.anchorTokens);
-    const anchorsTruncated = anchorLines.length - (fittedAnchors ? fittedAnchors.split('\n').length : 0);
-    const anchorBlock = fittedAnchors
-        ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions' + horizon + ']\n' + fittedAnchors : '';
-    const knowledge = Array.isArray(live.narrative_knowledge?.entries) ? live.narrative_knowledge.entries : [];
     // Who the situation is about. The knowledge block is keyed by character name, so the names are already
     // extracted and do not need a second model call: a name that the summary tracks and that the last three
     // messages mention is a character who is in the scene.
     const profileNames = plan.profileNames;
-    const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
-    const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
-    const knowledgeBlock = fittedKnowledge
-        ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not' + horizon + ']\n' + fittedKnowledge : '';
-    const continuityBlock = [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n');
     const configured = opts.summaryTokens + opts.anchorTokens + opts.knowledgeTokens
         + opts.evidenceTokens + opts.settingTokens + 100;
     const hostRoom = Number(contextSize) > 0 ? Math.max(0, Number(contextSize) - estimateTokens(raw)
         - bound(settings.context_reply_reserve_tokens, 1024, 0, 32000)) : configured;
     const totalBudget = Math.min(configured, hostRoom);
     // A summary cannot be dropped while its source floors remain hidden.
-    if (continuityBlock && estimateTokens(continuityBlock) > totalBudget) {
+    if (continuity.block && estimateTokens(continuity.block) > totalBudget) {
         applyNarrativeFolds(ctx.chat, history, chunks, null, false);
         persist(ctx);
         return { referenceBlock: '', currentStateBlock: '', diagnostics: { summary_error: 'context budget too small; original floors restored' } };
     }
-    const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuityBlock)));
+    const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuity.block)));
     const fused = rankRawChunks(chunks, query, dense, { visibleSources, names: profileNames });
     const reranked = evidenceBudget > 0 ? await applyRerank(services, opts, query, fused, visibleSources)
         : { ranked: fused, used: false, error: null };
     // The rerank is a host round-trip, so it needs the same guard every other await here has: a result
     // that arrives after the user changed chats must not be packed into this prompt.
     if (!services.isCurrent()) return null;
+    // The setting plane is another host round-trip, so it runs before the committed state is read for the
+    // last time: everything that can wait has waited by the time the blocks are composed.
+    let settingText = '';
+    if (opts.settingTokens && services.settings) {
+        const result = await services.settings(query);
+        if (!services.isCurrent()) return null;
+        // The setting formatter already enforces role-private audiences in the host service.
+        const formatted = formatRelevantSettingContext(result, { maxChars: opts.settingTokens * 4 });
+        settingText = fitWholeBlocks(formatted.split('\n\n'), opts.settingTokens);
+    }
+    // A background summary can commit while this function waits on the vector collection, the reranker or
+    // the setting plane. Folding already happened, so a block that still describes the older state would
+    // leave the rows the newer commit hid neither summarized nor visible. Re-read the committed state and,
+    // if it moved, fold and compose again: the injected block and the hidden range end up one version.
+    if (committedStateRevision(storeOf(ctx), chunks) !== continuity.stateRevision) {
+        const refreshed = prepare(ctx);
+        chunks = refreshed.chunks;
+        history = refreshed.history;
+        live = storeOf(ctx);
+        visibleSources = new Set(history.active.filter(id => !ctx.chat[history.records[id].index]?.is_system));
+        continuity = composeContinuity(live, chunks, opts);
+        if (continuity.block && estimateTokens(continuity.block) > totalBudget) {
+            applyNarrativeFolds(ctx.chat, history, chunks, null, false);
+            persist(ctx);
+            return { referenceBlock: '', currentStateBlock: '', diagnostics: { summary_error: 'context budget too small; original floors restored' } };
+        }
+    }
     const ranked = reranked.ranked;
     const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources });
     // The metric the hand-written probe runs had to be replaced by: of the rare terms of this situation that
@@ -507,41 +668,32 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         { asked: plan.asked, visibleSources, packed: evidence.sources }) : [];
     // The second half of the same question: was the character described, not merely mentioned.
     const profileState = profileRecall(chunks, history, { names: profileNames, visibleSources, packed: evidence.sources });
-    let settingText = '';
-    if (opts.settingTokens && services.settings) {
-        const result = await services.settings(query);
-        if (!services.isCurrent()) return null;
-        // The setting formatter already enforces role-private audiences in the host service.
-        const formatted = formatRelevantSettingContext(result, { maxChars: opts.settingTokens * 4 });
-        settingText = fitWholeBlocks(formatted.split('\n\n'), opts.settingTokens);
-    }
-    const referenceBlock = fitWholeBlocks([evidence.text, settingText], Math.max(0, totalBudget - estimateTokens(continuityBlock)));
+    const referenceBlock = fitWholeBlocks([evidence.text, settingText], Math.max(0, totalBudget - estimateTokens(continuity.block)));
     const pending = pendingState(live, chunks);
     const warnings = warningsFor({ ...pending, summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
         summary_error: live.narrative_diagnostics?.summary_error || null,
         summary_block: live.narrative_diagnostics?.summary_block || null,
-        anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
-        anchors_truncated: anchorsTruncated,
-        knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
+        summarizing: jobs.has(hostKey(ctx)), every: opts.every,
+        anchors_unconfirmed: continuity.anchors.filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_truncated: continuity.anchorsTruncated,
+        knowledge_unconfirmed: continuity.knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
         entity_missed: 0 }, opts); // Query-term coverage is a trace, not a quality alarm.
-    const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
+    const diagnostics = { summary_tokens: estimateTokens(continuity.summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
         covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
         pending_floors: pending.pending_floors, pending_tokens: pending.pending_tokens,
         summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
-        anchors_active: anchors.length,
-        anchors_unconfirmed: anchors.filter(item => Number(item.unconfirmed) > 0).length,
-        anchors_truncated: anchorsTruncated,
-        // Two different numbers on purpose: what the accepted summary covers now, and what the last
-        // injection actually carried. A commit made after the last generation moves the first and not the
-        // second, and the panel must not pair a new summary with an old floor as if they were one state.
-        state_horizon_floors: coveredFloors || null,
-        summary_covered_floors: coveredFloors,
-        summary_revision: summaryRevision,
-        injected_summary_revision: summaryRevision,
-        injected_at: Date.now(),
+        anchors_active: continuity.anchors.length,
+        anchors_unconfirmed: continuity.anchors.filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_truncated: continuity.anchorsTruncated,
+        // What the accepted summary covers right now. The injected numbers are written by
+        // runNarrativeGeneration, after the host has actually been given the block: a build is not an
+        // injection, and a report that conflated them could not tell a pending pass from a delivered one.
+        summary_covered_floors: continuity.floors,
+        summary_revision: continuity.sourceRevision,
+        summary_state_revision: continuity.stateRevision,
         entity_candidates: entityState.length,
         query_strategy: plan.strategy, retrieval_mode: plan.mode,
         asked_status: !plan.metricsApplicable ? 'not_applicable' : askedState.length ? 'measured_proxy' : 'no_targets',
@@ -554,8 +706,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         profile_names: profileNames,
         profile_terms: profileState.map(row => ({ name: row.name, quoted: row.quoted, detailed: row.detailed, descriptors: row.descriptors })),
         entity_missed: entityMissed.map(row => ({ term: row.term, first_floor: row.first_floor, hidden_floors: row.hidden_floors })),
-        knowledge_entries: knowledge.length,
-        knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
+        knowledge_entries: continuity.knowledge.length,
+        knowledge_unconfirmed: continuity.knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
         warnings,
@@ -570,7 +722,11 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         summary_invalidated: live.narrative_diagnostics?.summary_invalidated || null,
         quality: 'not measured; these are delivery and cost diagnostics' };
     diagnose(ctx, diagnostics);
-    return { referenceBlock, currentStateBlock: continuityBlock, diagnostics };
+    // The bundle carries what the injection step needs to re-check the state without another host
+    // round-trip, and what it must record if (and only if) the prompt is really handed over.
+    return { referenceBlock, currentStateBlock: continuity.block, chunks, opts, diagnostics,
+        injection: { floors: continuity.floors || null, source_revision: continuity.sourceRevision,
+            state_revision: continuity.stateRevision, chars: estimateTokens(continuity.block) } };
 }
 
 export async function runNarrativeGeneration(ctx, services, args) {
@@ -580,10 +736,26 @@ export async function runNarrativeGeneration(ctx, services, args) {
         if (settings.enabled === false) prepare(ctx);
         return;
     }
-    const bundle = await buildNarrativeContext(ctx, services, { contextSize: args[1] });
+    let bundle = await buildNarrativeContext(ctx, services, { contextSize: args[1] });
     if (!bundle || !services.isCurrent()) return;
+    // The last check before the block is handed over is synchronous on purpose: with no await between
+    // reading the committed state and setting the prompt, a commit cannot slip into that gap and leave
+    // the transcript hiding rows this block does not describe.
+    const settled = storeOf(ctx);
+    if (bundle.chunks && committedStateRevision(settled, bundle.chunks) !== bundle.injection.state_revision) {
+        const again = composeContinuity(settled, bundle.chunks, bundle.opts);
+        bundle = { ...bundle, currentStateBlock: again.block,
+            injection: { floors: again.floors || null, source_revision: again.sourceRevision,
+                state_revision: again.stateRevision, chars: estimateTokens(again.block) } };
+    }
     ctx.setExtensionPrompt(NARRATIVE_PROMPTS[0], bundle.referenceBlock, 1, 4, false, 0);
     ctx.setExtensionPrompt(NARRATIVE_PROMPTS[1], bundle.currentStateBlock, 1, 1, false, 0);
+    // "Injected" means the host was given the block. A build that ends in a quiet generation, a chat
+    // switch or a thrown host call leaves the last real injection as the answer to "what did the model see".
+    diagnose(ctx, { state_horizon_floors: bundle.injection.floors,
+        injected_source_revision: bundle.injection.source_revision,
+        injected_state_revision: bundle.injection.state_revision,
+        injected_chars: bundle.injection.chars, injected_at: Date.now() });
     syncFloorFoldDom(ctx);
     return bundle;
 }
@@ -652,12 +824,31 @@ export function readNarrativeReport(ctx) {
     // generation, and a report that showed only one of them could not say whether a summary had landed.
     const coveredChunks = validSummary(summary, chunks) ? summary.covered.length : 0;
     const committedFloors = coveredChunks ? completedUserTurns(chunks.slice(0, coveredChunks)) : 0;
-    const committedRevision = coveredChunks ? fnv1a32(summary.covered.join('|')).toString(36) : null;
+    const committedRevision = coveredChunks ? (summary.source_revision
+        || fnv1a32(summary.covered.join('|')).toString(36)) : null;
+    // Coverage is a count of floors; the content version is what actually reached the prompt. Two states
+    // can cover the same floors and say different things, and only the version comparison notices that.
+    const committedStateRev = committedStateRevision(store, chunks);
     const injectedFloors = store.narrative_diagnostics?.state_horizon_floors ?? null;
-    const injectedRevision = store.narrative_diagnostics?.injected_summary_revision ?? null;
+    const injectedRevision = store.narrative_diagnostics?.injected_state_revision ?? null;
+    const summarizing = jobs.has(hostKey(ctx));
+    const every = bound(settings.narrative_every, defaults.narrative_every, 1, 100);
+    const state = { ...pending, summary_failures: failures,
+        summary_error: store.narrative_diagnostics?.summary_error || null,
+        summary_block: store.narrative_diagnostics?.summary_block || null,
+        summarizing, every,
+        anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_truncated: 0,
+        knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
+        knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
+        knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0 };
     return {
         enabled: settings.enabled !== false,
-        summary_running: jobs.has(hostKey(ctx)),
+        summary_running: summarizing,
+        summary_state: summarizeState({ ...state, failureWarn: options(settings).failureWarn }),
+        summary_block: state.summary_block,
+        summary_last_error: store.narrative_diagnostics?.summary_last_error || null,
+        notices: noticesFor(settings),
         // The unit is the floor as a reader of the chat counts it: one user message and the character's
         // reply. The setting has always been in that unit, and every second field that repeated it under a
         // different name made a cadence of ten read as ten message rows, which it is not.
@@ -696,16 +887,7 @@ export function readNarrativeReport(ctx) {
         profile_missing: (store.narrative_diagnostics?.profile_terms || []).filter(row => !row.detailed).map(row => row.name),
         entity_recalled: store.narrative_diagnostics?.entity_recalled || 0,
         entity_missed: (store.narrative_diagnostics?.entity_missed || []).map(row => row.term),
-        warnings: warningsFor({ ...pending, summary_failures: failures,
-            summary_error: store.narrative_diagnostics?.summary_error || null,
-            summary_block: store.narrative_diagnostics?.summary_block || null,
-            anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
-            anchors_truncated: 0,
-            knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
-            knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
-            knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
-            entity_missed: 0 },
-            options(settings)),
+        warnings: warningsFor({ ...state, entity_missed: 0 }, options(settings)),
         messages: history ? history.active.length : 0,
         completed_floors: completedUserTurns(chunks),
         chunks: chunks.length,
@@ -713,11 +895,15 @@ export function readNarrativeReport(ctx) {
         summary_valid: validSummary(summary, chunks),
         summary_covered_floors: committedFloors,
         summary_revision: committedRevision,
+        summary_state_revision: committedStateRev,
         injected_floors: injectedFloors,
         injected_revision: injectedRevision,
+        injected_source_revision: store.narrative_diagnostics?.injected_source_revision ?? null,
+        injected_state_revision: store.narrative_diagnostics?.injected_state_revision ?? null,
         injected_at: store.narrative_diagnostics?.injected_at ?? null,
-        injected_stale: Boolean(summary) && injectedFloors !== committedFloors,
-        summary_block: store.narrative_diagnostics?.summary_block || null,
+        injected_chars: store.narrative_diagnostics?.injected_chars ?? null,
+        // Versions, not counts: the same floor count with different prose is still an old injection.
+        injected_stale: Boolean(summary) && injectedRevision !== committedStateRev,
         summary_cost: store.narrative_diagnostics?.summary_cost || null,
         // Kept as the alias the panel and the earlier docs use: the floor the injected block is current as of.
         state_horizon_floors: injectedFloors,
@@ -748,12 +934,14 @@ export function mountNarrativeSettings(getContext, createServices) {
             ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000],
             ['narrative_anchor_tokens','锚点 token 预算',0,4000],
             ['narrative_input_chars','每批总结输入字符预算（必须容纳完整批次）',2000,100000],
-            ['narrative_pending_warn_tokens','未总结原文告警阈值',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]
+            ['narrative_pending_warn_tokens','未总结原文大小提示阈值（仅在积压时附加说明）',200,200000],['narrative_summary_failure_warn','连续失败几次告警',1,50]]
             .map(([key,label,min,max]) => `<label>${label}<input type="number" data-key="${key}" min="${min}" max="${max}"></label>`).join('')
         + '<label>重排模型（留空则关闭，例如 jina-reranker-v3）<input type="text" data-key="narrative_rerank_model" data-text="1"></label>'
         + '<label><input type="checkbox" data-key="narrative_fold">折叠已总结的历史楼层</label>'
         + '<button class="menu_button" data-action="summarize">总结下一完整批次</button>'
         + '<button class="menu_button" data-action="restore">恢复原文显示</button>'
+        + '<div data-state class="aum-v51-status"></div>'
+        + '<div data-notice class="aum-v51-status"></div>'
         + '<div data-warning class="aum-v51-status"></div><pre data-status></pre>';
     const settings = narrativeSettings(ctx);
     for (const input of root.querySelectorAll('[data-key]')) {
@@ -792,8 +980,26 @@ export function mountNarrativeSettings(getContext, createServices) {
 }
 
 /** One place that writes the panel, so a warning cannot be shown on one path and lost on another. */
+const SUMMARY_STATE_TEXT = { idle: '空闲', accumulating: '正常积累（未满一个批次）',
+    summarizing: '正在总结', failing: '连续失败', blocked: '输入预算阻塞', backlog: '有完整批次等待总结' };
+
 function renderNarrativePanel(root, ctx) {
     const report = readNarrativeReport(ctx);
+    // "Progress" has to be visible as progress: a cadence of ten turns spends most of its time with a tail
+    // waiting, and a reader who only sees a number cannot tell that from a pipeline that stopped.
+    const state = root.querySelector('[data-state]');
+    if (state) {
+        state.textContent = '摘要状态：' + (SUMMARY_STATE_TEXT[report.summary_state] || report.summary_state || '未知')
+            + '（待总结 ' + report.pending_floors + ' 个已完成 user turns / 约 ' + report.pending_tokens + ' token'
+            + (report.summary_running ? '，任务运行中' : '') + '）';
+    }
+    // A notice is not a fault: it is something about the configuration the user should know, shown apart
+    // from the warnings so that a real fault is not read as one more line of advice.
+    const notice = root.querySelector('[data-notice]');
+    if (notice) {
+        notice.textContent = report.notices.length ? 'ℹ ' + report.notices.join(' ') : '';
+        notice.hidden = !report.notices.length;
+    }
     const warning = root.querySelector('[data-warning]');
     if (warning) {
         warning.textContent = report.warnings.length ? '⚠ ' + report.warnings.join(' ') : '';
