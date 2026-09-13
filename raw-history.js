@@ -466,6 +466,8 @@ export function summaryPrompt(previous, messages, maxTokens, anchors, knowledge)
 
 /** The default this key shipped with before the exact-batch design measured what a batch costs. */
 export const LEGACY_INPUT_CHARS_DEFAULT = 18000;
+/** The anchor budget this key shipped with before the live ledger was measured. */
+export const LEGACY_ANCHOR_TOKENS_DEFAULT = 300;
 
 /**
  * The version of the committed state as content, not as coverage.

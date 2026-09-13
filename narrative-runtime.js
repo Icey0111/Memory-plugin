@@ -1,5 +1,6 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
-    summaryMessages, summaryRequest, summaryBlockState, stateRevisionOf, LEGACY_INPUT_CHARS_DEFAULT,
+    summaryMessages, summaryRequest, summaryBlockState, stateRevisionOf,
+    LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
     supersedeAnchors, selectAnchors, MAX_SUPERSEDED,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries } from './raw-history.js';
@@ -442,6 +443,12 @@ function noticesFor(settings) {
     if (Number(settings.narrative_input_chars) === LEGACY_INPUT_CHARS_DEFAULT) {
         out.push('每批总结输入字符预算是旧默认值 ' + LEGACY_INPUT_CHARS_DEFAULT
             + '，完整十轮批次可能装不下（实测约 23,742 字符，需要约 24000 以上）。该值没有被自动覆盖，请按需调整。');
+    }
+    // Same rule as above: a stored value that happens to be the old default is reported, never overwritten,
+    // because the plugin cannot tell it apart from a deliberate choice.
+    if (Number(settings.narrative_anchor_tokens) === LEGACY_ANCHOR_TOKENS_DEFAULT) {
+        out.push('锚点 token 预算是旧默认值 ' + LEGACY_ANCHOR_TOKENS_DEFAULT
+            + '，当前账本装不下（实测 28 条活值约需 900 token）。该值没有被自动覆盖，请按需调整。');
     }
     return out;
 }
