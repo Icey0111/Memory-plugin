@@ -59,9 +59,13 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
-- A refused `【锚点变更】` section earns exactly one targeted repair that shows the model its own answer and
-  the rejected lines, keeps the valid content, and is re-checked atomically. Its token cost is reported apart
-  from the batch request.
+- A refused `【锚点变更】` section earns exactly one targeted repair, and the host keeps what the first answer
+  already validated: valid operations, the summary body and the knowledge boundaries are frozen, the repair
+  supplies only replacements for the rejected lines, and kept plus replacement lines are re-parsed as one batch.
+  A repair that answers "无" can no longer erase the valid content. The repair request is budget-checked before
+  it is sent, original and repair costs are recorded apart, unavailable usage is marked unknown, and a repair
+  transport failure keeps both the attempt and the original refusal. Both paths share one final current-state
+  check.
 - An unmistakable anchor operation written without its heading is recovered and reported as `inferred`;
   uncertain text still refuses the batch.
 - The summary prompt teaches the multi-source shape and adds three ledger checks: extract the needed facts when

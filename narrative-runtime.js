@@ -321,10 +321,10 @@ export function updateNarrative(ctx, services) {
         // The response record belongs to one attempt. Without this, a transport failure would report the
         // metrics of the last call that did return, which is a different failure entirely.
         diagnose(ctx, { summary_response: null });
-        // One answer is parsed and committed, or it is refused. Nothing is written before every reference in
-        // the answer has been checked, so a refused first attempt leaves the store exactly as the model found
-        // it and the repair below reads the same frozen state rather than a half-written one.
-        const commitAnswer = (answer, responseMetrics, repair) => {
+        // A first answer is evaluated into its parsed pieces and its checked operations, or it is refused with
+        // the valid prefix attached. Nothing is written during evaluation, so a refused first attempt leaves the
+        // store exactly as the model found it and the repair reads the same frozen state.
+        const evaluateAnswer = (answer, responseMetrics) => {
             const parsed = parseAnchors(answer);
             if (!parsed.summary) throw tagged('format', new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。'),
                 { response: responseMetrics, summary_tokens: estimateTokens(answer) });
@@ -332,38 +332,41 @@ export function updateNarrative(ctx, services) {
             if (acceptedTokens > opts.summaryTokens) throw tagged('over_budget',
                 new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。'),
                 { response: responseMetrics, summary_tokens: acceptedTokens });
-            // prepare() above may have persisted and swapped the store object, so write through
-            // a fresh read rather than through the reference it returned.
-            const live = storeOf(ctx);
-            // Nothing is written until every reference in the answer has been checked. The summary and the
-            // anchor changes are one commit, so a refused operation cannot leave the two disagreeing about
-            // the floors they describe - and a refusal never falls back to guessing which record was meant.
-            let anchors = live.narrative_anchors;
-            let anchorOps = null;
             if (parsed.anchor_section === 'missing' || parsed.anchor_section === 'empty') {
-                throw tagged('anchor_ops', new Error('锚点变更章节缺失或为空；本批不提交、不隐藏原文。'),
+                const error = tagged('anchor_ops', new Error('锚点变更章节缺失或为空；本批不提交、不隐藏原文。'),
                     { response: responseMetrics, anchor_errors: [{ line: '', reason: parsed.anchor_section + '_section' }] });
+                error.parsed = parsed; error.valid_lines = []; error.anchor_section = parsed.anchor_section;
+                throw error;
             }
-            if (parsed.anchor_section === 'ok' || parsed.anchor_section === 'none' || parsed.anchor_section === 'inferred') {
-                const checked = parseAnchorChanges(parsed.anchorLines,
-                    { plan: request.anchors, batchSources: new Set(batch.sources) });
-                if (checked.errors.length) throw tagged('anchor_ops',
+            const checked = parseAnchorChanges(parsed.anchorLines,
+                { plan: request.anchors, batchSources: new Set(batch.sources) });
+            if (checked.errors.length) {
+                const error = tagged('anchor_ops',
                     new Error('锚点变更引用了无效编号或批次外的来源（' + describeAnchorErrors(checked.errors)
                         + '）；本批不提交、不隐藏原文。'),
                     { response: responseMetrics, anchor_errors: checked.errors });
-                const applied = mergeAnchors(live.narrative_anchors, checked.changes,
-                    { plan: request.anchors, at: Date.now() });
-                if (!applied.ok) throw tagged('anchor_ops',
-                    new Error('锚点变更与请求发出时的版本不一致（' + describeAnchorErrors(applied.errors)
-                        + '）；本批不提交、不隐藏原文。'),
-                    { response: responseMetrics, anchor_errors: applied.errors });
-                anchors = applied.ledger;
-                anchorOps = { ...applied.stats, section: parsed.anchor_section,
-                    ...(repair ? { repaired: true, repair_at: repair.at } : {}),
-                    at: Date.now(), batch_id: batchIdOf(batch) };
+                // The valid prefix is what the repair must not lose. It rides on the error, never written here:
+                // the summary and the ledger stay untouched until one merged, re-checked set passes.
+                error.parsed = parsed;
+                error.valid_lines = checked.changes.map(change => change.line);
+                error.anchor_section = parsed.anchor_section;
+                throw error;
             }
+            return { parsed, checked };
+        };
+        // The only writer. It takes the already-evaluated summary and boundaries plus one fully re-checked
+        // operation set, so the first answer and the repaired answer cannot diverge in what they commit.
+        const commitMerged = (parsed, changes, responseMetrics, repair) => {
+            const live = storeOf(ctx);
+            const applied = mergeAnchors(live.narrative_anchors, changes, { plan: request.anchors, at: Date.now() });
+            if (!applied.ok) throw tagged('anchor_ops',
+                new Error('锚点变更与请求发出时的版本不一致（' + describeAnchorErrors(applied.errors)
+                    + '）；本批不提交、不隐藏原文。'),
+                { response: responseMetrics, anchor_errors: applied.errors });
+            const anchorOps = { ...applied.stats, section: parsed.anchor_section,
+                ...(repair ? { repaired: true, repair_at: repair.at } : {}), at: Date.now(), batch_id: batchIdOf(batch) };
             live.narrative_summary = { version: 1, fixed_batch: true, text: parsed.summary, covered: before };
-            live.narrative_anchors = anchors;
+            live.narrative_anchors = applied.ledger;
             if (parsed.sections === 'ok') live.narrative_knowledge = mergeKnowledge(previousKnowledge, parsed);
             else if (previousKnowledge?.entries?.length) live.narrative_knowledge = { ...previousKnowledge,
                 entries: previousKnowledge.entries.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
@@ -378,21 +381,10 @@ export function updateNarrative(ctx, services) {
                 live.narrative_anchors?.active, live.narrative_knowledge?.entries);
             const pastFailure = live.narrative_diagnostics?.summary_last_error;
             const pastRepair = live.narrative_diagnostics?.anchor_repair;
-            // Committing clears the current error, the block and the counter. It marks the last failure
-            // recovered rather than erasing it: a failure that disappears the moment the retry works is
-            // exactly the failure nobody can diagnose afterwards.
             diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
                 summary_block: null, summary_batch_changed: null, anchor_parse: parsed.anchor_section,
-                // The operation counts of the batch that was actually committed, and no refusal left over
-                // from an earlier one: the panel reads a refusal as "the current answer was not applied".
                 anchor_ops: anchorOps,
-                // A repair is a distinct, separately counted cost. A later batch that needed no repair marks
-                // the last one recovered instead of erasing what it cost, the same rule the failure record uses.
                 anchor_repair: repair || (pastRepair ? { ...pastRepair, recovered: true, recovered_at: Date.now() } : null),
-                // A refusal that disappears the moment the retry works is the failure nobody can diagnose
-                // afterwards, which is the same reason summary_last_error is kept and marked recovered. The
-                // live 40-turn run that first exercised this had both of its refusals erased by the next
-                // commit, and the lines that were refused could no longer be read.
                 anchor_op_errors: live.narrative_diagnostics?.anchor_op_errors
                     ? { ...live.narrative_diagnostics.anchor_op_errors, recovered: true, recovered_at: Date.now() }
                     : null,
@@ -402,68 +394,146 @@ export function updateNarrative(ctx, services) {
             prepare(ctx);
             persist(ctx);
         };
-        try {
-            const text = await (services.summarize || generateNarrativeSummary)(ctx, request.text, state.settings);
-            if (!services.isCurrent()) return;
+        // One check, used after every model call on both paths, so the first answer and the repair can never
+        // commit under different conditions. "Current" covers the open chat, the enabled switch, the frozen
+        // coverage prefix and the batch text; the record versions are checked inside mergeAnchors.
+        const stillFrozen = () => {
+            if (!services.isCurrent()) return 'chat';
             state = prepare(ctx);
-            // The coverage claim comes from the frozen batch, never from the chat length at the end of
-            // the call: an append during the request must not be summarized by a result it predates.
-            if (!before.every((id, i) => id === state.chunks[i]?.id) || state.settings.enabled === false) return;
-            if (sourceBatchFingerprint(summaryMessages(state.history, batch)) !== batchFingerprint) {
+            if (state.settings.enabled === false) return 'disabled';
+            if (!before.every((id, i) => id === state.chunks[i]?.id)) return 'coverage';
+            if (sourceBatchFingerprint(summaryMessages(state.history, batch)) !== batchFingerprint) return 'batch';
+            return null;
+        };
+        const stopFor = reason => {
+            if (reason === 'batch') {
                 // A covered row was edited while the answer was being written. Committing would hide floors
                 // this answer never read, so the batch is left for the next pass instead.
                 diagnose(ctx, { summary_batch_changed: { at: Date.now(), batch_id: batchIdOf(batch) } });
                 persist(ctx);
-                return;
+            }
+            return true;
+        };
+        try {
+            const text = await (services.summarize || generateNarrativeSummary)(ctx, request.text, state.settings);
+            {
+                const reason = stillFrozen();
+                if (reason) return stopFor(reason);
             }
             const firstResponse = storeOf(ctx).narrative_diagnostics?.summary_response || null;
+            let first = null;
             try {
-                commitAnswer(text, firstResponse, null);
+                first = evaluateAnswer(text, firstResponse);
             } catch (commitError) {
-                // One targeted repair, and only for a rejected anchor section: the model is shown what it
-                // wrote and which lines failed, so it can keep the valid content instead of discarding it.
-                // Transport, truncation and budget failures are not format problems and are not repaired.
-                if (commitError?.stage !== 'anchor_ops' || !services.isCurrent()) throw commitError;
-                const repairPrompt = anchorRepairRequest({ responseText: text, errors: commitError.anchor_errors,
-                    plan: request.anchors, sources: batch.sources, maxTokens: opts.summaryTokens });
-                const repaired = await (services.summarize || generateNarrativeSummary)(ctx, repairPrompt.text, state.settings);
-                if (!services.isCurrent()) return;
-                const repairMetrics = storeOf(ctx).narrative_diagnostics?.summary_response || null;
-                state = prepare(ctx);
-                if (sourceBatchFingerprint(summaryMessages(state.history, batch)) !== batchFingerprint) {
-                    diagnose(ctx, { summary_batch_changed: { at: Date.now(), batch_id: batchIdOf(batch) } });
-                    persist(ctx);
-                    return;
-                }
-                const repair = { at: Date.now(), attempt: 1, section: 'anchor_ops',
+                // One targeted repair, and only for an anchor section the parser could evaluate. A transport,
+                // budget or record-version failure is not a formatting problem and is not repaired.
+                if (commitError?.stage !== 'anchor_ops' || !commitError.parsed || !services.isCurrent()) throw commitError;
+                const repairPrompt = anchorRepairRequest({ validLines: commitError.valid_lines || [],
+                    errors: commitError.anchor_errors, plan: request.anchors, sources: batch.sources,
+                    maxTokens: opts.summaryTokens });
+                // The repair record exists before anything is sent, so a blocked or failed attempt still carries
+                // its request, its cost base and the errors it was meant to fix.
+                const repair = { at: Date.now(), attempt: 1, batch_id: batchIdOf(batch),
                     errors: commitError.anchor_errors || null,
+                    original_anchor_errors: commitError.anchor_errors || null,
+                    valid_preserved: (commitError.valid_lines || []).length,
                     original_response_chars: String(text || '').length,
                     request_chars: repairPrompt.text.length,
                     prompt_tokens_estimated: estimateTokens(repairPrompt.text),
-                    response: repairMetrics,
-                    // Counted apart from the batch request, because the repair is a real second call and its
-                    // cost is the price of the format failure, not of the ten turns it was summarizing.
+                    sent: false, blocked: false, stage: null, error: null, response: null,
+                    replacement_lines: 0, errors_after: null, reason_after: null,
+                    // Usage is only known when the transport reports it; anything else is recorded as unknown
+                    // rather than as zero.
                     cost: { prompt_chars: repairPrompt.text.length,
                         prompt_tokens_estimated: estimateTokens(repairPrompt.text),
-                        completion_tokens: repairMetrics?.completion_tokens ?? null,
-                        reasoning_tokens: repairMetrics?.reasoning_tokens ?? null },
+                        completion_tokens: null, reasoning_tokens: null, usage_status: 'unknown' },
                     recovered: false, recovered_at: null };
-                try {
-                    commitAnswer(repaired, repairMetrics, repair);
-                } catch (repairError) {
-                    if (repairError && typeof repairError === 'object') {
-                        // The batch is still refused for the reason the first answer was refused: the repair is
-                        // a second, separately recorded attempt, not a replacement diagnosis. Its own errors
-                        // are kept on the repair record so both attempts stay readable.
-                        repair.errors_after = repairError.anchor_errors || null;
-                        repair.reason_after = String(repairError.message || repairError);
-                        repairError.repair = repair;
-                        repairError.original_anchor_errors = commitError.anchor_errors || null;
-                        if (commitError.anchor_errors) { repairError.anchor_errors = commitError.anchor_errors; repairError.stage = 'anchor_ops'; }
-                    }
-                    throw repairError;
+                if (repairPrompt.text.length > opts.inputChars) {
+                    // A local budget block is not a model call. It is recorded on the repair, and the batch keeps
+                    // the refusal that asked for the repair in the first place.
+                    repair.blocked = true; repair.stage = 'input_budget';
+                    repair.needed_chars = repairPrompt.text.length; repair.budget_chars = opts.inputChars;
+                    commitError.repair = repair;
+                    throw commitError;
                 }
+                repair.sent = true;
+                let repairedText;
+                try {
+                    repairedText = await (services.summarize || generateNarrativeSummary)(ctx, repairPrompt.text, state.settings);
+                } catch (repairFailure) {
+                    // The repair's own failure is kept beside the refusal it was fixing; the batch stays refused
+                    // for the anchor section, which is still the condition a reader needs to see.
+                    repair.stage = repairFailure?.stage || 'transport';
+                    repair.error = bounded(String(repairFailure?.message || repairFailure));
+                    repair.response = repairFailure?.response || null;
+                    commitError.repair = repair;
+                    throw commitError;
+                }
+                repair.response = storeOf(ctx).narrative_diagnostics?.summary_response || null;
+                if (repair.response) {
+                    repair.cost.completion_tokens = repair.response.completion_tokens ?? null;
+                    repair.cost.reasoning_tokens = repair.response.reasoning_tokens ?? null;
+                    repair.cost.usage_status = 'reported';
+                }
+                {
+                    const reason = stillFrozen();
+                    if (reason) {
+                        repair.stopped = reason;
+                        diagnose(ctx, { anchor_repair: repair, ...(reason === 'batch'
+                            ? { summary_batch_changed: { at: Date.now(), batch_id: batchIdOf(batch) } } : {}) });
+                        persist(ctx);
+                        return;
+                    }
+                }
+                // The kept lines and the replacement lines are re-parsed as one batch, so a repair cannot add a
+                // duplicate target or a foreign source that the single-line checks would miss. An explicit "无"
+                // in the repair means "no replacement", not a new change line.
+                const repairParsed = parseAnchors(repairedText);
+                const firstSection = commitError.parsed.anchor_section;
+                if ((firstSection === 'missing' || firstSection === 'empty')
+                    && (repairParsed.anchor_section === 'missing' || repairParsed.anchor_section === 'empty')) {
+                    // The section was never supplied. A repair that answers nothing is not the explicit "no
+                    // change" an explicit 无 is, so the batch stays refused for the section that was missing.
+                    const error = tagged('anchor_ops', new Error('修复后仍然没有【锚点变更】章节；本批不提交、不隐藏原文。'),
+                        { response: repair.response, anchor_errors: commitError.anchor_errors });
+                    error.repair = repair;
+                    error.original_anchor_errors = commitError.anchor_errors || null;
+                    throw error;
+                }
+                const replacement = repairParsed.anchorLines
+                    .filter(line => !/^(无|（无）|none)$/i.test(String(line).trim()));
+                repair.replacement_lines = replacement.length;
+                const combined = parseAnchorChanges([...(commitError.valid_lines || []), ...replacement],
+                    { plan: request.anchors, batchSources: new Set(batch.sources) });
+                if (combined.errors.length) {
+                    repair.errors_after = combined.errors;
+                    repair.reason_after = describeAnchorErrors(combined.errors);
+                    // The batch is still refused for the reason the first answer was refused, so the rule a
+                    // reader needs is not replaced by whatever the repair happened to break; the repair's own
+                    // errors stay beside it in errors_after.
+                    const error = tagged('anchor_ops',
+                        new Error('修复后的锚点变更仍不合法（' + describeAnchorErrors(combined.errors)
+                            + '）；本批不提交、不隐藏原文。'),
+                        { response: repair.response, anchor_errors: commitError.anchor_errors || combined.errors });
+                    error.repair = repair;
+                    error.original_anchor_errors = commitError.anchor_errors || null;
+                    throw error;
+                }
+                // The committed summary and boundaries are the first answer's, not the repair's: the repair only
+                // supplies the missing operations. This is what stops a repair that answers "无" from erasing
+                // content the first answer already validated.
+                try {
+                    commitMerged(commitError.parsed, combined.changes, repair.response, repair);
+                } catch (mergeError) {
+                    if (mergeError && typeof mergeError === 'object') {
+                        mergeError.repair = repair;
+                        mergeError.original_anchor_errors = commitError.anchor_errors || null;
+                    }
+                    throw mergeError;
+                }
+                return;
             }
+            commitMerged(first.parsed, first.checked.changes, firstResponse, null);
         } catch (error) {
             if (services.isCurrent()) {
                 // Counted, not just recorded: one failure is noise, a run of them is the warning. This

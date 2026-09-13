@@ -759,28 +759,30 @@ export function formatAnchorPrompt(plan) {
 /**
  * The one repair request a refused anchor section earns.
  *
- * A refused batch is not repaired by guessing at the intended record; it is repaired by telling the model
- * what it wrote, which lines the host rejected and why, and the exact aliases and sources it may use. The
- * valid parts of the answer are named as content to keep, because the failure mode this replaces was a model
- * that threw the whole answer away and retried with "无" - the repair must not cost the batch its valid
- * facts. The answer is still parsed and checked atomically, so a bad repair refuses the batch exactly as a
- * bad first answer did.
+ * A refusal is not repaired by guessing which record was meant. The host keeps every line the first answer
+ * already validated and asks only for replacements of the rejected lines, so a repair that answers "无"
+ * cannot erase the valid content: the kept lines are committed whether or not the repair says anything. The
+ * replacements are re-validated together with the kept lines as one batch, so a repair cannot smuggle a
+ * duplicate target or a foreign source past the checks that refused the first answer.
  */
-export function anchorRepairRequest({ responseText, errors = [], plan = [], sources = [], maxTokens = 600 }) {
+export function anchorRepairRequest({ validLines = [], errors = [], plan = [], sources = [], maxTokens = 600 }) {
     const aliasText = formatAnchorPrompt(plan) || '无';
     const sourceText = (sources || []).join('、') || '无';
-    const errorText = (errors || []).map(error => '- ' + String(error.line || '').slice(0, 120)
+    const rejected = (errors || []).map(error => '- ' + String(error.line || '').slice(0, 160)
         + ' → ' + String(error.reason || '') + (error.detail ? ' (' + error.detail + ')' : '')).join('\n') || '无';
-    const text = '你上一轮的四节答案里，【锚点变更】有不合法的行，整批因此没有提交。下面给出原答案和具体错误。\n'
-        + '请只修不合法的行，输出完整四节答案（摘要正文、' + ANCHOR_SECTION + '、' + RESOLVED_SECTION + '、' + KNOWLEDGE_SECTION + '）。\n'
-        + '原答案里合法的摘要正文、锚点变更与知情边界必须保留，不要删除、不要改写、不要漏掉，也不要新增原文没有的事实。\n'
+    const kept = (validLines || []).length ? validLines.map(line => '- ' + line).join('\n') : '无';
+    const text = '你上一轮答案的' + ANCHOR_SECTION + '里有不合法的行，整批没有提交。'
+        + '已经通过校验的行由宿主保留，不要重复它们；请只给出被拒行的替代操作。\n'
+        + '只输出' + ANCHOR_SECTION + '一节，不要输出摘要正文，不要输出' + RESOLVED_SECTION + '或' + KNOWLEDGE_SECTION + '。\n'
         + '编号只能取自【可用的当前锚点】；来源只能取自【本批可用来源】，一条事实可以并排写多个来源，用“、”分隔。\n'
-        + '目标不超过 ' + maxTokens + ' token。\n\n【可用的当前锚点】\n' + aliasText + '\n\n【本批可用来源】\n' + sourceText
-        + '\n\n【上一轮答案】\n' + String(responseText || '') + '\n\n【错误】\n' + errorText
-        + '\n\n格式：\n- 更新 A3 | 来源 raw_77 | 这条事实的新陈述\n- 新增 | 类型 | 主体 | 来源 raw_79 | 一句陈述\n'
+        + '目标不超过 ' + maxTokens + ' token。\n\n'
+        + '【已经通过校验、会被保留的行】\n' + kept + '\n\n'
+        + '【被拒的行】\n' + rejected + '\n\n'
+        + '【可用的当前锚点】\n' + aliasText + '\n\n【本批可用来源】\n' + sourceText + '\n\n'
+        + '格式：\n- 更新 A3 | 来源 raw_77 | 这条事实的新陈述\n- 新增 | 类型 | 主体 | 来源 raw_79 | 一句陈述\n'
         + '- 结束 A5 | 来源 raw_80 | 为什么不再生效\n'
-        + '仍然无法修正的行删掉；如果确实没有任何变化，' + ANCHOR_SECTION + ' 写“无”。';
-    return { text, parts: { response_chars: String(responseText || '').length, errors: (errors || []).length,
+        + '如果被拒的行确实不该存在，就不要为它写替代操作；' + ANCHOR_SECTION + '写“无”。';
+    return { text, parts: { valid_lines: (validLines || []).length, rejected: (errors || []).length,
         total_chars: text.length } };
 }
 
