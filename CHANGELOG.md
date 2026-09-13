@@ -101,6 +101,14 @@ belongs in Git commits and pull requests.
   only those complete turns. Backlogs cannot enlarge a batch; input limits cannot cut it mid-message.
   New messages stay outside an in-flight request. Misaligned legacy coverage is invalidated and unfolded.
   Manual summary calls obey the same threshold; the input budget is exposed for oversized batches.
+- The summary request is assembled from original messages rather than from retrieval chunks, and it is
+  measured as the exact string that is sent. Measured on the chat that actually failed: 53 chunks became
+  21 messages and 30,300 characters became 23,742 (the overlap was paid again at every cut). A local
+  budget shortfall is now a block - no model call, no hiding, one record however often it is re-checked -
+  and it is no longer counted as an interface failure (ADR-0024).
+- The injected state block counts floors: a first batch of ten turns now reads "current as of floor 10"
+  instead of floor 21, and it updates on the next assembly. The panel reports the committed coverage and
+  the coverage the last injection carried as separate numbers with separate revisions (ADR-0024).
 
 - Knowledge boundaries accept bracketed, pipe-delimited and `character/state: fact` forms consistently;
   old format duplicates are normalized while distinct same-pass assertions remain visible.

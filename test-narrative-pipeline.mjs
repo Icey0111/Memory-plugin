@@ -11,7 +11,8 @@
 //   5. a background result that belongs to a chat the user has left is never written.
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
-    nextSummaryBatch, applyNarrativeFolds, parseAnchors, mergeAnchors, mergeKnowledge, formatAnchors,
+    nextSummaryBatch, summaryMessages, summaryRequest, applyNarrativeFolds, parseAnchors, mergeAnchors,
+    mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall,
     profileTargets, profileRecall } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
@@ -248,15 +249,20 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const history = host.store.raw_history ??= { version: 1, sequence: 0, records: {}, active: [] };
     captureHistory(host.store, host.chat);
     const chunks = chunkHistory(history);
-    assert.deepEqual(nextSummaryBatch(undefined, chunks, { every: 5 }), [],
+    assert.equal(nextSummaryBatch(undefined, chunks, { every: 5 }), null,
         'four floors are not a batch when the threshold is five');
     const pending = nextSummaryBatch(undefined, chunks, { every: 3 });
-    assert.equal(pending.at(-1).role, 'assistant', 'a batch never ends on a user turn with no reply');
-    assert.equal(pending.length, 6, 'exactly three complete pairs, even with a backlog');
-    assert.throws(() => nextSummaryBatch(undefined, chunks, { every: 3, inputChars: 200 }), /超过输入预算/,
-        'an undersized budget must not split a complete batch');
+    assert.equal(pending.turns, 3);
+    assert.equal(pending.covered.length, 6, 'exactly three complete pairs, even with a backlog');
+    assert.equal(pending.sources.length, 6, 'and six original messages, one entry each');
+    assert.equal(history.records[pending.sources.at(-1)].role, 'assistant',
+        'a batch never ends on a user turn with no reply');
+    // The budget is no longer part of the selection. The assembled request is what gets measured, and a
+    // budget that cannot hold it blocks the batch instead of splitting it (test-summary-contract §4).
+    const request = summaryRequest('', summaryMessages(history, pending), 400, [], []);
+    assert.ok(request.text.length > 200, 'the request text is the thing the character budget applies to');
     const half = { version: 1, text: 'x', covered: chunks.slice(0, 2).map(c => c.id) };
-    assert.equal(nextSummaryBatch(half, chunks, { every: 3 })[0].id, chunks[2].id,
+    assert.equal(nextSummaryBatch(half, chunks, { every: 3 }).covered[0], chunks[2].id,
         'an existing summary is not re-summarized, only extended');
 }
 

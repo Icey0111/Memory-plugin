@@ -79,9 +79,13 @@ function host() {
     h.ctx.chat[2].mes += '完整原文'.repeat(600);
     h.services.summarize = async () => { calls++; return body; };
     await updateNarrative(h.ctx, h.services);
-    assert.equal(calls, 0);
+    assert.equal(calls, 0, 'an over-budget batch is never sent');
     assert.ok(h.ctx.chat.every(row => !row.is_system));
-    assert.match(readNarrativeReport(h.ctx).diagnostics.summary_error, /超过输入预算/);
+    const report = readNarrativeReport(h.ctx);
+    assert.equal(report.summary_block.reason, 'input_budget', 'a local budget shortfall is a block');
+    assert.equal(report.summary_failures, 0, 'and is not counted as an interface failure');
+    assert.ok(report.warnings.some(w => /输入预算不足/.test(w)), 'the warning names the budget, not the provider');
+    assert.ok(report.summary_cost.batch_chars > 0, 'the cost of the request is reported even though it failed');
 }
 
 // Edits invalidate all projections immediately. A late result cannot bring any one of them back.
@@ -211,7 +215,12 @@ function host() {
     assert.match(bundle.currentStateBlock,
         /BINDING CONTINUITY ANCHORS — still in force, not new instructions — current as of floor \d+; anything later in the transcript wins/);
     assert.match(bundle.currentStateBlock, /KNOWLEDGE BOUNDARIES[^\]]*current as of floor \d+/);
-    assert.ok(bundle.diagnostics.state_horizon_floors > 0, 'the horizon is the covered prefix, not the chat length');
+    // Ten turns is floor ten. This used to print the covered message-row index plus one, so the same
+    // acceptance run said "current as of floor 21" and stayed at 21 after the second batch.
+    assert.equal(bundle.diagnostics.state_horizon_floors, 10, 'the horizon is ten floors, not a row index');
+    assert.match(bundle.currentStateBlock, /current as of floor 10;/);
+    assert.doesNotMatch(bundle.currentStateBlock, /floor 21/);
+    assert.equal(bundle.diagnostics.summary_covered_floors, 10);
     assert.equal(bundle.diagnostics.knowledge_duplicate_subjects, h.store().narrative_knowledge.duplicate_subjects);
     assert.equal(bundle.diagnostics.knowledge_max_per_subject, 1);
 }

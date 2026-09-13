@@ -7,6 +7,7 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | npm run check | Discover and syntax-check sources |
 | npm test | Offline regressions, including host adapters |
 | node test-summary-lifecycle.mjs | Cadence, concurrent reads, joint invalidation and summary transport |
+| node test-summary-contract.mjs | The batching contract: the floor horizon, committed vs injected coverage, one-entry-per-message requests, the cost of the text that is sent, and the difference between a local budget block and an interface failure |
 | node recall-baseline.mjs | Original-text retrieval and packing measurement |
 | node recall-embed.mjs | Build the optional embedding cache for the ruler |
 
@@ -18,8 +19,11 @@ are the derived number.
 A character greeting is not a user turn; an unanswered user message is not completed. Tests of
 specific boundaries may explicitly use another interval, but live acceptance must retain 10.
 Each successful call covers exactly N completed turns and hides their complete messages. Manual calls
-obey the same threshold. An over-budget batch fails without shrinking or hiding any part of it.
-Freeze the request before dispatch; append/edit outside that batch must not extend its coverage.
+obey the same threshold. Freeze the request before dispatch; append/edit outside that batch must not
+extend its coverage. The request is assembled from the batch's original messages - one entry per message,
+whole text - and the text that is measured is the text that is sent. An over-budget batch is a recorded
+block: no model call, no hidden floor, one record per frozen batch and budget, and no increment of the
+interface-failure counter (ADR-0024). Run test-summary-contract.mjs before deploying a batching change.
 
 Run at least 30 completed turns to exercise three automatic summaries. Record summary responses
 (requested output cap, finish reason, body length, reasoning usage when returned), covered sources,

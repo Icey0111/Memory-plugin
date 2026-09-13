@@ -10,6 +10,17 @@ the measured query and packing failures.
 The default remains ten completed user turns (normally twenty message rows). Summary quality and
 long-run narrative acceptance are a separate task; this retrieval iteration does not establish them.
 
+## Completed summary-batching work
+
+- Count the state header in floors, and report committed coverage separately from the coverage the last
+  injection carried, each with its revision (ADR-0024).
+- Assemble the summary request from original messages (one entry per source, whole text) while retrieval
+  keeps its 700/100 chunks. Deduplication is by source id, never by text.
+- Measure the exact string that is sent, part by part, and report the character budget apart from the
+  unknown model context window.
+- Separate a local input-budget block from an interface failure: one record per frozen batch and budget,
+  no model call, no hiding, and its own warning instead of the failure counter.
+
 ## Completed retrieval work
 
 - Normalize explicit knowledge-boundary syntax, retire older subject versions using existing confirmation
@@ -22,6 +33,18 @@ long-run narrative acceptance are a separate task; this retrieval iteration does
   Whole-text quotation deduplication still applies (ADR-0022).
 - Add prefix replay and exact-input cached vector/rerank experiments. Final results and limitations are
   in [06_retrieval_research.md](06_retrieval_research.md).
+
+## Measured summary-input budget
+
+Rebuilt from the chat that failed the first batching acceptance (41 rows, 43,352 characters of character
+text, 22 recorded failures): the ten-turn batch is 53 retrieval chunks and 21 original messages, and the
+request parts are instructions 556 + carried summary 1 + anchors 1 + knowledge 1 + batch 23,148 =
+23,742 characters. The old per-chunk accounting demanded 30,300 for the same batch (1.28x), so the
+18,000 default could never hold it. At 18,000 the batch is one block with `checks: 20`, zero model
+calls, zero failures and zero hidden rows; at 40,000 the same frozen batch commits ten floors and hides
+twenty rows. The numbers are for this one character, model and reply length, not a general rule: a
+default is still an open product question, and the plugin cannot read the model context window, so a
+request that fits the character budget can still be refused by the provider (ADR-0024).
 
 ## Decisions the evidence does not support
 

@@ -21,7 +21,9 @@ flowchart TD
         R[chat messages] --> C[captureHistory: version each message, keep its id lineage]
         C --> K[chunkHistory: ~700 chars, 100 char overlap]
         K --> B[nextSummaryBatch: completed floors, every N, input budget]
-        B -->|new floors| S[background model: one compact continuity summary]
+        B -->|earliest N turns, frozen| M[assemble the request from original messages and measure it]
+        M -->|over the character budget| BL[block: no call, no hiding, one record]
+        M -->|within budget| S[background model: one compact continuity summary]
         S --> V{within the summary token budget?}
         V -->|no| E[keep the previous summary, keep the raw text, record the error]
         V -->|yes| A[store the summary with the chunk ids it covered]
@@ -53,7 +55,9 @@ flowchart TD
    collapsed styling is re-applied.
 5. After the generation, the host's events schedule the background pass: at most one summary job per
    chat store at a time, using exactly the earliest N unsummarized completed turns. The request is frozen
-   before dispatch. A backlog does not enlarge the batch and a character budget does not split it.
+   before dispatch, assembled from the original messages of those turns, and the string that is measured
+   is the string that is sent. A backlog does not enlarge the batch and a character budget does not split
+   it: a batch the budget cannot hold is a block, not a call (ADR-0024).
 
 Retrieval uses indexed original-text chunks, not summaries. The default focused query uses a pending
 user request; scene names are collected independently for the profile channel and may resolve pronouns.
@@ -75,7 +79,7 @@ elapsed time, estimated input tokens and provider tokens when available, includi
 | May this floor leave the prompt? | Only if its entire complete turn is covered by a committed batch; exclude the greeting | raw-history.js, applyNarrativeFolds |
 | What if the summary cannot be injected? | Every floor it covered comes back, and the reason is recorded | narrative-runtime.js, buildNarrativeContext |
 | What if the history changed under the summary? | The summary is dropped, the invalidation is reported, and the floors come back | narrative-runtime.js, prepare |
-| How current is the injected state block? | It is the projection of the last accepted summary, and it says so: "current as of floor N; anything later in the transcript wins" | narrative-runtime.js, raw-history.js |
+| How current is the injected state block? | It is the projection of the last accepted summary, and it says so in floors: "current as of floor N; anything later in the transcript wins". The panel reports the committed coverage and the injected coverage separately (ADR-0024) | narrative-runtime.js, raw-history.js |
 | Who writes the transcript styling? | Only the projection of the markers; it never writes chat state | v55-floor-fold.js |
 
 ### 4. Modules
@@ -117,6 +121,8 @@ the chat file keeps (ADR-0004).
 | N6 | Superseded message versions are archived, never overwritten | captureHistory |
 | N7 | Evidence quoting skips text the prompt still carries, and never quotes the same text twice | packRawEvidence |
 | N8 | Anchors and boundaries are injected only with the summary they were derived from, and are never recomputed between passes | prepare, source_revision |
+| N9 | The summary request is assembled from original messages, one entry per source, and the text that is measured is the text that is sent (ADR-0024) | nextSummaryBatch, summaryMessages, summaryRequest |
+| N10 | A local input-budget block calls no model, hides no floor, and is one record per frozen batch and budget; a character budget is never reported as proof the context window fits (ADR-0024) | updateNarrative, summaryBlockState |
 
 ### 6. What this architecture does not do yet
 
@@ -129,6 +135,10 @@ the chat file keeps (ADR-0004).
 - The archive keeps every superseded version, and nothing prunes it. Measured at about one copy of the
   conversation text (41-351 KB per chat, 4-33% of the file), which is why it stays lossless (ADR-0004).
   Growth on very long chats is still unmeasured.
+- The model context window is unknown to the plugin. `narrative_input_chars` bounds the request the
+  plugin builds; it is reported with `context_tokens_status: 'unknown'` and never as proof the provider
+  will accept the call (ADR-0024). Measured on the chat that failed: the ten-turn request is 23,742
+  characters, which needs a budget above 18,000 and fits the 40,000 the acceptance install uses.
 - Knowledge boundaries are text, not enforcement: a character cannot be prevented from acting on a
   fact that appears in the summary.
 - The injected state block is a snapshot of the last accepted summary (N8). A state change reaches it only

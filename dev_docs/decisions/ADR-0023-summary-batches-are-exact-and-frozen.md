@@ -15,8 +15,9 @@ outside the selected prefix do not change that request; edits inside it invalida
 
 After successful acceptance, hide only complete covered turns, including the batch's final turn.
 No temporary fold is created while the request runs. The foreground can still read new dialogue.
-An input budget that cannot hold the entire batch reports failure and keeps the raw text visible.
-It does not silently shorten the batch. The live-chat quiet fallback is excluded because it does not
+An input budget that cannot hold the entire batch keeps the raw text visible and does not silently
+shorten the batch. It is now recorded as a local block rather than a model failure, and the frozen batch
+is assembled from original messages before it is measured (ADR-0024). The live-chat quiet fallback is excluded because it does not
 guarantee a fixed input; raw generation and explicit message requests remain supported.
 
 Legacy coverage ending mid-message or outside a multiple of the configured N is invalidated. Aligned
