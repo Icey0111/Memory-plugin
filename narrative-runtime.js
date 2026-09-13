@@ -494,7 +494,7 @@ function warningsFor(state, opts) {
     if (state.anchors_truncated > 0) {
         out.push('锚点块装不下当前活值：共 ' + (state.anchors_total || 0) + ' 条，注入 '
             + (state.anchors_injected || 0) + ' 条，搁置 ' + state.anchors_truncated
-            + ' 条（按类型优先级与新→旧排序，裁掉的是最旧的活值；被取代的旧陈述本来就不会注入）。'
+            + ' 条（按类型轮流各取一条、类型内新→旧，裁掉的是最旧的活值；被取代的旧陈述本来就不会注入）。'
             + '可调高“锚点 token 预算”，或让总结把已解决的条目写进【已解决】。');
     }
     return out;

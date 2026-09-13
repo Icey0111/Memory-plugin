@@ -125,7 +125,12 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.equal(report.anchors_parked, 3, 'the read-only report agrees with the assembly');
     assert.equal(report.anchors_truncated, 3, 'and the old name still means the same thing');
     assert.ok(report.warnings.some(w => /锚点块装不下/.test(w)), 'a parked live value warns');
-    assert.match(report.warnings.find(w => /锚点块装不下/.test(w)), /3 条/);
+    const parkedWarning = report.warnings.find(w => /锚点块装不下/.test(w));
+    assert.match(parkedWarning, /3 条/);
+    // The message has to describe the rule that is actually in force: the rank table was deleted, and a
+    // warning that still promised "kind priority" was found live after that deletion.
+    assert.doesNotMatch(parkedWarning, /类型优先级/);
+    assert.match(parkedWarning, /类型轮流/);
 }
 
 // --- 7. a legacy store is normalised on load, and history survives --------------------------------
