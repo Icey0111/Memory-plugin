@@ -392,7 +392,14 @@ export function updateNarrative(ctx, services) {
                 summary_block: null, summary_batch_changed: null, anchor_parse: parsed.anchor_section,
                 // The operation counts of the batch that was actually committed, and no refusal left over
                 // from an earlier one: the panel reads a refusal as "the current answer was not applied".
-                anchor_ops: anchorOps, anchor_op_errors: null,
+                anchor_ops: anchorOps,
+                // A refusal that disappears the moment the retry works is the failure nobody can diagnose
+                // afterwards, which is the same reason summary_last_error is kept and marked recovered. The
+                // live 40-turn run that first exercised this had both of its refusals erased by the next
+                // commit, and the lines that were refused could no longer be read.
+                anchor_op_errors: live.narrative_diagnostics?.anchor_op_errors
+                    ? { ...live.narrative_diagnostics.anchor_op_errors, recovered: true, recovered_at: Date.now() }
+                    : null,
                 summary_last_error: pastFailure ? { ...pastFailure, recovered: true, recovered_at: Date.now(),
                     recovered_by: { source_revision: sourceRevision,
                         state_revision: live.narrative_summary.state_revision } } : null });
@@ -533,7 +540,7 @@ function warningsFor(state, opts) {
         out.push('有 ' + state.anchors_same_subject + ' 组锚点同时存在多条活值（同一主体）；同一事实的新状态应当用'
             + '“更新 A#”提交，“新增”不取代旧值，两组都会被注入。请检查总结是否漏用了“更新”。');
     }
-    if (state.anchor_op_errors?.errors?.length) {
+    if (state.anchor_op_errors?.errors?.length && !state.anchor_op_errors.recovered) {
         out.push('最近一批锚点变更被拒绝（' + state.anchor_op_errors.errors.length + ' 条无效引用或冲突）：'
             + describeAnchorErrors(state.anchor_op_errors.errors) + '。本批没有提交，原文保持可见。');
     }
@@ -994,6 +1001,7 @@ export function readNarrativeReport(ctx) {
         anchors_ops: store.narrative_diagnostics?.anchor_ops || null,
         anchor_op_errors: store.narrative_diagnostics?.anchor_op_errors?.errors || null,
         anchor_op_errors_at: store.narrative_diagnostics?.anchor_op_errors?.at || null,
+        anchor_op_errors_recovered: store.narrative_diagnostics?.anchor_op_errors?.recovered === true,
         anchors_same_subject: countAnchorCollisions(activeAnchors),
         anchors_superseded_limit: MAX_SUPERSEDED,
         anchors_superseded_recent: (store.narrative_anchors?.superseded || []).slice(0, 6).map(item => ({
@@ -1142,7 +1150,9 @@ function renderNarrativePanel(root, ctx) {
             + (report.anchors_parked ? '（搁置 ' + report.anchors_parked + '）' : '')
             + '，退场记录 ' + report.anchors_superseded + ' 条（最多保留 ' + report.anchors_superseded_limit + ' 条）');
         if (report.anchors_same_subject) parts.push('同一主体多活值 ' + report.anchors_same_subject + ' 组');
-        if (report.anchor_op_errors?.length) parts.push('最近一批被拒绝 ' + report.anchor_op_errors.length + ' 条');
+        if (report.anchor_op_errors?.length) parts.push((report.anchor_op_errors_recovered ? '上一次' : '最近一批')
+            + '锚点变更被拒绝 ' + report.anchor_op_errors.length + ' 条'
+            + (report.anchor_op_errors_recovered ? '（已恢复）' : ''));
         anchorState.textContent = parts.join('；');
         const retired = report.anchors_superseded_recent?.[0];
         if (retired) anchorState.textContent += '；最近退场：' + retired.kind + '／' + (retired.subject || '无主体')

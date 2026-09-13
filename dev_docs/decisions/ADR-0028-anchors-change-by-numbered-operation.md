@@ -73,6 +73,40 @@ is being misused. This is not the forbidden fallback - "only a target that was n
 a value" is untouched, a `结束` with no target is still refused (there is no record it could mean), and a
 valid alias that has moved is still a conflict.
 
+### Live acceptance, in three runs on the shipped defaults
+
+The protocol was accepted or corrected on live 40-turn runs (`继续。` as every user turn, no settings
+changed, no page or chat reload during a run). All three are kept because the first two are the reason the
+third exists.
+
+| Run | Instruction block | Batches committed | Operations applied | Refused turns | Other failures | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| 16:54 | 1,045 | 1 of 4 | 7 adds, 0 invalid | 0 | 0 | **input budget blocked batch 2 at 40,047 against 40,000; re-checked 42 times over 21 turns** |
+| 17:09 | 744 | 2 of 4 | 5 adds | 3 (10 lines, all `alias_required`) | 1 over budget, 1 format | the update word without a target cost three batches |
+| 17:45 | 744 | 4 of 4 | **0** | 2 (12 lines: 1 `missing_source`, 1 `unknown_alias`, 10 `bad_subject`) | 1 over budget (619 > 600) | 4 of 4 batches committed, 19406 / 33599 / 28790 / 10993 characters, all inside the budget |
+
+**What this establishes.** The host mechanism works: on the 16:54 run the first batch committed seven adds
+with seven correct sources, zero invalid lines and zero collisions, and every record carries a version. After
+both corrections, the 17:45 run committed every batch it attempted with no input-budget block at all.
+
+**What it does not establish, and must not be read as success.** In none of the three runs did the summarizer
+ever emit an explicit `更新 A#` - it either reported no anchor changes at all (0 operations in 4 of 4
+batches on the third run) or reached for the update word without a target. So the operation the whole
+decision is built around - a named replacement - is **unexercised live**, and the ledger ended the third run
+empty. "Fewer live values and nothing parked" is not evidence here; there was nothing to park.
+
+**What the runs cost.** Two of three runs spent extra model calls on refusals, and two of three lost a
+cadence of summary to them. The 17:45 run had the best shape: 4 of 4 batches, 40/40 sends, 0 fallbacks,
+0 reloads, 3 empty-reply recoveries, 2 refused turns out of 40, and one unrecovered output-budget failure at
+the very end (619 tokens against the 600-token summary budget, which the decision above deliberately leaves
+alone).
+
+**The limit that is not this change.** Two runs were blocked by the 40,000-character input budget, on batches
+of 37,509 and 43,351 characters of original text - 93% of the request. On the second of those the old
+protocol would have measured 45,402, so the ceiling is the chat's reply length against a budget calibrated on
+a 23,742-character batch. A protocol change of a few hundred characters decides whether such a chat can be
+summarized at all, which is why the instruction block was cut rather than the budget raised.
+
 ## Alternatives rejected
 
 - **An LLM dedup pass over the ledger.** Mem0 resolves a candidate with a second model call and Graphiti

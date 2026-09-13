@@ -25,8 +25,8 @@ long-run narrative acceptance are a separate task; this retrieval iteration does
 
 ## Completed anchor-change work
 
-- The anchor section is a change list against a host-assigned alias table: @@更新 A3 | 来源 raw_77 | 陈述@@,
-  @@新增 | 类型 | 主体 | 来源 raw_79 | 陈述@@, @@结束 A5 | 来源 raw_80 | 原因@@. An anchor nobody mentions is
+- The anchor section is a change list against a host-assigned alias table: `更新 A3 | 来源 raw_77 | 陈述`,
+  `新增 | 类型 | 主体 | 来源 raw_79 | 陈述`, `结束 A5 | 来源 raw_80 | 原因`. An anchor nobody mentions is
   left as it is, and a label no longer authorises a replacement (ADR-0028).
 - Every reference is checked before the same commit writes the summary and the ledger: the alias must be in
   the frozen request, the source must be in this batch's original text, one record cannot be changed twice,
@@ -58,8 +58,12 @@ long-run narrative acceptance are a separate task; this retrieval iteration does
   live 15:57 ledger: of 34 clauses carried by replaced versions, 7 are still in the live value, 6 are
   paraphrased into it and 21 are absent from it - an upper bound on loss, not a count of errors, because
   some of those clauses are correctly obsolete.
-- Whether the model actually uses the protocol is a live-run question. It is measured per batch by
-  @@anchors_ops@@ (added / updated / ended / restated / invalid) and @@anchor_op_errors@@.
+- Whether the model actually uses the protocol is a live-run question, and three 40-turn runs answered it
+  negatively: the summarizer never emitted an explicit `更新 A#`. It either reported no anchor changes at
+  all (the third run: 0 operations in 4 of 4 batches, the ledger empty at floor 40) or used the update word
+  without a target (the second run: 9 lines, now applied as adds and counted as `reinterpreted`). The
+  named-replacement path is verified by test and unexercised live. It is measured per batch by
+  `anchors_ops` (added / updated / ended / restated / reinterpreted / invalid) and `anchor_op_errors`.
 
 ## Completed anchor-identity work
 

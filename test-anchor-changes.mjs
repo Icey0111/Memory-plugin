@@ -264,13 +264,14 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
 
 // --- 12. a rejected batch hides nothing and commits nothing -----------------------------------------
 {
-    const good = '局面：大厅。\n【锚点变更】\n- 新增 | 秘密 | 口令 | 来源 raw_3 | 口令是青铜月亮。\n【知情边界】\n- 无';
+    const good = prompt => '局面：大厅。\n【锚点变更】\n- 新增 | 秘密 | 口令 | 来源 '
+        + anySource(prompt) + ' | 口令是青铜月亮。\n【知情边界】\n- 无';
     const h = host();
     for (let n = 1; n <= 10; n += 1) h.ctx.chat.push(...pair(n));
     let refuse = false;
     h.services.summarize = async (ctx, prompt) => refuse
         ? '局面：大厅。\n【锚点变更】\n- 更新 A9 | 来源 ' + anySource(prompt) + ' | 口令改了。\n【知情边界】\n- 无'
-        : good;
+        : good(prompt);
     await updateNarrative(h.ctx, h.services, { force: true });
     const before = readNarrativeReport(h.ctx);
     assert.equal(before.anchors_active, 1);
@@ -289,6 +290,19 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.equal(failure.stage, 'anchor_ops', 'the stage names the condition instead of saying "the model failed"');
     assert.match(failure.stage_label, /锚点变更/);
     assert.match(after.warnings.join(' '), /锚点变更/);
+
+    // The refusal outlives the retry that fixes it, the way a classified summary failure does. The live run
+    // that first exercised this lost both of its refusals to the next commit, so the lines could no longer
+    // be read at all.
+    for (let n = 21; n <= 30; n += 1) h.ctx.chat.push(...pair(n));
+    refuse = false;
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const recovered = readNarrativeReport(h.ctx);
+    assert.equal(recovered.summary_failures, 0, 'the retry committed');
+    assert.equal(recovered.anchor_op_errors.length, 1, 'the refused lines are still readable');
+    assert.equal(recovered.anchor_op_errors[0].reason, 'unknown_alias');
+    assert.equal(recovered.anchor_op_errors_recovered, true, 'and the record says the condition cleared');
+    assert.equal(recovered.warnings.some(w => /锚点变更/.test(w)), false, 'so it is not a standing warning');
 }
 
 // --- 13. a missing section keeps the anchors, and does not pretend they were re-confirmed -----------
