@@ -45,3 +45,24 @@ The ruler accepts --paraphrases (question, needle, kind and optional chat), --sc
 --evidence, --entries, --embeddings and --dense-weight. --dump and --against compare matched questions.
 Use held-out stories before treating measured weights as general defaults. Never commit private
 chat corpora, API keys or full provider logs. See 06_retrieval_research.md for past measurements.
+
+`retrieval-audit.mjs --chat-dir <directory> --out <json>` compares queries on identical historical
+prefixes with synthetic folding every ten completed turns. `--keep-directives` restores pure
+continuation commands to candidate eligibility for a controlled comparison. It never uses a chat's
+final summary to evaluate an earlier turn. The file split is deterministic, not evidence that related
+chats are statistically independent.
+
+`retrieval-experiment.mjs` separates preparation, service calls and evaluation:
+
+```text
+node retrieval-experiment.mjs prepare <labelled-spec.json> <prepared.json>
+node retrieval-experiment.mjs candidates <prepared.json> <candidates.json> <vector-cache.json>
+node retrieval-experiment.mjs evaluate <candidates.json> <results.json> <rerank-cache.json>
+```
+
+The spec names `chatFile`, `chatId`, `model`, `embeddingModel`, and `cases` with `id`, `question`,
+and a pre-annotated answer `needle`. The first phase emits `vectorRequests`; the second emits
+`rerankRequests`. A service runner supplies a `responses` map keyed by request id, with `rows`
+(vector metadata or rerank index/score pairs), `ms`, or `error`. Inputs are hashed exactly; changed
+candidates require new calls. Keep first failures separately when retrying. Throttle by the provider's
+token limit, not only by request count. These phases never generate a summary or a story reply.

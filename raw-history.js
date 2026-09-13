@@ -2,6 +2,7 @@
 import { fnv1a32, isDialogueRow, FOLD_EXTRA_KEY } from './memory-core.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { estimateTokens } from './v55-tokenizer.js';
+import { isContinuation } from './retrieval-query.js';
 
 export const RAW_CHUNK_SIZE = 700;
 export const RAW_CHUNK_OVERLAP = 100;
@@ -180,7 +181,7 @@ export function profileTargets(chunks, names, { visibleSources = new Set(), limi
  * not the same as a passage that says what the character looks like or is like.
  */
 export function profileRecall(chunks, history, { names = [], visibleSources = new Set(), packed = [], limit = PROFILE_LIMIT } = {}) {
-    const rows = packed.map(entry => history.records[entry.source || entry]).filter(Boolean);
+    const rows = quotedRows(history, packed);
     return profileTargets(chunks, names, { visibleSources, limit }).map(target => ({
         name: target.name,
         hidden_chunk: target.chunk.id,
@@ -238,7 +239,7 @@ export function entityTargets(chunks, query, { visibleSources = new Set(), limit
  * it most often, which is a heuristic, so a miss is worth reading rather than trusting.
  */
 export function askedThingRecall(chunks, history, { asked = '', visibleSources = new Set(), packed = [], limit = ENTITY_TERM_LIMIT } = {}) {
-    const rows = packed.map(entry => history.records[entry.source || entry]).filter(Boolean);
+    const rows = quotedRows(history, packed);
     const counts = chunks.map(chunk => baselineTermCounts(chunk.retrievalText));
     const cap = Math.max(2, Math.ceil(chunks.length * ENTITY_DF_RATIO));
     const mentions = (chunk, term) => { let n = 0; for (let at = chunk.text.indexOf(term); at >= 0; at = chunk.text.indexOf(term, at + term.length)) n++; return n; };
@@ -252,7 +253,7 @@ export function askedThingRecall(chunks, history, { asked = '', visibleSources =
         if (!hidden.length) continue;
         const describing = hidden.slice().sort((a, b) => mentions(b, term) - mentions(a, term) || a.index - b.index)[0];
         out.push({ term, floor: Math.ceil(describing.index / 2), mentions: mentions(describing, term),
-            recalled: rows.some(row => row.id === describing.source) });
+            recalled: rows.some(row => row.id === describing.source && row.text.includes(term)) });
     }
     const maximal = out.sort((a, b) => b.term.length - a.term.length)
         .filter((row, _i, all) => !all.some(other => other !== row && other.term.length > row.term.length && other.term.includes(row.term)));
@@ -267,7 +268,7 @@ export function askedThingRecall(chunks, history, { asked = '', visibleSources =
  * was actually packed. A term the transcript still shows is not counted - there is nothing to recall.
  */
 export function entityRecall(chunks, history, { query = '', visibleSources = new Set(), packed = [], limit = ENTITY_TERM_LIMIT } = {}) {
-    const packedText = packed.map(entry => history.records[entry.source || entry]?.text || '').join('\n');
+    const packedText = quotedRows(history, packed).map(row => row.text).join('\n');
     const rows = [];
     for (const target of entityTargets(chunks, query, { visibleSources, limit })) {
         if (!target.earliest_hidden) continue;
@@ -279,6 +280,16 @@ export function entityRecall(chunks, history, { query = '', visibleSources = new
     return rows;
 }
 
+export function quotedRows(history, packed) {
+    return packed.flatMap(entry => {
+        const row = history.records[entry.source || entry];
+        if (!row) return [];
+        const start = Number.isInteger(entry.start) ? entry.start : 0;
+        const end = Number.isInteger(entry.end) ? entry.end : row.text.length;
+        return [{ ...row, text: row.text.slice(start, end) }];
+    });
+}
+
 /**
  * Fuse the channels into one ranked list.
  *
@@ -287,6 +298,10 @@ export function entityRecall(chunks, history, { query = '', visibleSources = new
  * needs the raw quantities.
  */
 export function rankRawChunks(chunks, query, dense = [], options = {}) {
+    // A request to keep writing carries no historical answer. Keep it in the lossless archive,
+    // but do not let lexical, dense or reserved channels promote it into an evidence slot.
+    if (options.continuationEvidence !== true) chunks = chunks.filter(chunk =>
+        chunk.role !== 'user' || !isContinuation(chunk.text));
     const { scorer = 'bm25', rrfK = RRF_K, lexicalWeight = 1, denseWeight = DENSE_FUSION_WEIGHT,
         entityWeight = ENTITY_WEIGHT, entityLimit = ENTITY_TERM_LIMIT, visibleSources = new Set(),
         profileWeight = PROFILE_WEIGHT, profileLimit = PROFILE_LIMIT, names = [] } = options;
@@ -391,6 +406,11 @@ const KIND_IN_TEXT = /^[\[【]([^\]】]{1,12})[\]】]\s*(.*)$/;
 const KNOWLEDGE_STATE = /^(知道|不知道|未知|知情|不知情)\s*[|｜:：]?\s*/;
 const normalizeEntry = (raw) => {
     const body = String(raw || '').trim();
+    // Consume the bracketed subject before splitting facts: facts may themselves contain pipes.
+    const bracket = /^[\[【]([^\]】]{1,64})[\]】]\s*(?:[|｜:：]\s*)?(.+)$/.exec(body);
+    if (bracket) return normalizeEntry(bracket[1] + ' | ' + bracket[2]);
+    const inline = /^([^|｜/\n]{1,40})\/(知道|不知道|未知|知情|不知情|不确定)\s*[:：]\s*(.+)$/.exec(body);
+    if (inline) return normalizeEntry(inline[1] + ' | ' + inline[2] + ' | ' + inline[3]);
     const parts = body.split(/[|｜]/).map(part => part.trim()).filter(Boolean);
     let kind = parts.length >= 2 ? parts[0] : '其他';
     let text = parts.length >= 2 ? parts.slice(1).join(' | ') : body;
@@ -481,8 +501,10 @@ export function mergeAnchors(previous, parsed, at = Date.now()) {
  * and the overflow is reported rather than dropped in silence.
  */
 export function mergeKnowledge(previous, parsed, at = Date.now()) {
-    const prior = new Map((previous?.entries || []).map(item => [anchorKey(item), item]));
-    for (const item of parsed.resolved) prior.delete(anchorKey(item));
+    previous = previous ? { ...previous, entries: normalizeKnowledgeEntries(previous.entries) } : previous;
+    parsed = { ...parsed, knowledge: normalizeKnowledgeEntries(parsed.knowledge) };
+    const prior = new Map((previous?.entries || []).map(item => [knowledgeKey(item), item]));
+    for (const item of parsed.resolved) prior.delete(knowledgeKey(item));
     // One line per subject, not one per statement. A boundary bundles several facts under one character,
     // and the protocol requires the still-valid ones to be restated verbatim, so a fresh line for a
     // subject is that subject's whole current state and its predecessor is retired rather than carried
@@ -494,10 +516,10 @@ export function mergeKnowledge(previous, parsed, at = Date.now()) {
     const restated = new Set(parsed.knowledge.map(subject));
     const entries = [];
     for (const item of parsed.knowledge) {
-        const key = anchorKey(item);
+        const key = knowledgeKey(item);
         const before = prior.get(key);
         prior.delete(key);
-        entries.push({ id: before?.id || anchorId(item), kind: item.kind, text: item.text,
+        entries.push({ id: before?.id || 'knowledge_' + fnv1a32(key).toString(36), kind: item.kind, text: item.text,
             first_seen: before?.first_seen ?? at, last_confirmed: at,
             passes: (before?.passes || 0) + 1, unconfirmed: 0 });
     }
@@ -523,6 +545,30 @@ export function mergeKnowledge(previous, parsed, at = Date.now()) {
     return { version: 1, entries: current.slice(0, MAX_KNOWLEDGE), overflow,
         duplicate_subjects: duplicateSubjects, max_per_subject: maxPerSubject,
         parse: parsed.sections, updated_at: at };
+}
+
+const knowledgeKey = item => (String(item.kind) + '|' + String(item.text)).normalize('NFKC');
+
+/** Syntax/duplicate repair only. Equally recent different statements are never guessed away. */
+export function normalizeKnowledgeEntries(entries = []) {
+    const rows = entries.map(item => {
+        const parsed = item.kind === '其他' ? normalizeEntry(item.text) : item;
+        return { ...item, kind: parsed.kind, text: parsed.text };
+    });
+    const latest = new Map();
+    for (const item of rows) {
+        const subject = item.kind.split('/')[0];
+        if (subject === '其他') continue;
+        latest.set(subject, Math.max(latest.get(subject) || 0, Number(item.last_confirmed) || 0));
+    }
+    const seen = new Set();
+    return rows.filter(item => {
+        const subject = item.kind.split('/')[0];
+        if (item.last_confirmed && Number(item.last_confirmed) < (latest.get(subject) || 0)) return false;
+        const key = knowledgeKey(item);
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+    });
 }
 
 export function summaryPrompt(previous, batch, maxTokens, anchors, knowledge) {
@@ -590,7 +636,7 @@ const EVIDENCE_PAD = 100;
 const renderEvidenceLine = (row, start, end) => '[' + row.id + ':' + start + '-' + end + ' | floor '
     + row.index + ' | ' + row.name + ']' + String.fromCharCode(10) + row.text.slice(start, end);
 
-// Budgeted submodular packing, from dev_docs/06_retrieval_research.md section 3B. Weights and alpha
+// Experimental budgeted submodular packing (original study retained in Git). Weights and alpha
 // are the paper settings; every component is divided by its value on the full candidate set so the
 // weights mean the same thing whatever the query looks like.
 // Measured on the 52-question set, sweeping budget and slots together: a slot whose share falls below a

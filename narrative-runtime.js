@@ -1,6 +1,8 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
     summaryPrompt, applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
-    mergeKnowledge, completedUserTurns, entityRecall, profileRecall } from './raw-history.js';
+    mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries } from './raw-history.js';
+import { planRetrievalQuery } from './retrieval-query.js';
+import { rerankShortlist, applyRerankOrder } from './v55-rerank.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -157,6 +159,18 @@ async function ensureIndex(ctx, chunks, services) {
 function prepare(ctx) {
     const settings = narrativeSettings(ctx);
     const store = storeOf(ctx);
+    let knowledgeNormalized = false;
+    if (store.narrative_knowledge?.entries) {
+        const normalized = normalizeKnowledgeEntries(store.narrative_knowledge.entries);
+        if (JSON.stringify(normalized) !== JSON.stringify(store.narrative_knowledge.entries)) {
+            const counts = new Map();
+            for (const item of normalized) { const name = item.kind.split('/')[0]; counts.set(name, (counts.get(name) || 0) + 1); }
+            store.narrative_knowledge = { ...store.narrative_knowledge, entries: normalized,
+                duplicate_subjects: [...counts.values()].filter(n => n > 1).length,
+                max_per_subject: Math.max(0, ...counts.values()) };
+            knowledgeNormalized = true;
+        }
+    }
     const { history, changed } = captureHistory(store, ctx.chat || []);
     const chunks = chunkHistory(history);
     if (store.narrative_summary && !validSummary(store.narrative_summary, chunks)) {
@@ -187,7 +201,7 @@ function prepare(ctx) {
     }
     const folded = applyNarrativeFolds(ctx.chat || [], history, chunks, store.narrative_summary,
         settings.enabled !== false && settings.narrative_fold !== false);
-    if (changed || folded) persist(ctx);
+    if (changed || folded || knowledgeNormalized) persist(ctx);
     return { settings, store, history, chunks };
 }
 
@@ -292,10 +306,6 @@ function warningsFor(state, opts) {
     if (state.knowledge_unconfirmed >= opts.anchorUnconfirmedWarn) {
         out.push('有 ' + state.knowledge_unconfirmed + ' 条知情边界已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
     }
-    if (state.entity_missed >= 2) {
-        out.push('本轮有 ' + state.entity_missed + ' 个只存在于已折叠楼层的当前实体没有被召回；'
-            + '它们的原文未被引用，模型只能靠摘要推断。');
-    }
     if (state.knowledge_duplicate_subjects > 0) {
         out.push('有 ' + state.knowledge_duplicate_subjects + ' 个角色在知情边界里占了多行（最多 '
             + state.knowledge_max_per_subject + ' 行）；每个角色应当只有一行，否则同一个角色的两行可以互相矛盾。');
@@ -337,8 +347,6 @@ function fitWholeBlocks(blocks, tokens) {
  */
 /** How many situation-channel documents a rerank shortlist admits beyond its score-ordered head. */
 const RERANK_ENTITY_EXTRA = 8;
-/** How much of each preceding message the retrieval query carries before the current question. */
-const QUERY_CONTEXT_CHARS = 80;
 
 async function applyRerank(services, opts, query, ranked, visibleSources) {
     const model = opts.rerankModel;
@@ -350,22 +358,18 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
     if (eligible.length < 2) return { ranked, used: false, error: null };
     const service = typeof services.rerank === 'function' ? services.rerank() : null;
     if (!service || !service.supported) return { ranked, used: false, error: null };
-    const shortlist = eligible.slice(0, opts.rerankCandidates);
+    const pick = rerankShortlist(ranked, visibleSources, opts.rerankCandidates, RERANK_ENTITY_EXTRA);
     // Anything the situation channel claimed keeps a seat. That channel exists for the returning character
     // whose introduction ranked late, so the guarantee is worth as many extra documents as it claims terms.
-    const claimed = eligible.filter(row => (row.channels.includes('entity') || row.channels.includes('profile'))
-        && !shortlist.includes(row)).slice(0, RERANK_ENTITY_EXTRA);
-    const pick = claimed.length ? [...shortlist, ...claimed] : shortlist;
+    const started = performance.now();
+    const cost = () => ({ elapsed_ms: Math.round(performance.now() - started), documents: pick.length,
+        input_tokens_estimated: estimateTokens([query, ...pick.map(row => row.chunk.retrievalText)].join('\n')), provider_tokens: null });
     try {
         const order = await service.rerank(query, pick.map(row => row.chunk.retrievalText), model);
-        const score = new Map(order.map(row => [row.index, row.score]));
-        const head = pick.map((row, index) => ({ ...row, rerank: score.has(index) ? score.get(index) : null }))
-            .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.chunk.index - b.chunk.index);
-        // Reordered rows go back in front of everything the shortlist did not cover, eligible or not.
-        const rest = ranked.filter(row => !pick.includes(row));
-        return { ranked: [...head, ...rest], used: true, error: null };
+        return { ranked: applyRerankOrder(ranked, pick, order), used: true, error: null,
+            metrics: order.metrics || cost() };
     } catch (error) {
-        return { ranked, used: false, error: String(error?.message || error) };
+        return { ranked, used: false, error: String(error?.message || error), metrics: cost() };
     }
 }
 
@@ -375,18 +379,14 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const sync = await ensureIndex(ctx, chunks, services);
     diagnose(ctx, { vector_available: sync.available, vector_reason: sync.reason || null });
     const opts = options(settings);
-    // The query is the situation, and it was almost entirely the assistant's own last reply: measured on a chat
-    // a user drove, the preceding rows were 703 characters against a 26-character question. The things a user
-    // names are what recall is for, and the floor that describes one was quoted for 21% of them with the rows
-    // whole, 35% when the preceding rows are bounded at 80 characters, and 79% when the question is the only
-    // input - which costs four points of character profiles, because those are described in the assistant's
-    // prose rather than in the question. The bounded form keeps the situation and pays neither. The question
-    // itself is never truncated: it is the one row whose length the user chose.
-    const queryRows = history.active.slice(-3);
-    const query = queryRows.map((id, index) => {
-        const text = String(history.records[id].text);
-        return index === queryRows.length - 1 ? text : text.slice(-QUERY_CONTEXT_CHARS);
-    }).join('\n').slice(-5000);
+    // Explicit requests carry the user's words; character names come independently from scene context.
+    // Continuation keeps the measured legacy query until a replacement has labelled evidence.
+    const queryStore = storeOf(ctx);
+    const knownNames = [...new Set([...(queryStore.narrative_knowledge?.entries || []).map(item => String(item.kind || '').split('/')[0]),
+        String(ctx.name1 || '').trim(), String(ctx.name2 || '').trim()])].filter(name => name.length >= 2 && name.length <= 12);
+    const plan = planRetrievalQuery(history, { strategy: settings.narrative_query_strategy || 'focused',
+        summary: queryStore.narrative_summary?.text || '', names: knownNames });
+    const query = plan.query;
     let dense = [];
     let vectorError = null;
     const index = indexes.get(hostKey(ctx));
@@ -424,9 +424,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     // Who the situation is about. The knowledge block is keyed by character name, so the names are already
     // extracted and do not need a second model call: a name that the summary tracks and that the last three
     // messages mention is a character who is in the scene.
-    const knownNames = [...new Set([...knowledge.map(item => String(item.kind || '').split('/')[0]),
-        String(ctx.name1 || '').trim(), String(ctx.name2 || '').trim()])].filter(name => name.length >= 2 && name.length <= 12);
-    const profileNames = knownNames.filter(name => query.includes(name));
+    const profileNames = plan.profileNames;
     const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
     const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
     const knowledgeBlock = fittedKnowledge
@@ -456,6 +454,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     // exist only in hidden floors, how many came back with the evidence that was actually packed.
     const entityState = entityRecall(chunks, history, { query, visibleSources, packed: evidence.sources });
     const entityMissed = entityState.filter(row => !row.recalled);
+    const askedState = plan.metricsApplicable ? askedThingRecall(chunks, history,
+        { asked: plan.asked, visibleSources, packed: evidence.sources }) : [];
     // The second half of the same question: was the character described, not merely mentioned.
     const profileState = profileRecall(chunks, history, { names: profileNames, visibleSources, packed: evidence.sources });
     let settingText = '';
@@ -475,7 +475,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         knowledge_unconfirmed: knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
-        entity_missed: entityMissed.length }, opts);
+        entity_missed: 0 }, opts); // Query-term coverage is a trace, not a quality alarm.
     const diagnostics = { summary_tokens: estimateTokens(summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
         covered_chunks: live.narrative_summary?.covered.length || 0, chunks: chunks.length,
@@ -486,6 +486,12 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchors_truncated: anchorsTruncated,
         state_horizon_floors: coveredIndex == null ? null : coveredIndex + 1,
         entity_candidates: entityState.length,
+        query_strategy: plan.strategy, retrieval_mode: plan.mode,
+        asked_status: !plan.metricsApplicable ? 'not_applicable' : askedState.length ? 'measured_proxy' : 'no_targets',
+        asked_targets: askedState.length, asked_recalled: askedState.filter(row => row.recalled).length,
+        asked_terms: askedState,
+        answer_coverage: 'unmeasured_without_labelled_answers',
+        entity_metric: 'query_term_coverage_only_not_quality',
         entity_recalled: entityState.length - entityMissed.length,
         entity_terms: entityState.map(row => ({ term: row.term, first_floor: row.first_floor, recalled: row.recalled })),
         profile_names: profileNames,
@@ -498,6 +504,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         warnings,
         sources: evidence.sources, candidates: ranked.length,
         rerank_model: opts.rerankModel || null, rerank_used: reranked.used, rerank_error: reranked.error,
+        rerank_cost: reranked.metrics || null,
         channels: { lexical: ranked.filter(row => row.channels.includes('lexical')).length,
             vector: ranked.filter(row => row.channels.includes('vector')).length },
         vector_available: Boolean(index?.available && !vectorError),
@@ -612,6 +619,14 @@ export function readNarrativeReport(ctx) {
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
         entity_candidates: store.narrative_diagnostics?.entity_candidates || 0,
+        entity_metric: 'query_term_coverage_only_not_quality',
+        query_strategy: store.narrative_diagnostics?.query_strategy || null,
+        retrieval_mode: store.narrative_diagnostics?.retrieval_mode || null,
+        asked_status: store.narrative_diagnostics?.asked_status || 'not_measured',
+        asked_targets: store.narrative_diagnostics?.asked_targets ?? null,
+        asked_recalled: store.narrative_diagnostics?.asked_recalled ?? null,
+        answer_coverage: 'unmeasured_without_labelled_answers',
+        rerank_cost: store.narrative_diagnostics?.rerank_cost || null,
         profile_quoted: (store.narrative_diagnostics?.profile_terms || []).filter(row => row.quoted).length,
         profile_detailed: (store.narrative_diagnostics?.profile_terms || []).filter(row => row.detailed).length,
         profile_missing: (store.narrative_diagnostics?.profile_terms || []).filter(row => !row.detailed).map(row => row.name),
@@ -624,7 +639,7 @@ export function readNarrativeReport(ctx) {
             knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
             knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
             knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
-            entity_missed: (store.narrative_diagnostics?.entity_missed || []).length },
+            entity_missed: 0 },
             options(settings)),
         messages: history ? history.active.length : 0,
         completed_floors: completedUserTurns(chunks),

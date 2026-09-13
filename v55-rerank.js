@@ -1,14 +1,29 @@
 // A cross-encoder rerank stage for the original-text candidates.
 //
-// Measured offline on 52 hand-written questions (dev_docs/06_retrieval_research.md section 14): reranking
+// Measured offline on 52 hand-written questions (ADR-0016): reranking
 // the top 24 fused candidates with jina-reranker-v3 raised answer-in-context from 69% to 87%, ten questions
 // gained against one lost, p=0.012; jina-reranker-v2-base-multilingual reached 81%. It is the most expensive
 // layer - one call per generation over the whole shortlist - so it runs only when a model is configured, it
 // is fail-open, and it never reorders a candidate the provider did not actually score.
 
 import { resolveOpenAiCompatibleBaseUrl } from './v55-tauri-vector-backend.js';
+import { estimateTokens } from './v55-tokenizer.js';
 
 export const RERANK_CANDIDATES = 24;
+
+export function rerankShortlist(ranked, visibleSources, limit = 24, extra = 8) {
+    const eligible = ranked.filter(row => !visibleSources.has(row.chunk.source));
+    const head = eligible.slice(0, limit);
+    return [...head, ...eligible.filter(row => !head.includes(row)
+        && row.channels.some(channel => channel === 'entity' || channel === 'profile')).slice(0, extra)];
+}
+
+export function applyRerankOrder(ranked, pick, order) {
+    const scores = new Map(order.map(row => [row.index, row.score]));
+    const head = pick.map((row, index) => ({ ...row, rerank: scores.get(index) ?? null }))
+        .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.chunk.index - b.chunk.index);
+    return [...head, ...ranked.filter(row => !pick.includes(row))];
+}
 
 /** The request a cross-encoder reranker expects. */
 export function buildRerankRequest({ model, query, documents, topN }) {
@@ -53,12 +68,18 @@ export async function requestRerank({ baseUrl, apiKey, model, query, documents, 
     const body = buildRerankRequest({ model, query, documents, topN });
     const send = fetchImpl || globalThis.fetch?.bind(globalThis);
     if (typeof send !== 'function') throw new Error('重排传输不可用。');
-    const response = await send(base + '/rerank', { method: 'POST',
+    const started = performance.now();
+    const response = await send(base + '/rerank', { method: 'POST', signal: AbortSignal.timeout(60000),
         headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + key },
         body: JSON.stringify(body) });
     if (!response.ok) {
         const detail = await response.text().catch(() => '');
         throw new Error('重排请求失败：HTTP ' + response.status + (detail ? ' · ' + detail.slice(0, 300) : ''));
     }
-    return parseRerankResponse(await response.json().catch(() => null), body.documents.length);
+    const payload = await response.json().catch(() => null);
+    const order = parseRerankResponse(payload, body.documents.length);
+    Object.defineProperty(order, 'metrics', { value: { elapsed_ms: Math.round(performance.now() - started),
+        documents: body.documents.length, input_tokens_estimated: estimateTokens([query, ...documents].join('\n')),
+        provider_tokens: payload?.usage?.total_tokens ?? null } });
+    return order;
 }

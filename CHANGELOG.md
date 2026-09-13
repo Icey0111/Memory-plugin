@@ -50,6 +50,10 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
+- Historical retrieval focuses on a pending user request while scene names remain available to the
+  character-description channel. Continuation keeps the recent-scene query. Pure continuation commands
+  remain archived but cannot consume historical evidence slots.
+
 - Prompt injection is two blocks again: the continuity summary as the current-state block, and quoted
   original text plus relevant setting entries as the reference block. The fact set is no longer
   rendered into the prompt.
@@ -92,6 +96,12 @@ belongs in Git commits and pull requests.
   (60% -> 49%) for entity recall (71% -> 86%) at 6% fewer tokens. No ADR: a layer has to win its A/B.
 
 ### Fixed
+
+- Knowledge boundaries accept bracketed, pipe-delimited and `character/state: fact` forms consistently;
+  old format duplicates are normalized while distinct same-pass assertions remain visible.
+- Recall diagnostics count only the quoted span. User-target coverage is reported separately from
+  query-term coverage; continuation is marked inapplicable. Rerank diagnostics include elapsed time,
+  estimated input tokens and provider usage when returned, including attempted-call cost on failure.
 
 - The evidence block no longer quotes the same text twice, and no longer quotes text the prompt is
   already showing under another row id. A 100-floor run whose user turn was always "继续。" spent all five

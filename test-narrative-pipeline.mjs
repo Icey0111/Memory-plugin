@@ -721,12 +721,16 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const failed = await buildNarrativeContext(host.ctx, broken, { contextSize: 32768 });
     assert.equal(failed.diagnostics.rerank_used, false, 'a failing reranker leaves the fused order alone');
     assert.match(String(failed.diagnostics.rerank_error), /boom/, 'and the reason is reported, not swallowed');
+    assert.ok(failed.diagnostics.rerank_cost.documents >= 2, 'failed calls still record input cost');
+    assert.ok(failed.diagnostics.rerank_cost.elapsed_ms >= 0);
     const working = { ...host.services, rerank: () => ({ supported: true, model: 'test-rerank',
         rerank: async (query, documents) => documents.map((_, index) => ({ index, score: 1 - index * 0.01 })) }) };
     const used = await buildNarrativeContext(host.ctx, working, { contextSize: 32768 });
     assert.equal(used.diagnostics.rerank_used, true, 'a working reranker is used');
     assert.equal(used.diagnostics.rerank_error, null);
     assert.equal(used.diagnostics.rerank_model, 'test-rerank');
+    assert.ok(used.diagnostics.rerank_cost.input_tokens_estimated > 0);
+    assert.equal(used.diagnostics.rerank_cost.provider_tokens, null, 'estimated input is not provider billing');
     const off = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });
     assert.equal(off.diagnostics.rerank_used, false, 'and an install with no model never calls one');
     // A live run spent one rerank call per turn while every floor was still unfolded, which is a call

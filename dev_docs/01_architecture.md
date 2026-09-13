@@ -28,7 +28,7 @@ flowchart TD
         A --> D[applyNarrativeFolds: hide only floors whose every chunk is covered]
     end
     subgraph G[Read path - once per generation]
-        Q[recent messages = the query] --> L[lexical rank over chunks, dense when configured]
+        Q[user request, or recent scene for continuation] --> L[lexical rank over original chunks, dense when configured]
         Q --> N[situation terms that live only in hidden floors]
         N --> L
         K --> L
@@ -54,6 +54,18 @@ flowchart TD
 5. After the generation, the host's events schedule the background pass: at most one summary job per
    chat store at a time, and only the newest unsummarized completed floors.
 
+Retrieval uses indexed original-text chunks, not summaries. The default focused query uses a pending
+user request; scene names are collected independently for the profile channel and may resolve pronouns.
+Pure continuation and generation without a new user row retain the last-three-message query (preceding
+rows capped at 80 characters, combined query capped at 5000). Pure user continuation commands remain
+archived but cannot become evidence. The experimental adaptive continuation query is not enabled by default.
+
+Knowledge-boundary migration normalizes explicit syntax and exact duplicates, using confirmation time
+to apply the existing subject-replacement rule. Different same-pass assertions survive and remain flagged;
+the host does not infer which assertion is true. Diagnostic coverage inspects actual quoted spans.
+User-target coverage is a proxy; query-derived entity coverage is only a trace. Rerank cost reports
+elapsed time, estimated input tokens and provider tokens when available, including failed attempts.
+
 ### 3. Where the decision to show or hide text lives
 
 | Question | Answer | Module |
@@ -74,6 +86,7 @@ Live path, reachable from index-v55-bootstrap.js:
 | Host bootstrap and settings shell | index-v55-bootstrap.js, index-v55.js, settings.html, style.css, v55-ui-polish.js, v55-api-connections.js, v55-embedding-profile-ui.js |
 | Original text: archive, chunks, folds, evidence | raw-history.js, v55-floor-fold.js |
 | The pipeline: summary job, index sync, budgeted assembly | narrative-runtime.js |
+| Request/continuation query planning, independent scene names | retrieval-query.js |
 | The quiet summary request (cloned preset, response metrics) | summary-transport.js |
 | Host adapters (store, identity, vectors, setting retrieval, metrics) | index.js |
 | Chat store, replay, operations, tokenizer | memory-core.js, v55-store-integrity.js, v55-store-compact.js, v55-derived-store.js, v55-tokenizer.js |
@@ -87,7 +100,7 @@ the cold-snapshot cache, the length certificate, the quality metrics, the rerank
 self-check and the baseline builder - with the tests that pinned them. index.js keeps the host
 adapters, the chat store, the setting plane and the migration of old chats.
 
-The fact set itself no longer lives in the chat file either: memories, slots and hierarchical_summaries
+The old fact set itself no longer lives in the chat file either: memories, slots and hierarchical_summaries
 are derived keys, written to the external record and rebuildable from the canonical replay log, which
 the chat file keeps (ADR-0004).
 
