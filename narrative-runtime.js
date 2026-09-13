@@ -1,5 +1,5 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
-    summaryMessages, summaryRequest, summaryBlockState, stateRevisionOf,
+    summaryMessages, summaryRequest, summaryBlockState, anchorRepairRequest, stateRevisionOf,
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
     selectAnchors, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
@@ -111,6 +111,7 @@ const ANCHOR_ERROR_TEXT = { unknown_op: '不是“新增/更新/结束”三种�
     missing_section: '缺少【锚点变更】章节', empty_section: '锚点章节为空；没有变化请明确写“无”',
     mixed_none: '同一章节同时写了“无”和变更内容',
     missing_source: '没有写“来源 raw_N”', source_not_in_batch: '来源不在本批【新增原文】里',
+    bad_source: '来源不是 raw_N 这样的编号',
     empty_statement: '没有写陈述', duplicate_target: '同一条记录在本批被改了两次',
     stale_target: '这条记录在本批生成后已被结束', stale_version: '这条记录在本批生成后已被改动' };
 const describeAnchorErrors = errors => (errors || []).slice(0, 4).map(error =>
@@ -320,28 +321,17 @@ export function updateNarrative(ctx, services) {
         // The response record belongs to one attempt. Without this, a transport failure would report the
         // metrics of the last call that did return, which is a different failure entirely.
         diagnose(ctx, { summary_response: null });
-        try {
-            const text = await (services.summarize || generateNarrativeSummary)(ctx, request.text, state.settings);
-            if (!services.isCurrent()) return;
-            state = prepare(ctx);
-            // The coverage claim comes from the frozen batch, never from the chat length at the end of
-            // the call: an append during the request must not be summarized by a result it predates.
-            if (!before.every((id, i) => id === state.chunks[i]?.id) || state.settings.enabled === false) return;
-            if (sourceBatchFingerprint(summaryMessages(state.history, batch)) !== batchFingerprint) {
-                // A covered row was edited while the answer was being written. Committing would hide floors
-                // this answer never read, so the batch is left for the next pass instead.
-                diagnose(ctx, { summary_batch_changed: { at: Date.now(), batch_id: batchIdOf(batch) } });
-                persist(ctx);
-                return;
-            }
-            const parsed = parseAnchors(text);
-            const attemptResponse = storeOf(ctx).narrative_diagnostics?.summary_response || null;
+        // One answer is parsed and committed, or it is refused. Nothing is written before every reference in
+        // the answer has been checked, so a refused first attempt leaves the store exactly as the model found
+        // it and the repair below reads the same frozen state rather than a half-written one.
+        const commitAnswer = (answer, responseMetrics, repair) => {
+            const parsed = parseAnchors(answer);
             if (!parsed.summary) throw tagged('format', new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。'),
-                { response: attemptResponse, summary_tokens: estimateTokens(text) });
+                { response: responseMetrics, summary_tokens: estimateTokens(answer) });
             const acceptedTokens = estimateTokens(parsed.summary);
             if (acceptedTokens > opts.summaryTokens) throw tagged('over_budget',
                 new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。'),
-                { response: attemptResponse, summary_tokens: acceptedTokens });
+                { response: responseMetrics, summary_tokens: acceptedTokens });
             // prepare() above may have persisted and swapped the store object, so write through
             // a fresh read rather than through the reference it returned.
             const live = storeOf(ctx);
@@ -352,23 +342,25 @@ export function updateNarrative(ctx, services) {
             let anchorOps = null;
             if (parsed.anchor_section === 'missing' || parsed.anchor_section === 'empty') {
                 throw tagged('anchor_ops', new Error('锚点变更章节缺失或为空；本批不提交、不隐藏原文。'),
-                    { response: attemptResponse, anchor_errors: [{ line: '', reason: parsed.anchor_section + '_section' }] });
+                    { response: responseMetrics, anchor_errors: [{ line: '', reason: parsed.anchor_section + '_section' }] });
             }
-            if (parsed.anchor_section === 'ok' || parsed.anchor_section === 'none') {
+            if (parsed.anchor_section === 'ok' || parsed.anchor_section === 'none' || parsed.anchor_section === 'inferred') {
                 const checked = parseAnchorChanges(parsed.anchorLines,
                     { plan: request.anchors, batchSources: new Set(batch.sources) });
                 if (checked.errors.length) throw tagged('anchor_ops',
                     new Error('锚点变更引用了无效编号或批次外的来源（' + describeAnchorErrors(checked.errors)
                         + '）；本批不提交、不隐藏原文。'),
-                    { response: attemptResponse, anchor_errors: checked.errors });
+                    { response: responseMetrics, anchor_errors: checked.errors });
                 const applied = mergeAnchors(live.narrative_anchors, checked.changes,
                     { plan: request.anchors, at: Date.now() });
                 if (!applied.ok) throw tagged('anchor_ops',
                     new Error('锚点变更与请求发出时的版本不一致（' + describeAnchorErrors(applied.errors)
                         + '）；本批不提交、不隐藏原文。'),
-                    { response: attemptResponse, anchor_errors: applied.errors });
+                    { response: responseMetrics, anchor_errors: applied.errors });
                 anchors = applied.ledger;
-                anchorOps = { ...applied.stats, section: parsed.anchor_section, at: Date.now(), batch_id: batchIdOf(batch) };
+                anchorOps = { ...applied.stats, section: parsed.anchor_section,
+                    ...(repair ? { repaired: true, repair_at: repair.at } : {}),
+                    at: Date.now(), batch_id: batchIdOf(batch) };
             }
             live.narrative_summary = { version: 1, fixed_batch: true, text: parsed.summary, covered: before };
             live.narrative_anchors = anchors;
@@ -385,6 +377,7 @@ export function updateNarrative(ctx, services) {
             live.narrative_summary.state_revision = stateRevisionOf(live.narrative_summary,
                 live.narrative_anchors?.active, live.narrative_knowledge?.entries);
             const pastFailure = live.narrative_diagnostics?.summary_last_error;
+            const pastRepair = live.narrative_diagnostics?.anchor_repair;
             // Committing clears the current error, the block and the counter. It marks the last failure
             // recovered rather than erasing it: a failure that disappears the moment the retry works is
             // exactly the failure nobody can diagnose afterwards.
@@ -393,6 +386,9 @@ export function updateNarrative(ctx, services) {
                 // The operation counts of the batch that was actually committed, and no refusal left over
                 // from an earlier one: the panel reads a refusal as "the current answer was not applied".
                 anchor_ops: anchorOps,
+                // A repair is a distinct, separately counted cost. A later batch that needed no repair marks
+                // the last one recovered instead of erasing what it cost, the same rule the failure record uses.
+                anchor_repair: repair || (pastRepair ? { ...pastRepair, recovered: true, recovered_at: Date.now() } : null),
                 // A refusal that disappears the moment the retry works is the failure nobody can diagnose
                 // afterwards, which is the same reason summary_last_error is kept and marked recovered. The
                 // live 40-turn run that first exercised this had both of its refusals erased by the next
@@ -405,6 +401,69 @@ export function updateNarrative(ctx, services) {
                         state_revision: live.narrative_summary.state_revision } } : null });
             prepare(ctx);
             persist(ctx);
+        };
+        try {
+            const text = await (services.summarize || generateNarrativeSummary)(ctx, request.text, state.settings);
+            if (!services.isCurrent()) return;
+            state = prepare(ctx);
+            // The coverage claim comes from the frozen batch, never from the chat length at the end of
+            // the call: an append during the request must not be summarized by a result it predates.
+            if (!before.every((id, i) => id === state.chunks[i]?.id) || state.settings.enabled === false) return;
+            if (sourceBatchFingerprint(summaryMessages(state.history, batch)) !== batchFingerprint) {
+                // A covered row was edited while the answer was being written. Committing would hide floors
+                // this answer never read, so the batch is left for the next pass instead.
+                diagnose(ctx, { summary_batch_changed: { at: Date.now(), batch_id: batchIdOf(batch) } });
+                persist(ctx);
+                return;
+            }
+            const firstResponse = storeOf(ctx).narrative_diagnostics?.summary_response || null;
+            try {
+                commitAnswer(text, firstResponse, null);
+            } catch (commitError) {
+                // One targeted repair, and only for a rejected anchor section: the model is shown what it
+                // wrote and which lines failed, so it can keep the valid content instead of discarding it.
+                // Transport, truncation and budget failures are not format problems and are not repaired.
+                if (commitError?.stage !== 'anchor_ops' || !services.isCurrent()) throw commitError;
+                const repairPrompt = anchorRepairRequest({ responseText: text, errors: commitError.anchor_errors,
+                    plan: request.anchors, sources: batch.sources, maxTokens: opts.summaryTokens });
+                const repaired = await (services.summarize || generateNarrativeSummary)(ctx, repairPrompt.text, state.settings);
+                if (!services.isCurrent()) return;
+                const repairMetrics = storeOf(ctx).narrative_diagnostics?.summary_response || null;
+                state = prepare(ctx);
+                if (sourceBatchFingerprint(summaryMessages(state.history, batch)) !== batchFingerprint) {
+                    diagnose(ctx, { summary_batch_changed: { at: Date.now(), batch_id: batchIdOf(batch) } });
+                    persist(ctx);
+                    return;
+                }
+                const repair = { at: Date.now(), attempt: 1, section: 'anchor_ops',
+                    errors: commitError.anchor_errors || null,
+                    original_response_chars: String(text || '').length,
+                    request_chars: repairPrompt.text.length,
+                    prompt_tokens_estimated: estimateTokens(repairPrompt.text),
+                    response: repairMetrics,
+                    // Counted apart from the batch request, because the repair is a real second call and its
+                    // cost is the price of the format failure, not of the ten turns it was summarizing.
+                    cost: { prompt_chars: repairPrompt.text.length,
+                        prompt_tokens_estimated: estimateTokens(repairPrompt.text),
+                        completion_tokens: repairMetrics?.completion_tokens ?? null,
+                        reasoning_tokens: repairMetrics?.reasoning_tokens ?? null },
+                    recovered: false, recovered_at: null };
+                try {
+                    commitAnswer(repaired, repairMetrics, repair);
+                } catch (repairError) {
+                    if (repairError && typeof repairError === 'object') {
+                        // The batch is still refused for the reason the first answer was refused: the repair is
+                        // a second, separately recorded attempt, not a replacement diagnosis. Its own errors
+                        // are kept on the repair record so both attempts stay readable.
+                        repair.errors_after = repairError.anchor_errors || null;
+                        repair.reason_after = String(repairError.message || repairError);
+                        repairError.repair = repair;
+                        repairError.original_anchor_errors = commitError.anchor_errors || null;
+                        if (commitError.anchor_errors) { repairError.anchor_errors = commitError.anchor_errors; repairError.stage = 'anchor_ops'; }
+                    }
+                    throw repairError;
+                }
+            }
         } catch (error) {
             if (services.isCurrent()) {
                 // Counted, not just recorded: one failure is noise, a run of them is the warning. This
@@ -422,8 +481,11 @@ export function updateNarrative(ctx, services) {
                     anchor_op_errors: error?.anchor_errors
                         ? { at: Date.now(), stage, batch_id: batchId, errors: error.anchor_errors }
                         : (live.narrative_diagnostics?.anchor_op_errors || null),
+                    // A failed repair keeps its own record: what it cost, and the errors it was asked to fix.
+                    anchor_repair: error?.repair || (live.narrative_diagnostics?.anchor_repair || null),
                     summary_last_error: {
                         anchor_errors: error?.anchor_errors || null,
+                        repair: error?.repair || null,
                         at: Date.now(), stage, stage_label: stageLabel(stage),
                         reason: bounded(error?.message || error),
                         batch_id: batchId,
@@ -537,8 +599,8 @@ function warningsFor(state, opts) {
     // holds - an alarm on it would fire on every healthy batch. What replaces it is the shape that is
     // actually wrong: two live records under one label, which is what a missed "更新 A#" looks like.
     if (state.anchors_same_subject > 0) {
-        out.push('有 ' + state.anchors_same_subject + ' 组锚点同时存在多条活值（同一主体）；同一事实的新状态应当用'
-            + '“更新 A#”提交，“新增”不取代旧值，两组都会被注入。请检查总结是否漏用了“更新”。');
+        out.push('有 ' + state.anchors_same_subject + ' 组锚点共用同一标签且同时有多条活值；这只是同标签记录数，'
+            + '不代表这些记录互相矛盾。同一可变事实的新状态应当用“更新 A#”提交，“新增”不取代旧值，两条都会被注入。');
     }
     if (state.anchor_op_errors?.errors?.length && !state.anchor_op_errors.recovered) {
         out.push('最近一批锚点变更被拒绝（' + state.anchor_op_errors.errors.length + ' 条无效引用或冲突）：'
@@ -1002,6 +1064,10 @@ export function readNarrativeReport(ctx) {
         anchor_op_errors: store.narrative_diagnostics?.anchor_op_errors?.errors || null,
         anchor_op_errors_at: store.narrative_diagnostics?.anchor_op_errors?.at || null,
         anchor_op_errors_recovered: store.narrative_diagnostics?.anchor_op_errors?.recovered === true,
+        // A repair is a second model call with its own cost. It is reported apart from the batch request so
+        // the price of a format failure stays visible instead of hiding inside the batch's token total.
+        anchor_repaired: store.narrative_diagnostics?.anchor_ops?.repaired === true,
+        anchor_repair: store.narrative_diagnostics?.anchor_repair || null,
         anchors_same_subject: countAnchorCollisions(activeAnchors),
         anchors_superseded_limit: MAX_SUPERSEDED,
         anchors_superseded_recent: (store.narrative_anchors?.superseded || []).slice(0, 6).map(item => ({

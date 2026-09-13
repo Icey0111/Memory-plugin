@@ -10,7 +10,7 @@
 // The metrics this file makes checkable: wrong supersession, stale residue, condition retention, protocol
 // failure and cost. "Fewer live anchors" and "nothing parked" are outcomes, not evidence of a better rule.
 import assert from 'node:assert/strict';
-import { planAnchors, formatAnchorPrompt, parseAnchors, parseAnchorChanges, mergeAnchors,
+import { planAnchors, formatAnchorPrompt, parseAnchors, parseAnchorChanges, mergeAnchors, summaryRequest,
     anchorSubjectKey, selectAnchors, anchorAliasFor } from './raw-history.js';
 import { updateNarrative, buildNarrativeContext, readNarrativeReport } from './narrative-runtime.js';
 
@@ -440,6 +440,89 @@ for (const [body, reason] of [['', 'empty_section'], ['我改了刀的位置。'
     await updateNarrative(h.ctx, h.services, { force: true });
     assert.equal(readNarrativeReport(h.ctx).summary_covered_floors, 10);
     assert.equal(readNarrativeReport(h.ctx).anchors_ops.section, 'none');
+}
+
+// --- 19. a source cell may name several original rows, and one bad row still refuses the batch --------
+{
+    const previous = { active: [rec('k', '位置', '刀的位置', '刀在井底。')] };
+    const plan = planAnchors(previous.active);
+    const sources = new Set(['raw_15', 'raw_16', 'raw_17', 'raw_18']);
+    const update = parseAnchors('局面。\n【锚点变更】\n- 更新 A1 | 来源 raw_15、raw_17 | 刀被捞出，放在井边。\n【知情边界】\n- 无');
+    const checked = parseAnchorChanges(update.anchorLines, { plan, batchSources: sources });
+    assert.deepEqual(checked.errors, []);
+    assert.deepEqual(checked.changes[0].sources, ['raw_15', 'raw_17'], 'every source is kept');
+    assert.equal(checked.changes[0].source, 'raw_15、raw_17', 'and the display string keeps both');
+    const applied = mergeAnchors(previous, checked.changes, { plan });
+    assert.equal(applied.ok, true);
+    assert.deepEqual(applied.ledger.active.find(row => row.id === 'k').sources, ['raw_15', 'raw_17']);
+    assert.equal(applied.ledger.superseded[0].replaced_by_source, 'raw_15、raw_17');
+    // The ASCII comma and a bare source list are the other two shapes the live responses used.
+    const comma = parseAnchorChanges(parseAnchors('局面。\n【锚点变更】\n- 新增 | 秘密 | 口令 | 来源 raw_15, raw_18 | 口令是青铜月亮。\n【知情边界】\n- 无').anchorLines,
+        { plan, batchSources: sources });
+    assert.deepEqual(comma.errors, []);
+    assert.deepEqual(comma.changes[0].sources, ['raw_15', 'raw_18']);
+    const bare = parseAnchorChanges(['新增 | 秘密 | 口令 | raw_15、raw_16 | 口令是青铜月亮。'],
+        { plan, batchSources: sources });
+    assert.deepEqual(bare.errors, []);
+    assert.deepEqual(bare.changes[0].sources, ['raw_15', 'raw_16']);
+    // One token outside the batch refuses the whole batch, exactly as a single bad source does.
+    const foreign = parseAnchorChanges(parseAnchors('局面。\n【锚点变更】\n- 更新 A1 | 来源 raw_15、raw_99 | 刀被捞出。\n【知情边界】\n- 无').anchorLines,
+        { plan, batchSources: sources });
+    assert.equal(foreign.changes.length, 0);
+    assert.equal(foreign.errors[0].reason, 'source_not_in_batch');
+    assert.equal(foreign.errors[0].detail, 'raw_99');
+    // A token that is not a raw_N is a malformed field, not a silently dropped head cell.
+    const malformed = parseAnchorChanges(parseAnchors('局面。\n【锚点变更】\n- 更新 A1 | 来源 raw_15、不明 | 刀被捞出。\n【知情边界】\n- 无').anchorLines,
+        { plan, batchSources: sources });
+    assert.equal(malformed.changes.length, 0);
+    assert.equal(malformed.errors[0].reason, 'bad_source');
+    assert.equal(malformed.errors[0].detail, '不明');
+}
+
+// --- 20. an operation without its heading is recovered only when it is unmistakable -------------------
+{
+    const previous = { active: [rec('p', '承诺', '归还钥匙', '甲承诺天亮前归还钥匙，前提是乙先释放人质。')] };
+    const plan = planAnchors(previous.active);
+    const probe = '更新 A1 | 来源 raw_79 | 甲承诺明天正午前归还钥匙，前提是乙先释放人质；人质尚未释放，钥匙尚未归还。\n\n【已解决】：无\n【知情边界】：无';
+    const parsed = parseAnchors(probe);
+    assert.equal(parsed.anchor_section, 'inferred', 'the heading is missing, the operation is not');
+    const checked = parseAnchorChanges(parsed.anchorLines, { plan, batchSources: new Set(['raw_79']) });
+    assert.deepEqual(checked.errors, []);
+    assert.equal(checked.changes[0].op, 'update');
+    assert.equal(checked.changes[0].id, 'p');
+    assert.match(checked.changes[0].text, /前提是乙先释放人质/, 'the condition survives the recovery');
+    // Prose that merely mentions 更新 is not an operation, so the section stays honestly missing.
+    const prose = parseAnchors('管家更新了账本。\n队伍更新了装备 | 来源不明\n本次没有变化，不需要更新 A1\n【知情边界】\n- 无');
+    assert.equal(prose.anchor_section, 'missing');
+    assert.equal(prose.anchorLines.length, 0);
+    assert.match(prose.summary, /更新/);
+    // And the runtime commits a recovered section instead of refusing it.
+    const h = host();
+    for (let n = 1; n <= 10; n += 1) h.ctx.chat.push(...pair(n));
+    h.services.summarize = async (ctx, prompt) => '局面：门还关着。\n新增 | 秘密 | 口令 | 来源 '
+        + anySource(prompt) + ' | 口令是青铜月亮。\n【知情边界】\n- 无';
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const report = readNarrativeReport(h.ctx);
+    assert.equal(report.anchor_parse, 'inferred');
+    assert.equal(report.anchors_active, 1);
+    assert.equal(report.summary_failures, 0);
+    assert.equal(report.summary_covered_floors, 10);
+}
+
+// --- 21. the ledger-check guidance is in the request, and the host still mandates nothing -------------
+{
+    const request = summaryRequest('', [{ id: 'raw_1', retrievalText: 'x' }], 600, [], []);
+    assert.match(request.text, /【当前锚点】为空时/, 'the empty-ledger guidance is present');
+    assert.match(request.text, /其他活值是否与你的新状态矛盾/, 'the contradiction check is present');
+    assert.match(request.text, /角色认知与未证猜测/, 'fact, belief and guess are told apart');
+    assert.match(request.text, /一条事实依赖多条原文时可以并排写多个来源/, 'the multi-source shape is taught');
+    assert.doesNotMatch(request.text, /空账本必须|必须新增至少|至少新增一条/, 'no non-empty mandate is imposed');
+    // An empty ledger that truly has no new fact may still answer none, and the host adds nothing of its own.
+    const parsed = parseAnchors('局面。\n【锚点变更】\n- 无');
+    assert.equal(parsed.anchor_section, 'none');
+    const applied = mergeAnchors({ active: [] }, [], { plan: [] });
+    assert.equal(applied.ok, true);
+    assert.equal(applied.stats.added, 0);
 }
 
 console.log('anchor-changes: ok');

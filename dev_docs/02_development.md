@@ -8,7 +8,11 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | npm test | Offline regressions, including host adapters |
 | node test-summary-lifecycle.mjs | Cadence, concurrent reads, joint invalidation and summary transport |
 | node test-anchor-budget.mjs | The never-inject-a-retired-statement rule, even round-robin selection, parked-value reporting, a slash label that keeps its content, a legacy ledger migrated as it stands, and the legacy anchor-budget notice |
-| node test-anchor-changes.mjs | Numbered operations, atomic refusal, missing/empty/explicit-none sections, inline and unbulleted operations, malformed fields, long labels, full conditions beyond 240 characters, frozen references and batch diagnostics |
+| node test-anchor-changes.mjs | Numbered operations, atomic refusal, missing/empty/explicit-none sections, inline and unbulleted operations, multi-source 来源 lists with per-token validation, inferred-heading recovery and its prose counterexample, malformed fields, long labels, full conditions beyond 240 characters, frozen references and batch diagnostics |
+| node test-anchor-repair.mjs | The one targeted repair after a refused anchor section: valid content preserved, exactly one extra call, atomic refusal after a failed repair, a separate cost record, and the non-format failure that is not repaired |
+| node test-runtime-precheck.mjs | The disk-vs-loaded comparison, including the stale `bad_subject` signature this acceptance run recorded |
+| node runtime-precheck.mjs | Live preflight: repo vs deployed disk vs the function sources actually loaded in the page. Exit 0 only when all three agree, 1 when stale, 2 when unknown |
+| node replay-anchor-evidence.mjs | Replay of the 421757c acceptance requests and responses through the current parser with no model call. Exits 0 with a note when the local evidence directory is absent |
 | node eval-anchor-protocol.mjs --out report.json | Opt-in five-call model probe through an open host's summary connection and local CDP endpoint; saves synthetic inputs, raw responses, parsed operations and ledgers without writing chat state. Structural passes require manual semantic review |
 | node test-summary-diagnostics.mjs | Failure stages and the retained record, the two state versions, injection recorded only after the prompt is set, the assembly-across-a-commit case, the five warning conditions, and the input-budget default |
 | node test-summary-contract.mjs | The batching contract: the floor horizon, committed vs injected coverage, one-entry-per-message requests, the cost of the text that is sent, and the difference between a local budget block and an interface failure |
@@ -22,6 +26,20 @@ twenty dialogue message rows. The setting, the report and the hidden count all u
 are the derived number.
 A character greeting is not a user turn; an unanswered user message is not completed. Tests of
 specific boundaries may explicitly use another interval, but live acceptance must retain 10.
+
+Before a live run, `node runtime-precheck.mjs` must exit 0: the repository, the deployed directory and the
+functions the open page has actually loaded have to be the same code. Comparing the disk alone is not enough -
+a page loaded before the deploy keeps the old module, and re-reading the served file proves nothing about it.
+Comparing against a stale page load costs a whole run: one 421757c run had every deployed file matching the
+repo while the page still executed the pre-421757c `parseAnchorChanges`. Exit 2 is unknown, never a pass;
+deploy and reload, then re-run.
+
+A batch refused for its anchor section is retried once by the host with a targeted repair that shows the model
+its own answer and the rejected lines. The repair is a second call with its own recorded cost; a failed repair
+still refuses the batch and keeps the original refusal. Replaying a prior run's frozen responses
+(`node replay-anchor-evidence.mjs`) is the cheap way to check a protocol change before paying for story
+generation again.
+
 Each successful call covers exactly N completed turns and hides their complete messages. Manual calls
 obey the same threshold. Freeze the request before dispatch; append/edit outside that batch must not
 extend its coverage. The request is assembled from the batch's original messages - one entry per message,

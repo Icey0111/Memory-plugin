@@ -450,8 +450,12 @@ export function summaryRequest(previous, messages, maxTokens, anchors, knowledge
         // is gone because the three format lines already carry a concrete id, a concrete statement and a
         // concrete source.
         + '编号只能取自【当前锚点】；没有变化的锚点不要照抄，不写就等于保持原样。同一条可变事实的新状态必须用“更新”，'
-        + '“新增”不取代任何旧值，只有换了主体或换了事实才用“新增”。来源必须是本批【新增原文】里真实出现的编号；'
-        + '编号或来源写错，整批不提交、原文保持可见。陈述必须完整保留否定、条件和前提。复述、确认“仍然如此”不算变化，写“无”，不要更新。\n'
+        + '“新增”不取代任何旧值，只有换了主体或换了事实才用“新增”。来源必须是本批【新增原文】里真实出现的编号，'
+        + '一条事实依赖多条原文时可以并排写多个来源（如 来源 raw_15、raw_17），每个来源都要真实存在；'
+        + '编号或来源写错，整批不提交、原文保持可见。陈述必须完整保留否定、条件和前提。复述、确认“仍然如此”不算变化，写“无”，不要更新。'
+        + '【当前锚点】为空时，把本批新出现的、后续仍需要的承诺、所有权、位置与条件各写一条；确实没有新事实才写“无”。'
+        + '更新一条时，检查【当前锚点】里其他活值是否与你的新状态矛盾；矛盾就一并更新或结束，不要留下两条相反的活值。'
+        + '区分客观事实、角色认知与未证猜测：角色的说法或未经证实的推测不要写成客观事实，陈述里保留“据…称/未证实”这类限定。\n'
         + RESOLVED_SECTION + '：只列出本轮原文明确解决、失效或被推翻的知情边界。用原条目的类型和正文。没有就写“无”。\n'
         + KNOWLEDGE_SECTION + '：列出当前仍然成立的知情边界——谁知道什么、谁明确不知道什么，'
         + '尤其是秘密、隐瞒和误解。每个角色只能有一行：把该角色当前知道与不知道的事实合并写进这一行，'
@@ -550,8 +554,39 @@ const ANCHOR_OPS = new Map([['新增', 'add'], ['添加', 'add'], ['增加', 'ad
     ['更新', 'update'], ['修改', 'update'], ['更正', 'update'],
     ['结束', 'end'], ['解决', 'end'], ['关闭', 'end']]);
 const ANCHOR_OP_TOKEN = /^([\u4e00-\u9fa5]{2,3})\s*([AaＡ]?\d{1,3})?$/;
-const SOURCE_FIELD = /^(?:来源|出处|source)\s*[:：]?\s*([A-Za-z0-9_\-]+)$/i;
+const SOURCE_FIELD = /^(?:来源|出处|source)\s*[:：]?\s*(.+)$/i;
 const SOURCE_ID = /^raw_\d+$/;
+/**
+ * A source cell can name more than one original message, because a fact is usually established by a
+ * conversation and not by one row. The separators are the ones a Chinese summarizer actually writes: the
+ * enumeration comma, the ASCII comma, the semicolon, the slash and whitespace. Every token is checked and
+ * every token is kept. One token outside the batch refuses the whole batch exactly as a single bad source
+ * does; a token that is not a raw_N at all is a malformed field rather than a silent head cell.
+ */
+const SOURCE_LIST_SPLIT = /[\s,，、;；/|+&]+/;
+const parseSourceList = value => String(value || '').split(SOURCE_LIST_SPLIT)
+    .map(token => token.trim()).filter(Boolean);
+/**
+ * A structurally clear operation the model wrote without the 【锚点变更】 heading.
+ *
+ * The heading is not the meaning. A line whose first cell is exactly one of the three operation words (with
+ * an optional alias) and which carries a real raw_N source is an operation even when the heading above it
+ * went missing; the conditional-update probe produced exactly that. The test is deliberately narrow: prose
+ * that merely mentions 更新 does not match, because the word has to be the whole cell and a source has to be
+ * present. Anything less certain stays prose, and the batch is then refused as a missing section - the one
+ * failure this recovery must not turn into a silent commit.
+ */
+export function looksLikeAnchorOperation(body) {
+    const parts = String(body || '').replace(/｜/g, '|').split('|').map(part => part.trim());
+    if (parts.length < 2) return false;
+    const token = ANCHOR_OP_TOKEN.exec(parts[0] || '');
+    if (!token || !ANCHOR_OPS.has(token[1])) return false;
+    return parts.slice(1).some(part => {
+        const named = SOURCE_FIELD.exec(part);
+        const tokens = parseSourceList(named ? named[1] : part);
+        return tokens.length > 0 && tokens.every(item => SOURCE_ID.test(item));
+    });
+}
 /**
  * The identity of an anchor or a boundary, and the reason it is normalised twice.
  *
@@ -656,6 +691,9 @@ export function parseAnchors(text) {
     let section = null;
     let seenSection = false;
     let anchorHead = false;
+    // Set when an operation is recognised without its heading. It changes the reported section name, never
+    // the validation: the line still goes through parseAnchorChanges and an invalid one still refuses the batch.
+    let inferredAnchor = false;
     const anchorLines = [];
     const resolved = [];
     const knowledge = [];
@@ -670,7 +708,14 @@ export function parseAnchors(text) {
             if (!trimmed) continue;
         }
         if (section && section !== ANCHOR_SECTION && /^【.+】$/.test(trimmed)) { section = null; continue; }
-        if (!section) { prose.push(line); continue; }
+        if (!section) {
+            // No heading has been seen yet. Only a structurally unmistakable operation is recovered here;
+            // everything else remains prose, which keeps "the section is missing" an honest failure.
+            const bare = (/^[-*·・]\s*(.+)$/.exec(trimmed) || [null, trimmed])[1].trim();
+            if (looksLikeAnchorOperation(bare)) { inferredAnchor = true; anchorLines.push(bare); continue; }
+            prose.push(line);
+            continue;
+        }
         const bullet = /^[-*·・]\s*(.+)$/.exec(trimmed);
         // Every nonempty anchor line must reach validation, including unbulleted or inline operations.
         // Other sections retain their existing list grammar.
@@ -687,7 +732,10 @@ export function parseAnchors(text) {
         else knowledge.push(item);
     }
     return { summary: prose.join('\n').trim(), anchorLines,
-        anchor_section: !anchorHead ? 'missing' : !anchorLines.length ? 'empty'
+        // "inferred" is a real operation list whose heading went missing. It is reported apart from "ok" so
+        // the panel can say the format drifted, and from "missing" so a clearance is not thrown away.
+        anchor_section: inferredAnchor && !anchorHead ? 'inferred' : !anchorHead ? 'missing'
+            : !anchorLines.length ? 'empty'
             : anchorLines.every(line => /^(无|（无）|none)$/i.test(line)) ? 'none' : 'ok',
         resolved, knowledge, sections: seenSection ? 'ok' : 'missing' };
 }
@@ -706,6 +754,34 @@ export function formatAnchors(anchors) {
 export function formatAnchorPrompt(plan) {
     return (plan || []).map(row => '- ' + row.alias + ' | ' + String(row.kind || '其他').trim()
         + (row.subject ? ' | ' + row.subject : '') + ' | ' + String(row.text || '').trim()).join('\n');
+}
+
+/**
+ * The one repair request a refused anchor section earns.
+ *
+ * A refused batch is not repaired by guessing at the intended record; it is repaired by telling the model
+ * what it wrote, which lines the host rejected and why, and the exact aliases and sources it may use. The
+ * valid parts of the answer are named as content to keep, because the failure mode this replaces was a model
+ * that threw the whole answer away and retried with "无" - the repair must not cost the batch its valid
+ * facts. The answer is still parsed and checked atomically, so a bad repair refuses the batch exactly as a
+ * bad first answer did.
+ */
+export function anchorRepairRequest({ responseText, errors = [], plan = [], sources = [], maxTokens = 600 }) {
+    const aliasText = formatAnchorPrompt(plan) || '无';
+    const sourceText = (sources || []).join('、') || '无';
+    const errorText = (errors || []).map(error => '- ' + String(error.line || '').slice(0, 120)
+        + ' → ' + String(error.reason || '') + (error.detail ? ' (' + error.detail + ')' : '')).join('\n') || '无';
+    const text = '你上一轮的四节答案里，【锚点变更】有不合法的行，整批因此没有提交。下面给出原答案和具体错误。\n'
+        + '请只修不合法的行，输出完整四节答案（摘要正文、' + ANCHOR_SECTION + '、' + RESOLVED_SECTION + '、' + KNOWLEDGE_SECTION + '）。\n'
+        + '原答案里合法的摘要正文、锚点变更与知情边界必须保留，不要删除、不要改写、不要漏掉，也不要新增原文没有的事实。\n'
+        + '编号只能取自【可用的当前锚点】；来源只能取自【本批可用来源】，一条事实可以并排写多个来源，用“、”分隔。\n'
+        + '目标不超过 ' + maxTokens + ' token。\n\n【可用的当前锚点】\n' + aliasText + '\n\n【本批可用来源】\n' + sourceText
+        + '\n\n【上一轮答案】\n' + String(responseText || '') + '\n\n【错误】\n' + errorText
+        + '\n\n格式：\n- 更新 A3 | 来源 raw_77 | 这条事实的新陈述\n- 新增 | 类型 | 主体 | 来源 raw_79 | 一句陈述\n'
+        + '- 结束 A5 | 来源 raw_80 | 为什么不再生效\n'
+        + '仍然无法修正的行删掉；如果确实没有任何变化，' + ANCHOR_SECTION + ' 写“无”。';
+    return { text, parts: { response_chars: String(responseText || '').length, errors: (errors || []).length,
+        total_chars: text.length } };
 }
 
 // The statement is kept exactly as the model wrote it. NFKC is applied where two strings are compared,
@@ -753,16 +829,24 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
         if (!op) { fail(line, 'unknown_op'); continue; }
         const alias = token[2] ? 'A' + String(token[2]).replace(/\D/g, '') : '';
         let sourceAt = -1;
-        let source = '';
+        let sourceCell = '';
         for (let i = 1; i < parts.length; i += 1) {
             const named = SOURCE_FIELD.exec(parts[i]);
-            if (named) { sourceAt = i; source = named[1]; break; }
-            if (SOURCE_ID.test(parts[i])) { sourceAt = i; source = parts[i]; break; }
+            if (named) { sourceAt = i; sourceCell = named[1]; break; }
+            const bare = parseSourceList(parts[i]);
+            if (bare.length && bare.every(token => SOURCE_ID.test(token))) { sourceAt = i; sourceCell = parts[i]; break; }
         }
         const head = parts.slice(1, sourceAt < 0 ? parts.length : sourceAt);
         const tail = sourceAt < 0 ? '' : parts.slice(sourceAt + 1).join(' | ');
-        if (!source) { fail(line, 'missing_source'); continue; }
-        if (!batchSources.has(source)) { fail(line, 'source_not_in_batch', source); continue; }
+        const sources = parseSourceList(sourceCell);
+        if (!sources.length) { fail(line, 'missing_source'); continue; }
+        const malformed = sources.find(token => !SOURCE_ID.test(token));
+        if (malformed) { fail(line, 'bad_source', malformed); continue; }
+        const foreign = sources.find(token => !batchSources.has(token));
+        if (foreign) { fail(line, 'source_not_in_batch', foreign); continue; }
+        // Canonical provenance: the tokens in the order the model wrote them, so a fact that depends on four
+        // rows keeps all four. `source` stays the joined string every existing reader already displays.
+        const source = sources.join('、');
         // Labels may contain punctuation or be long; extra/missing columns are a structural error.
         const adds = op === 'add' || (op === 'update' && !alias);
         if (adds ? head.length !== 2 : !(head.length === 0 || (op === 'update' && head.length === 2))) {
@@ -775,7 +859,7 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
             const subject = String(head[1] || '').trim();
             if (!statement.text) { fail(line, 'empty_statement'); continue; }
             changes.push({ op, line, kind: anchorKind(head[0]), subject, text: statement.text,
-                truncated: statement.truncated, source });
+                truncated: statement.truncated, source, sources });
             continue;
         }
         if (!alias) {
@@ -791,7 +875,7 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
             const subject = String(head[1] || '').trim();
             if (!statement.text) { fail(line, 'empty_statement'); continue; }
             changes.push({ op: 'add', line, kind: anchorKind(head[0]), subject, text: statement.text,
-                truncated: statement.truncated, source, reinterpreted: true });
+                truncated: statement.truncated, source, sources, reinterpreted: true });
             continue;
         }
         const target = byAlias.get(alias);
@@ -803,10 +887,10 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
             if (!statement.text) { fail(line, 'empty_statement'); continue; }
             changes.push({ op, line, alias, id: String(target.id), revision: Number(target.revision) || 0,
                 kind: head.length ? anchorKind(head[0]) : '', subject, text: statement.text,
-                truncated: statement.truncated, source });
+                truncated: statement.truncated, source, sources });
         } else {
             changes.push({ op, line, alias, id: String(target.id), revision: Number(target.revision) || 0,
-                reason: statement.text, source });
+                reason: statement.text, source, sources });
         }
     }
     return { changes, errors };
@@ -906,9 +990,12 @@ const restates = (item, change) => sameStatement(item.text, change.text)
 /**
  * How many labels carry more than one live record.
  *
- * This is the symptom a missed "更新" leaves behind, so it is derived from the live list wherever it is
- * reported rather than read out of the last committed batch: a ledger migrated from before the change
- * protocol never went through a merge, and its collisions are exactly the ones worth showing.
+ * This is a count of records that share a label. It is not a contradiction detector: two live records under
+ * one label may agree, may describe different aspects of one subject, or may contradict each other, and a
+ * count cannot tell those apart. It stays reported because a missed "更新" is one cause of a shared label,
+ * and it is derived from the live list wherever it is shown rather than read out of the last committed
+ * batch: a ledger migrated from before the change protocol never went through a merge, and its shared
+ * labels are exactly the ones worth showing.
  */
 export function countAnchorCollisions(active) {
     const labels = new Map();
@@ -961,7 +1048,8 @@ export function mergeAnchors(previous, changes, { plan = [], at = Date.now() } =
                 continue;
             }
             const record = { id: newAnchorId(change, live), kind: change.kind, text: change.text,
-                subject: change.subject || '', source: change.source, revision: 1,
+                subject: change.subject || '', source: change.source,
+                sources: change.sources || (change.source ? [change.source] : []), revision: 1,
                 first_seen: at, last_confirmed: at, passes: 1, unconfirmed: 0 };
             live.set(record.id, record);
             stats.added += 1;
@@ -983,15 +1071,16 @@ export function mergeAnchors(previous, changes, { plan = [], at = Date.now() } =
         if (change.op === 'update') {
             superseded.push({ id: before.id, kind: before.kind, subject: before.subject || '', text: before.text,
                 source: before.source || '', superseded_by: before.id, superseded_at: at,
-                replaced_by_source: change.source, reason: 'explicit update' });
+                replaced_by_source: change.source, replaced_by_sources: change.sources || [], reason: 'explicit update' });
             live.set(id, { ...before, kind: change.kind || before.kind,
                 subject: change.subject || before.subject || '', text: change.text, source: change.source,
+                sources: change.sources || before.sources || (change.source ? [change.source] : []),
                 revision: (Number(before.revision) || 0) + 1, last_confirmed: at, unconfirmed: 0,
                 passes: (Number(before.passes) || 0) + 1 });
             stats.updated += 1;
         } else {
             resolved.push({ id: before.id, kind: before.kind, subject: before.subject || '', text: before.text,
-                source: change.source, reason: change.reason || '', resolved_at: at });
+                source: change.source, sources: change.sources || [], reason: change.reason || '', resolved_at: at });
             live.delete(id);
             stats.ended += 1;
         }

@@ -7,6 +7,15 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- `runtime-precheck.mjs`: a live preflight that compares the repository, the deployed directory and the
+  function sources actually loaded in the page, and fails closed when they differ. `deploy-live.mjs --check`
+  compares only the disk, and a page loaded before a deploy keeps the previous module.
+- `replay-anchor-evidence.mjs`: replays a captured acceptance run's frozen summary requests and responses
+  through the current parser with no model call, so a protocol change can be checked before paying for
+  another story.
+- Continuity anchors accept several original rows as the source of one fact (`来源 raw_15、raw_17`,
+  comma, semicolon or slash lists). Every token is validated against the batch and every token is kept.
+
 - `recall-baseline.mjs`: the committed ruler for archive cost and lexical recall, measured on real
   chats. It also takes a hand-written question set (`--paraphrases`), which is the instrument the
   dense-retrieval decision waits on. Results and limits are in ADR-0004 and ADR-0006.
@@ -49,6 +58,17 @@ belongs in Git commits and pull requests.
 - `check-syntax.mjs`: the syntax gate discovers the files it parses instead of using a hand-written list.
 
 ### Changed
+
+- A refused `【锚点变更】` section earns exactly one targeted repair that shows the model its own answer and
+  the rejected lines, keeps the valid content, and is re-checked atomically. Its token cost is reported apart
+  from the batch request.
+- An unmistakable anchor operation written without its heading is recovered and reported as `inferred`;
+  uncertain text still refuses the batch.
+- The summary prompt teaches the multi-source shape and adds three ledger checks: extract the needed facts when
+  the ledger is empty, check other live values for a contradiction when updating, and keep character belief and
+  unproven guess distinct from objective fact. None of them mandates an add.
+- The `anchors_same_subject` warning now states that it counts records sharing a label; it is not a
+  contradiction detector.
 
 - **Anchors change by numbered operation.** The summarizer is shown the live ledger with a short id per
   line (`- A1 | 类型 | 主体 | 陈述`) and answers with a change list instead of restating everything:
