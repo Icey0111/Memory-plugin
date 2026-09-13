@@ -14,6 +14,8 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | node runtime-precheck.mjs | Live preflight: repo vs deployed disk vs the function sources actually loaded in the page. Exit 0 only when all three agree, 1 when stale, 2 when unknown |
 | node replay-anchor-evidence.mjs | Replay of the 421757c acceptance requests and responses through the current parser with no model call. Exits 0 with a note when the local evidence directory is absent |
 | node eval-anchor-protocol.mjs --out report.json | Opt-in five-call model probe through an open host's summary connection and local CDP endpoint; saves synthetic inputs, raw responses, parsed operations and ledgers without writing chat state. Structural passes require manual semantic review |
+| node acceptance-longchat.mjs --turns <file> --out <dir> | Reusable long-chat acceptance driver. Requires `node runtime-precheck.mjs` to exit 0 first; imports the versioned capture module from the page and refuses an `--out` inside the repository, so chat text and raw responses stay out of it |
+| node test-acceptance-capture.mjs | The capture boundary with a simulated transport: both the summary and its targeted repair record request, response and elapsed, and two consecutive turns keep separate injected blocks. No model call |
 | node test-summary-diagnostics.mjs | Failure stages and the retained record, the two state versions, injection recorded only after the prompt is set, the assembly-across-a-commit case, the five warning conditions, and the input-budget default |
 | node test-summary-contract.mjs | The batching contract: the floor horizon, committed vs injected coverage, one-entry-per-message requests, the cost of the text that is sent, and the difference between a local budget block and an interface failure |
 | node recall-baseline.mjs | Original-text retrieval and packing measurement |
@@ -39,8 +41,10 @@ output cap, prompt and completion usage, the raw body and the actual commit resu
 the repair request as its own call kind - the repair prompt does not carry the summary marker, so a marker-only
 test drops it, which is how the 421757c long-chat run lost the repair's raw request, response and elapsed time.
 The exact injected state block must be saved for **every** turn, not only the batch and final turns, or a probe
-turn's reference text is overwritten before it is archived. A field that was not captured is reported as unknown;
-a finish reason is never inferred from a token count; reasoning text is not stored.
+turn's reference text is overwritten before it is archived. The runner is versioned (`acceptance-longchat.mjs`
+with `acceptance-capture.js`) and its record path is proved offline by `test-acceptance-capture.mjs`; the turns
+file, the output directory and credentials stay outside the repository. A field that was not captured is
+reported as unknown; a finish reason is never inferred from a token count; reasoning text is not stored.
 
 A batch refused for its anchor section is retried once by the host with a targeted repair that shows the model
 its own answer and the rejected lines. The repair is a second call with its own recorded cost; a failed repair

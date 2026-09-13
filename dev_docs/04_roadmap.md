@@ -40,13 +40,22 @@ That is the floor, not a clearance. The run does not show that the system is fre
 that plot continuation is reliable. The character overrode the staged script from about floor 10, so the
 fact-retention half of the test is only partly valid; one summary body contradicted its own anchors; and the
 run's own record was incomplete, because the repair call's raw request and elapsed time were dropped and probe
-turns did not persist their injected text. The harness now records both and `02_development.md` requires it.
+turns did not persist their injected text. The record chain is now versioned and proved offline:
+`acceptance-capture.js` and `acceptance-longchat.mjs`, with `test-acceptance-capture.mjs`; the chat text and
+raw responses they produce stay outside the repository.
 
 The body-level negation-scope probe is the follow-up: three materials x two prefixes x three runs, frozen
-before the first call. The B4 compression did not reproduce - the identical frozen request kept the real place
-real in every replay - and the one added sentence changed none of the real-place outcomes while replacing one
-prose over-affirmation with one internal contradiction on the denied-place material. The sentence is not added
-(ADR-0030), and the body-level compression stays a recorded, low-frequency risk.
+before the first call. The B4 compression was observed **once**, and three frozen replays of the identical
+request afterwards did not reproduce it; neither the cause nor the rate is known, and the original failure was
+selected after the fact, so it cannot be pooled with the replays as an error rate. The one added sentence
+changed none of the real-place outcomes while replacing one prose over-affirmation with one internal
+contradiction on the denied-place material. The sentence is not added (ADR-0030), and the body-level
+compression stays a recorded, low-frequency risk.
+
+The baseline stays usable, with semantic reliability still limited. Known cases retained: the staged amber-glass
+replacement at T24 is lost after the character denies it and no anchor carries it; the staged tower, key, Cora
+and Tomas survive only as denials; one summary body and its own anchors disagree about the black reef and both
+are injected; and three floors were still pending at floor 40.
 
 ## Completed summary-diagnostics work
 

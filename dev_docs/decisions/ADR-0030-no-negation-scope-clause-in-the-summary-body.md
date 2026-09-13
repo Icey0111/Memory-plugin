@@ -26,6 +26,8 @@ place existence, who went, whether the departure was agreed, and what is only th
   repaired by prompt text, by a second reviewer model, by automatic semantic merging, or by a new refusal rule.
 - The experiment is the evidence for the rejection, and it is reproducible: `build-spec.mjs` and `run-negation.mjs`
   in the ignored acceptance directory freeze and replay the three materials.
+- The reusable acceptance runner is versioned: `acceptance-longchat.mjs` with `acceptance-capture.js`. Chat text,
+  raw model responses and credentials stay outside the repository; the loader refuses an `--out` inside it.
 
 ## Evidence
 
@@ -36,10 +38,11 @@ character denies the place itself.
 
 - On M1 and M2 both prefixes kept the place real in all six replays each. The added clause changed none of the
   real-place outcomes, so there was nothing for it to fix.
-- The B4 body-level compression itself did not reproduce. The identical frozen prompt, replayed three times,
-  scoped the denial to the agreement every time. Including the original long-chat sample, the old prefix is
-  wrong on this prompt in one of four samples: a sampling event, not a reproducible prompt deficiency at this
-  sample size.
+- The B4 body-level compression did not reproduce. The identical frozen prompt, replayed three times,
+  scoped the denial to the agreement every time. The original failure was selected after the fact - it is the
+  case that prompted the probe - so it must not be pooled with the replays as an error rate. The accurate
+  statement is: one failure was observed once, three frozen replays afterwards did not reproduce it, and
+  neither the cause nor the rate is known.
 - On M3 the clause changed the failure mode without removing it. The old prefix once wrote in the body that the
   denied place was real while its own ledger said the opposite; the new prefix once produced both readings in
   one answer. This is the uniform-'preserve everything' risk the clause was meant to avoid.
@@ -60,7 +63,12 @@ character denies the place itself.
 
 - `node test-anchor-repair.mjs` pins the two prompt openers the acceptance harness keys on: the summary request
   keeps '`你是剧情续接摘要器`' and the repair request keeps '`你上一轮答案的`'. The repair is not a summary and
-  never carried the summary marker, which is how the 421757c long-chat run lost its raw request.
+  never carried the summary marker, which is how the 421757c long-chat run lost its raw request. That test only
+  protects the openers.
+- `node test-acceptance-capture.mjs` is what proves the runner actually captures: it drives the versioned
+  boundary with a simulated transport and asserts that the summary call and the repair call both record request,
+  response and elapsed time, that the story prompt is counted but never captured, and that two consecutive turns
+  keep separate injected blocks.
 - The long-chat result is recorded in `04_roadmap.md` at the strength the run supports: four batches ended
   committed, hidden original floors were recalled, and the run is not evidence that the system is free of
   structural problems or that plot continuation is reliable, because the character overrode the staged script

@@ -7,6 +7,12 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- `acceptance-capture.js` and `acceptance-longchat.mjs`: a versioned, reusable long-chat acceptance runner.
+  The capture boundary records the raw request, response and elapsed time of the summary call *and* of its
+  targeted repair - the repair prompt does not carry the summary marker, which is how the 421757c run lost it -
+  and it saves the injected state block for every turn instead of only at batch boundaries. Chat text, raw
+  responses and credentials stay outside the repository; `test-acceptance-capture.mjs` proves the boundary
+  offline with a simulated transport.
 - `runtime-precheck.mjs`: a live preflight that compares the repository, the deployed directory and the
   function sources actually loaded in the page, and fails closed when they differ. `deploy-live.mjs --check`
   compares only the disk, and a page loaded before a deploy keeps the previous module.
