@@ -76,12 +76,19 @@ is the point.
 
 ## Consequences and measured limits
 
-- **Cost.** On the same ledger and the same 600-token budget, the instruction block grows from 678 to 998
-  characters (+320, +47%) and the frozen table from 642 to 682 (+40 for 8 live values). The batch text and
-  the injected block are unchanged. The summary budget stays at 600 and the input budget at 40000: the last
-  live run's four batches measured 26,239 / 31,524 / 32,921 / 26,951 characters against a 40000 budget, so
-  the prompt has room, and the one failure that run recorded was an output overrun (665 > 600), which this
-  change does not touch.
+- **Cost, and the run that measured it.** On the same ledger and the same 600-token budget, the
+  instruction block grows from 678 to 744 characters (+66, +10%) and the frozen table from 642 to 682 (+40 for
+  8 live values). The batch text and the injected block are unchanged.
+  This number is load-bearing, and a live run is why. The first version of this text was 1,045 characters. On
+  a 40-turn acceptance run the second batch measured 37,509 characters of original text, so the request was
+  40,047 against a 40,000-character budget: **47 characters over, and the pipeline blocked**. That batch was
+  re-checked 42 times over the next 21 turns, the summary never advanced past floor 10, and 30 floors stayed
+  unfolded. The old protocol's request on the same batch would have been 39,680. The instruction block is
+  therefore cut to 744 characters - the sentence asking the model to keep the subject stable was removed
+  because a label is no longer an identity, and the separate worked example was removed because the three
+  format lines already carry a concrete id, a concrete statement and a concrete source. The batch is 93% of
+  the request, and the pipeline's own input budget is what sets the ceiling. The summary budget stays at 600
+  and the input budget at 40000.
 - **The model is load-bearing.** The host can prove that an update named a record it was shown. It cannot
   prove that the cited source supports the sentence, or that the new sentence still carries the clause the
   old one carried. The instruction asks for conditions, negations and premises to be kept and gives an

@@ -34,8 +34,14 @@ long-run narrative acceptance are a separate task; this retrieval iteration does
   request. A refusal commits nothing and hides nothing.
 - The near-verbatim similarity threshold and the subject-based supersession are both deleted, and the label
   keeps a "/" suffix: the same rule that merged "心脏石植入者/制造者" also merged "刀/位置" with "刀/所有者".
-- Measured cost of the change on the same ledger and the same 600-token budget: instructions 678 -> 998
+- Measured cost of the change on the same ledger and the same 600-token budget: instructions 678 -> 744
   characters, frozen table 642 -> 682 for 8 live values. The injected block and the batch text are unchanged.
+- **Measured live, and corrected because of it:** the first version of the instruction block was 1,045
+  characters, which took one 10-turn batch of 37,509 characters to a 40,047-character request against the
+  40,000 budget. The batch was then refused 42 times over 21 turns and the summary never advanced past floor
+  10. The batch text is 93% of the request, so a protocol change of a few hundred characters is enough to
+  block a chat that was already near the input budget. The block is now 744 characters and the change is
+  +66 characters over the old protocol.
 
 ### What this work has not established
 
