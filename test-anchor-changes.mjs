@@ -305,7 +305,7 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.equal(recovered.warnings.some(w => /锚点变更/.test(w)), false, 'so it is not a standing warning');
 }
 
-// --- 13. a missing section keeps the anchors, and does not pretend they were re-confirmed -----------
+// --- 13. a missing section refuses coverage and leaves the ledger unchanged -------------------------
 {
     const h = host();
     for (let n = 1; n <= 10; n += 1) h.ctx.chat.push(...pair(n));
@@ -319,9 +319,11 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     reply = '局面：大厅，一切照旧。';
     await updateNarrative(h.ctx, h.services, { force: true });
     const report = readNarrativeReport(h.ctx);
-    assert.equal(report.summary_failures, 0, 'a missing section is a format slip about anchors, not a failure');
+    assert.equal(report.summary_failures, 1, 'a missing required section refuses the batch');
+    assert.equal(report.summary_covered_floors, 10);
+    assert.equal(report.summary_last_error.anchor_errors[0].reason, 'missing_section');
     assert.equal(report.anchors_active, 1, 'silence is not a resolution');
-    assert.equal(report.anchors_unconfirmed, 1);
+    assert.equal(report.anchors_unconfirmed, 0);
     assert.equal(h.store().narrative_anchors.active[0].passes, 1, 'and it is not counted as re-confirmed');
     assert.equal(h.store().narrative_anchors.active[0].last_confirmed, first.last_confirmed,
         'its confirmation time does not move');
@@ -385,6 +387,59 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.match(parkedWarning, /结束 A/,
         'and tells the operator the operation that actually resolves one, not the retired 【已解决】 spelling');
     assert.doesNotMatch(parkedWarning, /【已解决】/);
+}
+
+// --- 16. presentation must not turn an operation into zero changes ---------------------------------
+{
+    const plan = planAnchors([rec('k', '位置', '刀', '刀在井底。')]);
+    const operation = '更新 A1 | 来源 raw_77 | 刀已放到井边。';
+    for (const body of ['\n' + operation, operation, '：' + operation, '\n- ' + operation]) {
+        const parsed = parseAnchors('局面。\n【锚点变更】' + body + '\n【知情边界】\n- 无');
+        const checked = parseAnchorChanges(parsed.anchorLines, { plan, batchSources: new Set(['raw_77']) });
+        assert.equal(parsed.anchor_section, 'ok');
+        assert.deepEqual(checked.errors, []);
+        assert.equal(checked.changes[0].id, 'k');
+    }
+    assert.equal(parseAnchors('局面。').anchor_section, 'missing');
+    assert.equal(parseAnchors('局面。\n【锚点变更】\n【知情边界】\n- 无').anchor_section, 'empty');
+    assert.equal(parseAnchors('局面。\n【锚点变更】无').anchor_section, 'none');
+    const malformed = parseAnchors('局面。\n【锚点变更】\n我改了刀的位置。');
+    assert.equal(parseAnchorChanges(malformed.anchorLines).errors[0].reason, 'unknown_op');
+    assert.equal(parseAnchorChanges(['无', operation], { plan, batchSources: new Set(['raw_77']) })
+        .errors[0].reason, 'mixed_none');
+}
+
+// --- 17. labels are display text; complete conditions survive past the former 240-character cap -----
+{
+    const previous = { active: [rec('k', '承诺', '约定', '旧约定仍有效。')] };
+    const plan = planAnchors(previous.active);
+    const label = '在北侧旧城门外等待救援的约定：甲、乙与丙的条件';
+    const statement = '双方需要遵守约定。'.repeat(35) + '但只有乙释放人质后才交还钥匙，否则不得交付。';
+    const checked = parseAnchorChanges(['更新 A1 | 承诺 | ' + label + ' | 来源 raw_7 | ' + statement],
+        { plan, batchSources: new Set(['raw_7']) });
+    assert.deepEqual(checked.errors, []);
+    const applied = mergeAnchors(previous, checked.changes, { plan });
+    assert.equal(applied.ledger.active[0].text, statement);
+    assert.equal(applied.ledger.active[0].subject, label);
+    assert.equal(applied.ledger.superseded[0].text, '旧约定仍有效。');
+    const malformed = parseAnchorChanges(['新增 | 承诺 | 多余 | 标签 | 来源 raw_7 | 条件。'],
+        { batchSources: new Set(['raw_7']) });
+    assert.equal(malformed.errors[0].reason, 'bad_fields');
+}
+
+// --- 18. a nonempty unreadable section and an empty section both leave the whole batch visible ------
+for (const [body, reason] of [['', 'empty_section'], ['我改了刀的位置。', 'unknown_op']]) {
+    const h = host({ summarize: async () => '局面。\n【锚点变更】\n' + body + '\n【知情边界】\n- 无' });
+    for (let n = 1; n <= 10; n += 1) h.ctx.chat.push(...pair(n));
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const report = readNarrativeReport(h.ctx);
+    assert.equal(report.summary_covered_floors, 0);
+    assert.equal(report.folded_floors, 0);
+    assert.equal(report.summary_last_error.anchor_errors[0].reason, reason);
+    h.services.summarize = async () => '局面。\n【锚点变更】无';
+    await updateNarrative(h.ctx, h.services, { force: true });
+    assert.equal(readNarrativeReport(h.ctx).summary_covered_floors, 10);
+    assert.equal(readNarrativeReport(h.ctx).anchors_ops.section, 'none');
 }
 
 console.log('anchor-changes: ok');

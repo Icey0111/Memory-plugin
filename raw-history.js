@@ -451,7 +451,7 @@ export function summaryRequest(previous, messages, maxTokens, anchors, knowledge
         // concrete source.
         + '编号只能取自【当前锚点】；没有变化的锚点不要照抄，不写就等于保持原样。同一条可变事实的新状态必须用“更新”，'
         + '“新增”不取代任何旧值，只有换了主体或换了事实才用“新增”。来源必须是本批【新增原文】里真实出现的编号；'
-        + '编号或来源写错，整批不提交、原文保持可见。陈述必须完整保留否定、条件和前提。没有变化就写“无”。\n'
+        + '编号或来源写错，整批不提交、原文保持可见。陈述必须完整保留否定、条件和前提。复述、确认“仍然如此”不算变化，写“无”，不要更新。\n'
         + RESOLVED_SECTION + '：只列出本轮原文明确解决、失效或被推翻的知情边界。用原条目的类型和正文。没有就写“无”。\n'
         + KNOWLEDGE_SECTION + '：列出当前仍然成立的知情边界——谁知道什么、谁明确不知道什么，'
         + '尤其是秘密、隐瞒和误解。每个角色只能有一行：把该角色当前知道与不知道的事实合并写进这一行，'
@@ -583,15 +583,6 @@ const anchorKey = item => {
 export const MAX_SUPERSEDED = 40;
 /** How many retired records one end operation keeps. Same window, smaller: resolutions are rarer. */
 export const MAX_RESOLVED = 20;
-const ANCHOR_SUBJECT_MAX = 20;
-// A label is an identifier, not a phrase: punctuation in the label field means the line is a statement that
-// happens to contain pipes, and accepting it as a label would silently rename a fact.
-const ANCHOR_SUBJECT_FORBIDDEN = /[。！？；：，、,.:!?;\n]/;
-/**
- * One statement is one sentence or two, not an essay. The cap is reported when it bites - a truncated
- * condition is exactly the loss this protocol exists to prevent, so it is counted rather than assumed away.
- */
-const ANCHOR_TEXT_MAX = 240;
 /**
  * The label as a comparable string. It is a label, not an identity.
  *
@@ -669,19 +660,22 @@ export function parseAnchors(text) {
     const resolved = [];
     const knowledge = [];
     for (const line of lines) {
-        const trimmed = line.trim();
+        let trimmed = line.trim();
         const head = SECTION_HEADS.find(value => trimmed.startsWith(value));
         if (head) {
             section = isAnchorHead(head) ? ANCHOR_SECTION : head;
             if (isAnchorHead(head)) anchorHead = true;
             seenSection = true;
-            continue;
+            trimmed = trimmed.slice(head.length).replace(/^\s*[:：]\s*/, '').trim();
+            if (!trimmed) continue;
         }
-        if (section && /^【.+】$/.test(trimmed)) { section = null; continue; }
+        if (section && section !== ANCHOR_SECTION && /^【.+】$/.test(trimmed)) { section = null; continue; }
         if (!section) { prose.push(line); continue; }
         const bullet = /^[-*·・]\s*(.+)$/.exec(trimmed);
-        if (!bullet) continue;
-        const body = bullet[1].trim();
+        // Every nonempty anchor line must reach validation, including unbulleted or inline operations.
+        // Other sections retain their existing list grammar.
+        if (!bullet && section !== ANCHOR_SECTION) continue;
+        const body = (bullet ? bullet[1] : trimmed).trim();
         if (!body) continue;
         // "无" is a valid anchor answer - it means nothing changed - but an empty knowledge line is not a
         // boundary, so it is dropped there instead.
@@ -693,7 +687,8 @@ export function parseAnchors(text) {
         else knowledge.push(item);
     }
     return { summary: prose.join('\n').trim(), anchorLines,
-        anchor_section: anchorHead ? 'ok' : 'missing',
+        anchor_section: !anchorHead ? 'missing' : !anchorLines.length ? 'empty'
+            : anchorLines.every(line => /^(无|（无）|none)$/i.test(line)) ? 'none' : 'ok',
         resolved, knowledge, sections: seenSection ? 'ok' : 'missing' };
 }
 
@@ -718,7 +713,7 @@ export function formatAnchorPrompt(plan) {
 // to the sentence the character will read, and this protocol exists to stop silent edits.
 const anchorStatement = value => {
     const body = String(value || '').trim();
-    return { text: body.slice(0, ANCHOR_TEXT_MAX), truncated: body.length > ANCHOR_TEXT_MAX };
+    return { text: body, truncated: false };
 };
 const anchorKind = value => String(value || '').replace(/^[\[【]/, '').replace(/[\]】]$/, '').trim()
     .slice(0, 20) || '其他';
@@ -744,10 +739,15 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
     const errors = [];
     const targeted = new Set();
     const fail = (line, reason, detail) => errors.push({ line, reason, detail: detail || '' });
+    const nonempty = (lines || []).map(line => String(line).trim()).filter(Boolean);
+    if (nonempty.some(line => /^(无|（无）|none)$/i.test(line))
+        && nonempty.some(line => !/^(无|（无）|none)$/i.test(line))) {
+        fail(nonempty.join('\n'), 'mixed_none');
+    }
     for (const raw of lines || []) {
         const line = String(raw || '').trim();
         if (!line || /^(无|（无）|none)$/i.test(line)) continue;
-        const parts = line.replace(/｜/g, '|').split('|').map(part => part.trim()).filter(Boolean);
+        const parts = line.replace(/｜/g, '|').split('|').map(part => part.trim());
         const token = ANCHOR_OP_TOKEN.exec(parts[0] || '');
         const op = token ? ANCHOR_OPS.get(token[1]) : null;
         if (!op) { fail(line, 'unknown_op'); continue; }
@@ -763,14 +763,16 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
         const tail = sourceAt < 0 ? '' : parts.slice(sourceAt + 1).join(' | ');
         if (!source) { fail(line, 'missing_source'); continue; }
         if (!batchSources.has(source)) { fail(line, 'source_not_in_batch', source); continue; }
+        // Labels may contain punctuation or be long; extra/missing columns are a structural error.
+        const adds = op === 'add' || (op === 'update' && !alias);
+        if (adds ? head.length !== 2 : !(head.length === 0 || (op === 'update' && head.length === 2))) {
+            fail(line, 'bad_fields'); continue;
+        }
         const statement = anchorStatement(tail);
         if (op === 'add') {
             if (alias) { fail(line, 'alias_not_allowed', alias); continue; }
-            if (!head.length) { fail(line, 'missing_kind'); continue; }
+            if (!head[0]) { fail(line, 'missing_kind'); continue; }
             const subject = String(head[1] || '').trim();
-            if (subject.length > ANCHOR_SUBJECT_MAX || ANCHOR_SUBJECT_FORBIDDEN.test(subject)) {
-                fail(line, 'bad_subject', subject); continue;
-            }
             if (!statement.text) { fail(line, 'empty_statement'); continue; }
             changes.push({ op, line, kind: anchorKind(head[0]), subject, text: statement.text,
                 truncated: statement.truncated, source });
@@ -785,11 +787,8 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
             // verified may retire a value", is untouched, and a *valid* alias pointing at the wrong record
             // stays exactly as strict as it was.
             if (op === 'end') { fail(line, 'alias_required'); continue; }
-            if (!head.length) { fail(line, 'missing_kind'); continue; }
+            if (!head[0]) { fail(line, 'missing_kind'); continue; }
             const subject = String(head[1] || '').trim();
-            if (subject.length > ANCHOR_SUBJECT_MAX || ANCHOR_SUBJECT_FORBIDDEN.test(subject)) {
-                fail(line, 'bad_subject', subject); continue;
-            }
             if (!statement.text) { fail(line, 'empty_statement'); continue; }
             changes.push({ op: 'add', line, kind: anchorKind(head[0]), subject, text: statement.text,
                 truncated: statement.truncated, source, reinterpreted: true });
@@ -801,9 +800,6 @@ export function parseAnchorChanges(lines, { plan = [], batchSources = new Set() 
         targeted.add(String(target.id));
         if (op === 'update') {
             const subject = String(head[1] || '').trim();
-            if (subject.length > ANCHOR_SUBJECT_MAX || ANCHOR_SUBJECT_FORBIDDEN.test(subject)) {
-                fail(line, 'bad_subject', subject); continue;
-            }
             if (!statement.text) { fail(line, 'empty_statement'); continue; }
             changes.push({ op, line, alias, id: String(target.id), revision: Number(target.revision) || 0,
                 kind: head.length ? anchorKind(head[0]) : '', subject, text: statement.text,

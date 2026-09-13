@@ -107,7 +107,9 @@ const FAILURE_STAGES = { transport: '传输或服务商错误', empty_body: '接
 /** One short phrase per refused operation, so the panel says which rule was broken and not just that one was. */
 const ANCHOR_ERROR_TEXT = { unknown_op: '不是“新增/更新/结束”三种写法之一', alias_required: '“更新/结束”没有写编号',
     unknown_alias: '编号不在本批提供的【当前锚点】里', alias_not_allowed: '“新增”不应带编号',
-    missing_kind: '“新增”没有写类型', bad_subject: '主体不是短标识（过长或含标点）',
+    missing_kind: '“新增”没有写类型', bad_fields: '类型、主体或来源字段数量不符',
+    missing_section: '缺少【锚点变更】章节', empty_section: '锚点章节为空；没有变化请明确写“无”',
+    mixed_none: '同一章节同时写了“无”和变更内容',
     missing_source: '没有写“来源 raw_N”', source_not_in_batch: '来源不在本批【新增原文】里',
     empty_statement: '没有写陈述', duplicate_target: '同一条记录在本批被改了两次',
     stale_target: '这条记录在本批生成后已被结束', stale_version: '这条记录在本批生成后已被改动' };
@@ -348,7 +350,11 @@ export function updateNarrative(ctx, services) {
             // the floors they describe - and a refusal never falls back to guessing which record was meant.
             let anchors = live.narrative_anchors;
             let anchorOps = null;
-            if (parsed.anchor_section === 'ok') {
+            if (parsed.anchor_section === 'missing' || parsed.anchor_section === 'empty') {
+                throw tagged('anchor_ops', new Error('锚点变更章节缺失或为空；本批不提交、不隐藏原文。'),
+                    { response: attemptResponse, anchor_errors: [{ line: '', reason: parsed.anchor_section + '_section' }] });
+            }
+            if (parsed.anchor_section === 'ok' || parsed.anchor_section === 'none') {
                 const checked = parseAnchorChanges(parsed.anchorLines,
                     { plan: request.anchors, batchSources: new Set(batch.sources) });
                 if (checked.errors.length) throw tagged('anchor_ops',
@@ -362,16 +368,10 @@ export function updateNarrative(ctx, services) {
                         + '）；本批不提交、不隐藏原文。'),
                     { response: attemptResponse, anchor_errors: applied.errors });
                 anchors = applied.ledger;
-                anchorOps = { ...applied.stats, at: Date.now(), batch_id: batchIdOf(batch) };
+                anchorOps = { ...applied.stats, section: parsed.anchor_section, at: Date.now(), batch_id: batchIdOf(batch) };
             }
             live.narrative_summary = { version: 1, fixed_batch: true, text: parsed.summary, covered: before };
-            // A missing section is not a resolution: without it the anchors are left exactly as they
-            // were, because dropping them on a format slip would lose the facts this feature exists
-            // to protect.
-            if (parsed.anchor_section === 'ok') live.narrative_anchors = anchors;
-            else if (previousAnchors?.active?.length) live.narrative_anchors = { ...previousAnchors,
-                active: previousAnchors.active.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
-                parse: 'missing', updated_at: Date.now() };
+            live.narrative_anchors = anchors;
             if (parsed.sections === 'ok') live.narrative_knowledge = mergeKnowledge(previousKnowledge, parsed);
             else if (previousKnowledge?.entries?.length) live.narrative_knowledge = { ...previousKnowledge,
                 entries: previousKnowledge.entries.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),

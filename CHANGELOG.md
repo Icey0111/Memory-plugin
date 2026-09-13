@@ -108,6 +108,11 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- Anchor operations without bullets or on a section heading's line are no longer silently skipped.
+  Missing/empty required anchor sections refuse summary coverage; explicit no-change answers are reported
+  separately. Long or punctuated labels are accepted, malformed fields still refuse the batch, and new
+  anchor statements retain their full conditions instead of being cut at 240 characters.
+
 - Summary cadence is now a strict complete-turn batch: wait for N turns, summarize exactly N, then hide
   only those complete turns. Backlogs cannot enlarge a batch; input limits cannot cut it mid-message.
   New messages stay outside an in-flight request. Misaligned legacy coverage is invalidated and unfolded.

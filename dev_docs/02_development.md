@@ -8,7 +8,8 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | npm test | Offline regressions, including host adapters |
 | node test-summary-lifecycle.mjs | Cadence, concurrent reads, joint invalidation and summary transport |
 | node test-anchor-budget.mjs | The never-inject-a-retired-statement rule, even round-robin selection, parked-value reporting, a slash label that keeps its content, a legacy ledger migrated as it stands, and the legacy anchor-budget notice |
-| node test-anchor-changes.mjs | The numbered change protocol: the frozen alias table, the three operations, an unknown alias, a source outside the batch, a duplicate target, a stale version and a changed batch each refused without committing or hiding, an exact restatement folded, and the diagnostics that report the batch |
+| node test-anchor-changes.mjs | Numbered operations, atomic refusal, missing/empty/explicit-none sections, inline and unbulleted operations, malformed fields, long labels, full conditions beyond 240 characters, frozen references and batch diagnostics |
+| node eval-anchor-protocol.mjs --out report.json | Opt-in five-call model probe through an open host's summary connection and local CDP endpoint; saves synthetic inputs, raw responses, parsed operations and ledgers without writing chat state. Structural passes require manual semantic review |
 | node test-summary-diagnostics.mjs | Failure stages and the retained record, the two state versions, injection recorded only after the prompt is set, the assembly-across-a-commit case, the five warning conditions, and the input-budget default |
 | node test-summary-contract.mjs | The batching contract: the floor horizon, committed vs injected coverage, one-entry-per-message requests, the cost of the text that is sent, and the difference between a local budget block and an interface failure |
 | node recall-baseline.mjs | Original-text retrieval and packing measurement |

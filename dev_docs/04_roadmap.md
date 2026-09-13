@@ -2,78 +2,32 @@
 
 ## Current decision
 
-Keep the architecture: versioned raw history, a compact continuity snapshot, original-chunk retrieval,
-optional reranking and budgeted quotations. The summary is not an embedding document. Per-message
-summaries, a fact-generation pipeline and a summary pyramid would duplicate authority without fixing
-the measured query and packing failures.
+Keep versioned raw history, a compact continuity snapshot, original-chunk retrieval, optional reranking
+and budgeted quotations. The summary is not an embedding document. The default summary cadence remains
+ten complete user turns (normally twenty message rows); its frozen input and successful coverage must agree.
 
-The default remains ten completed user turns (normally twenty message rows). Summary quality and
-long-run narrative acceptance are a separate task; this retrieval iteration does not establish them.
+## Anchor changes and acceptance limits
 
-## Completed anchor-budget work
-
-- One live value per subject, with the retired entry kept in a bounded ledger together with the id of what
-  replaced it (ADR-0026).
-- The subject became part of the summarizer protocol, so a mutable fact keeps one identity across passes and
-  the model is asked to resolve what a new statement replaces.
-- The block is filled evenly across kinds and newest-first inside each kind, instead of in the order the
-  model emitted lines. Measured on the real 30-anchor ledger: the old cut kept facts averaging +165 s old
-  and dropped facts averaging +1024 s old, including the corrected values of two facts whose stale versions
-  stayed in the block.
-- The default anchor budget is 600 rather than 300, and what does not fit is reported
-  (`anchors_parked`, `anchors_parked_terms`, `anchors_without_subject`).
-
-## Completed anchor-change work
-
-- The anchor section is a change list against a host-assigned alias table: `更新 A3 | 来源 raw_77 | 陈述`,
-  `新增 | 类型 | 主体 | 来源 raw_79 | 陈述`, `结束 A5 | 来源 raw_80 | 原因`. An anchor nobody mentions is
-  left as it is, and a label no longer authorises a replacement (ADR-0028).
-- Every reference is checked before the same commit writes the summary and the ledger: the alias must be in
-  the frozen request, the source must be in this batch's original text, one record cannot be changed twice,
-  the record must still carry the frozen revision, and the batch text must not have changed under the
-  request. A refusal commits nothing and hides nothing.
-- The near-verbatim similarity threshold and the subject-based supersession are both deleted, and the label
-  keeps a "/" suffix: the same rule that merged "心脏石植入者/制造者" also merged "刀/位置" with "刀/所有者".
-- Measured cost of the change on the same ledger and the same 600-token budget: instructions 678 -> 744
-  characters, frozen table 642 -> 682 for 8 live values. The injected block and the batch text are unchanged.
-- **Measured live, and corrected because of it:** the first version of the instruction block was 1,045
-  characters, which took one 10-turn batch of 37,509 characters to a 40,047-character request against the
-  40,000 budget. The batch was then refused 42 times over 21 turns and the summary never advanced past floor
-  10. The batch text is 93% of the request, so a protocol change of a few hundred characters is enough to
-  block a chat that was already near the input budget. The block is now 744 characters and the change is
-  +66 characters over the old protocol.
-- **Measured live, and corrected a second time:** on the first run of the corrected build the summarizer wrote
-  nine lines shaped `更新 | 类型 | 主体 | 来源 raw_N | 陈述` - the update word with a label where the id
-  belongs - and each one refused the whole batch: three refused batches, three extra model calls and three
-  cadences of delay before the model happened to use the right word. An update word with no target names no
-  record, so it cannot retire anything and is now applied as an add and counted as `reinterpreted`. The
-  same run's batch three measured 43,351 characters of original text (45,468 for the whole request) and was
-  blocked by the 40,000 input budget from floor 20 to floor 40 - with the old protocol it would have been
-  45,402, so that limit is the chat, not this change.
-
-### What this work has not established
-
-- The host proves that an update named a record it was shown. It does not prove the cited source supports the
-  sentence, or that the new sentence still carries the clauses the old one carried. Measured baseline on the
-  live 15:57 ledger: of 34 clauses carried by replaced versions, 7 are still in the live value, 6 are
-  paraphrased into it and 21 are absent from it - an upper bound on loss, not a count of errors, because
-  some of those clauses are correctly obsolete.
-- Whether the model actually uses the protocol is a live-run question, and three 40-turn runs answered it
-  negatively: the summarizer never emitted an explicit `更新 A#`. It either reported no anchor changes at
-  all (the third run: 0 operations in 4 of 4 batches, the ledger empty at floor 40) or used the update word
-  without a target (the second run: 9 lines, now applied as adds and counted as `reinterpreted`). The
-  named-replacement path is verified by test and unexercised live. It is measured per batch by
-  `anchors_ops` (added / updated / ended / restated / reinterpreted / invalid) and `anchor_op_errors`.
-
-## Completed anchor-identity work
-
-- Subject identity is a deterministic normalisation (Unicode, whitespace, a dropped `/` suffix). Measured on
-  the live ledger: it folds 17 active anchors to 16, frees one parked slot, and leaves every remaining
-  subject distinct. Containment was measured and refused: it would merge five different facts to catch that
-  one duplicate (ADR-0027).
-- The hand-written kind rank table is deleted. It ranked three of the nine kinds one live run produced, so
-  "life-or-death first" was not operating. Round-robin remains and service order is decided by recency, which
-  needs no maintenance as the model's vocabulary drifts (ADR-0027).
+- Anchors change by explicit numbered operations against a frozen id/revision table (ADR-0028). Labels
+  no longer authorize replacement; slash suffixes are preserved. No similarity-based retirement remains.
+- Every nonempty anchor line reaches validation, including unbulleted and inline operations. Missing or
+  empty sections reject the batch; explicit `无` is a distinct valid zero-change response. Malformed
+  fields and invalid references reject atomically, while label punctuation and length do not.
+- Statements are stored in full. The 600-token injection budget parks whole entries rather than truncating
+  their conditions. Selection stays round-robin by kind, newest-first within each kind.
+- Input/summary/anchor defaults remain 40000/600/600. The instruction block is 760 characters, including
+  the clarification that restating an unchanged state is not an update.
+- The saved 17:45 run finished with 40 completed turns but only 30 covered/folded turns, zero active anchors
+  and an unrecovered 619/600 summary-budget failure. Four requests were not four successful commits.
+- The old ledger's lexical 7/6/21 clause groups are review candidates, not measured semantic loss or an
+  upper bound. A source reference alone does not establish entailment or preservation of necessary clauses.
+- Five fixed synthetic cases on deepseek-v4-flash exercised add, named update, conditional update, end and
+  no change. The first run unnecessarily updated the no-change case; after one prompt clarification the
+  five structural checks passed and the operation text was manually reviewed. This is short-input protocol
+  evidence. Long-context behavior, omission, stale facts and total retry cost still need separate acceptance.
+- Use `node eval-anchor-protocol.mjs --out <report.json>` for the explicit five-call protocol probe. It uses
+  the host's summary connection without writing the chat or memory ledger. Raw requests and responses are
+  saved for review. Long-run narrative/summary quality remains assigned to a separate task.
 
 ## Completed summary-diagnostics work
 

@@ -130,6 +130,7 @@ the chat file keeps (ADR-0004).
 | N15 | The anchor block is filled evenly across kinds, newest-first inside each kind, and what it parks is reported (ADR-0026) | orderAnchors, selectAnchors |
 | N16 | A label is a display name, not an identity: it is Unicode-normalised and whitespace-collapsed, and no rank table decides which kind is served first; recency does (ADR-0027, ADR-0028) | anchorSubjectKey, orderAnchors |
 | N17 | Every anchor reference is checked before anything is written - the alias is in the frozen request, the source is in this batch's text, the record is not changed twice and still carries the frozen revision - and a refused batch commits nothing, hides nothing and never falls back to a label match (ADR-0028) | parseAnchorChanges, mergeAnchors, sourceBatchFingerprint |
+| N18 | Every nonempty anchor line is validated, including inline and unbulleted operations. Missing/empty sections refuse coverage; explicit `无` is distinct. Statements are stored whole; label style cannot authorize replacement or refusal (ADR-0028) | parseAnchors, parseAnchorChanges, updateNarrative |
 
 ### 6. What this architecture does not do yet
 

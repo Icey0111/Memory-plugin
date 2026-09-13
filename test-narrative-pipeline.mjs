@@ -50,7 +50,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         isCurrent: () => current,
         leave: () => { current = false; },
         vector: () => ({ supported: false, reason: 'vector disabled in this test' }),
-        summarize: summarize || (async () => '摘要：主角在大厅与管家交谈。'),
+        summarize: summarize || (async () => '摘要：主角在大厅与管家交谈。\n【锚点变更】\n无'),
     };
     return { ctx, store, chat, prompts, services };
 }
@@ -153,7 +153,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 
 // --- 5. an accepted summary folds only what it covers, and the tail stays hot ---------------------
 {
-    const host = makeHost(12, { summarize: async () => '摘要：主角已经在大厅与管家谈过话。' });
+    const host = makeHost(12, { summarize: async () => '摘要：主角已经在大厅与管家谈过话。\n【锚点变更】无' });
     const { ctx, store, chat, services } = host;
     await updateNarrative(ctx, services, { force: true });
     assert.equal(store.narrative_summary.covered.length > 0, true, 'the summary records exactly what it read');
@@ -179,7 +179,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 // --- 6. an edit invalidates the summary, and nothing stale ever reaches the prompt ----------------
 {
     // 6a. enough material is pending, so the pipeline rebuilds the summary against the new history.
-    const host = makeHost(12, { summarize: async () => '摘要：稳定的局面。' });
+    const host = makeHost(12, { summarize: async () => '摘要：稳定的局面。\n【锚点变更】无' });
     const { ctx, store, chat, services } = host;
     await updateNarrative(ctx, services, { force: true });
     assert.ok(chat.some(row => row.is_system === true), 'floors folded under the accepted summary');
@@ -203,7 +203,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 {
     // 6b. too little material to rebuild: the summary is dropped and the original text comes back,
     //     because a chat with neither its text nor a stand-in is the one state folding must not reach.
-    const host = makeHost(3, { settings: { narrative_every: 3 }, summarize: async () => '摘要：三层的局面。' });
+    const host = makeHost(3, { settings: { narrative_every: 3 }, summarize: async () => '摘要：三层的局面。\n【锚点变更】无' });
     const { ctx, store, chat, services } = host;
     await updateNarrative(ctx, services, { force: true });
     assert.ok(chat.some(row => row.is_system === true), 'the forced summary folded the covered floor');
@@ -232,7 +232,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 
 // --- 8. quiet and disabled generations clear every channel this plugin owns ----------------------
 {
-    const host = makeHost(12, { summarize: async () => '摘要：局面。' });
+    const host = makeHost(12, { summarize: async () => '摘要：局面。\n【锚点变更】无' });
     const { ctx, prompts, services } = host;
     await updateNarrative(ctx, services);
     await runNarrativeGeneration(ctx, services, [{}, 32768, () => {}, 'normal']);
@@ -278,7 +278,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 // original-text vectors were unavailable went missing while the failure itself was still reported.
 {
     let summarizerCalls = 0;
-    const host = makeHost(12, { summarize: async () => { summarizerCalls += 1; return '摘要：稳定的局面。'; } });
+    const host = makeHost(12, { summarize: async () => { summarizerCalls += 1; return '摘要：稳定的局面。\n【锚点变更】无'; } });
     const { ctx, chat, services } = host;
     ctx.saveMetadataDebounced = () => { ctx.chatMetadata[KEY] = { ...ctx.chatMetadata[KEY] }; };
 
@@ -316,7 +316,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(report.warnings.length, 1, 'and announced once the threshold is reached');
     assert.match(report.warnings[0], /连续 2 次失败/);
     assert.match(report.warnings[0], /provider down/, 'the warning carries the last error');
-    services.summarize = async () => '摘要：恢复了。';
+    services.summarize = async () => '摘要：恢复了。\n【锚点变更】无';
     await updateNarrative(ctx, services, { force: true });
     report = readNarrativeReport(ctx);
     assert.equal(report.summary_failures, 0, 'a success clears the run');
@@ -412,7 +412,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     addFloor(17); addFloor(18);
     await updateNarrative(ctx, services, { force: true });
     report = readNarrativeReport(ctx);
-    assert.equal(report.anchor_parse, 'missing', 'the format slip is recorded');
+    assert.equal(report.summary_last_error.anchor_errors[0].reason, 'missing_section', 'the format slip is recorded');
     assert.equal(report.anchors_active, 2, 'a missing section changes nothing: silence is not a resolution');
     // The old alarm on "anchors the model stopped repeating" is gone on purpose. It counted a protocol in
     // which every anchor had to be restated, so not restating meant the format had slipped; here not
@@ -519,7 +519,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         'including what a character must not act on, with the state in the label');
 
     // The format slips: the boundaries stay, and they are reported as unrepeated.
-    reply = () => PROSE;
+    reply = () => PROSE + '\n【锚点变更】无';
     addFloor(13); addFloor(14);
     await updateNarrative(ctx, services, { force: true });
     report = readNarrativeReport(ctx);

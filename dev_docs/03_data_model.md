@@ -10,6 +10,11 @@
 The vector collections are a third, rebuildable medium, addressed per chat and per space identity so
 two chats can never read each other's vectors.
 
+Anchor statements are stored without a character cutoff. Injection selection may park an entire record,
+but never shortens its stored conditions. Successful `narrative_diagnostics.anchor_ops.section` distinguishes
+`none` (explicit no change) from `ok` (validated operations). Missing/empty sections and invalid lines are
+recorded as `anchor_ops` failures with individual rules; they do not advance summary coverage.
+
 ### 2. The narrative keys (what the live pipeline reads and writes)
 
 | Key | Shape | Written by | Meaning |
