@@ -1,6 +1,8 @@
 # ADR-0027: Subject identity is deterministic, and there is no kind table
 
-- Status: accepted
+- Status: superseded in part by ADR-0028 - the subject identity below is still deterministic but no longer
+  authorises a replacement, and the dropped `/` suffix was removed because the same rule merges different
+  attributes. The deleted kind table and the recency rule still stand.
 - Date: 2026-09-13
 - Relates to: ADR-0026 (one live value per subject)
 

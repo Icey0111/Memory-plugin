@@ -23,6 +23,30 @@ long-run narrative acceptance are a separate task; this retrieval iteration does
 - The default anchor budget is 600 rather than 300, and what does not fit is reported
   (`anchors_parked`, `anchors_parked_terms`, `anchors_without_subject`).
 
+## Completed anchor-change work
+
+- The anchor section is a change list against a host-assigned alias table: @@更新 A3 | 来源 raw_77 | 陈述@@,
+  @@新增 | 类型 | 主体 | 来源 raw_79 | 陈述@@, @@结束 A5 | 来源 raw_80 | 原因@@. An anchor nobody mentions is
+  left as it is, and a label no longer authorises a replacement (ADR-0028).
+- Every reference is checked before the same commit writes the summary and the ledger: the alias must be in
+  the frozen request, the source must be in this batch's original text, one record cannot be changed twice,
+  the record must still carry the frozen revision, and the batch text must not have changed under the
+  request. A refusal commits nothing and hides nothing.
+- The near-verbatim similarity threshold and the subject-based supersession are both deleted, and the label
+  keeps a "/" suffix: the same rule that merged "心脏石植入者/制造者" also merged "刀/位置" with "刀/所有者".
+- Measured cost of the change on the same ledger and the same 600-token budget: instructions 678 -> 998
+  characters, frozen table 642 -> 682 for 8 live values. The injected block and the batch text are unchanged.
+
+### What this work has not established
+
+- The host proves that an update named a record it was shown. It does not prove the cited source supports the
+  sentence, or that the new sentence still carries the clauses the old one carried. Measured baseline on the
+  live 15:57 ledger: of 34 clauses carried by replaced versions, 7 are still in the live value, 6 are
+  paraphrased into it and 21 are absent from it - an upper bound on loss, not a count of errors, because
+  some of those clauses are correctly obsolete.
+- Whether the model actually uses the protocol is a live-run question. It is measured per batch by
+  @@anchors_ops@@ (added / updated / ended / restated / invalid) and @@anchor_op_errors@@.
+
 ## Completed anchor-identity work
 
 - Subject identity is a deterministic normalisation (Unicode, whitespace, a dropped `/` suffix). Measured on

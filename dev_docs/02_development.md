@@ -7,7 +7,8 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | npm run check | Discover and syntax-check sources |
 | npm test | Offline regressions, including host adapters |
 | node test-summary-lifecycle.mjs | Cadence, concurrent reads, joint invalidation and summary transport |
-| node test-anchor-budget.mjs | Supersession by subject and by restatement, the never-inject-a-superseded-statement rule, even round-robin selection, parked-value reporting, and legacy normalisation |
+| node test-anchor-budget.mjs | The never-inject-a-retired-statement rule, even round-robin selection, parked-value reporting, a slash label that keeps its content, a legacy ledger migrated as it stands, and the legacy anchor-budget notice |
+| node test-anchor-changes.mjs | The numbered change protocol: the frozen alias table, the three operations, an unknown alias, a source outside the batch, a duplicate target, a stale version and a changed batch each refused without committing or hiding, an exact restatement folded, and the diagnostics that report the batch |
 | node test-summary-diagnostics.mjs | Failure stages and the retained record, the two state versions, injection recorded only after the prompt is set, the assembly-across-a-commit case, the five warning conditions, and the input-budget default |
 | node test-summary-contract.mjs | The batching contract: the floor horizon, committed vs injected coverage, one-entry-per-message requests, the cost of the text that is sent, and the difference between a local budget block and an interface failure |
 | node recall-baseline.mjs | Original-text retrieval and packing measurement |

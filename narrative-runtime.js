@@ -1,7 +1,7 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
     summaryMessages, summaryRequest, summaryBlockState, stateRevisionOf,
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
-    supersedeAnchors, selectAnchors, MAX_SUPERSEDED,
+    selectAnchors, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
@@ -102,7 +102,17 @@ function quiet(settings, type) {
  */
 const FAILURE_STAGES = { transport: '传输或服务商错误', empty_body: '接口没有返回正文',
     truncated: '总结输出被截断', over_budget: '摘要正文超过接受预算', format: '只有锚点、没有摘要正文',
-    input_budget: '本地输入预算不足', unknown: '未分类的失败' };
+    input_budget: '本地输入预算不足', anchor_ops: '锚点变更引用了无效编号或冲突操作',
+    unknown: '未分类的失败' };
+/** One short phrase per refused operation, so the panel says which rule was broken and not just that one was. */
+const ANCHOR_ERROR_TEXT = { unknown_op: '不是“新增/更新/结束”三种写法之一', alias_required: '“更新/结束”没有写编号',
+    unknown_alias: '编号不在本批提供的【当前锚点】里', alias_not_allowed: '“新增”不应带编号',
+    missing_kind: '“新增”没有写类型', bad_subject: '主体不是短标识（过长或含标点）',
+    missing_source: '没有写“来源 raw_N”', source_not_in_batch: '来源不在本批【新增原文】里',
+    empty_statement: '没有写陈述', duplicate_target: '同一条记录在本批被改了两次',
+    stale_target: '这条记录在本批生成后已被结束', stale_version: '这条记录在本批生成后已被改动' };
+const describeAnchorErrors = errors => (errors || []).slice(0, 4).map(error =>
+    '“' + String(error.line || '').slice(0, 60) + '” —— ' + (ANCHOR_ERROR_TEXT[error.reason] || error.reason)).join('；');
 const stageLabel = stage => FAILURE_STAGES[stage] || FAILURE_STAGES.unknown;
 const tagged = (stage, error, extra) => {
     const wrapped = error instanceof Error ? error : new Error(String(error));
@@ -115,6 +125,8 @@ const bounded = (value, limit = 300) => {
     const text = String(value ?? '');
     return text.length > limit ? text.slice(0, limit) + '…' : text;
 };
+/** The batch as one name, so a failure, a block and a committed operation set can be matched up. */
+const batchIdOf = batch => [batch.sources[0], batch.sources.at(-1), batch.covered.length].join('|');
 
 export async function generateNarrativeSummary(ctx, prompt, settings) {
     summaryRequests.add(settings);
@@ -207,17 +219,11 @@ function prepare(ctx) {
             knowledgeNormalized = true;
         }
     }
-    // Existing installs stored anchors before supersession existed. Fold what can be folded now, so a chat
-    // that already carries restatements is corrected on load instead of waiting for the next pass.
-    let anchorsNormalized = false;
-    if (store.narrative_anchors?.active?.length) {
-        const live = supersedeAnchors(store.narrative_anchors.active, {});
-        if (live.active.length !== store.narrative_anchors.active.length) {
-            store.narrative_anchors = { ...store.narrative_anchors, active: live.active,
-                superseded: [...live.superseded, ...(store.narrative_anchors.superseded || [])].slice(0, MAX_SUPERSEDED) };
-            anchorsNormalized = true;
-        }
-    }
+    // A ledger written before the change protocol is migrated exactly as it stands. It used to be folded
+    // here so a chat carrying restatements was corrected on load; that fold is the rule this protocol
+    // removes, and running it on load would leave one place where a label still authorised a replacement.
+    // Records without a `revision` read as version 0 in planAnchors and mergeAnchors, so nothing has to be
+    // rewritten to be usable, and a label collision the old rule created is now reported, not hidden.
     const { history, changed } = captureHistory(store, ctx.chat || []);
     const chunks = chunkHistory(history);
     const legacy = store.narrative_summary;
@@ -265,7 +271,7 @@ function prepare(ctx) {
     }
     const folded = applyNarrativeFolds(ctx.chat || [], history, chunks, store.narrative_summary,
         settings.enabled !== false && settings.narrative_fold !== false);
-    if (changed || folded || knowledgeNormalized || anchorsNormalized) persist(ctx);
+    if (changed || folded || knowledgeNormalized) persist(ctx);
     return { settings, store, history, chunks };
 }
 
@@ -286,8 +292,14 @@ export function updateNarrative(ctx, services) {
         const previous = frozen.narrative_summary;
         const previousAnchors = frozen.narrative_anchors;
         const previousKnowledge = frozen.narrative_knowledge;
-        const request = summaryRequest(previous?.text, summaryMessages(state.history, batch),
+        const messages = summaryMessages(state.history, batch);
+        // summaryRequest builds the alias table from the same anchor list it formats, and returns it, so the
+        // ids the model is shown are exactly the versions the answer will be checked against.
+        const request = summaryRequest(previous?.text, messages,
             opts.summaryTokens, previousAnchors?.active, previousKnowledge?.entries);
+        // Rule 5: the operations only mean anything against the text the model was handed. This is that
+        // text, as one number, checked again at commit so a row edited during the call is noticed.
+        const batchFingerprint = sourceBatchFingerprint(messages);
         // The cost report is written before the budget is checked, so a blocked request and a failed
         // request still show what the request was made of. The context window is not known here and is
         // not implied: only the local character budget was measured.
@@ -313,6 +325,13 @@ export function updateNarrative(ctx, services) {
             // The coverage claim comes from the frozen batch, never from the chat length at the end of
             // the call: an append during the request must not be summarized by a result it predates.
             if (!before.every((id, i) => id === state.chunks[i]?.id) || state.settings.enabled === false) return;
+            if (sourceBatchFingerprint(summaryMessages(state.history, batch)) !== batchFingerprint) {
+                // A covered row was edited while the answer was being written. Committing would hide floors
+                // this answer never read, so the batch is left for the next pass instead.
+                diagnose(ctx, { summary_batch_changed: { at: Date.now(), batch_id: batchIdOf(batch) } });
+                persist(ctx);
+                return;
+            }
             const parsed = parseAnchors(text);
             const attemptResponse = storeOf(ctx).narrative_diagnostics?.summary_response || null;
             if (!parsed.summary) throw tagged('format', new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。'),
@@ -324,21 +343,39 @@ export function updateNarrative(ctx, services) {
             // prepare() above may have persisted and swapped the store object, so write through
             // a fresh read rather than through the reference it returned.
             const live = storeOf(ctx);
+            // Nothing is written until every reference in the answer has been checked. The summary and the
+            // anchor changes are one commit, so a refused operation cannot leave the two disagreeing about
+            // the floors they describe - and a refusal never falls back to guessing which record was meant.
+            let anchors = live.narrative_anchors;
+            let anchorOps = null;
+            if (parsed.anchor_section === 'ok') {
+                const checked = parseAnchorChanges(parsed.anchorLines,
+                    { plan: request.anchors, batchSources: new Set(batch.sources) });
+                if (checked.errors.length) throw tagged('anchor_ops',
+                    new Error('锚点变更引用了无效编号或批次外的来源（' + describeAnchorErrors(checked.errors)
+                        + '）；本批不提交、不隐藏原文。'),
+                    { response: attemptResponse, anchor_errors: checked.errors });
+                const applied = mergeAnchors(live.narrative_anchors, checked.changes,
+                    { plan: request.anchors, at: Date.now() });
+                if (!applied.ok) throw tagged('anchor_ops',
+                    new Error('锚点变更与请求发出时的版本不一致（' + describeAnchorErrors(applied.errors)
+                        + '）；本批不提交、不隐藏原文。'),
+                    { response: attemptResponse, anchor_errors: applied.errors });
+                anchors = applied.ledger;
+                anchorOps = { ...applied.stats, at: Date.now(), batch_id: batchIdOf(batch) };
+            }
             live.narrative_summary = { version: 1, fixed_batch: true, text: parsed.summary, covered: before };
             // A missing section is not a resolution: without it the anchors are left exactly as they
             // were, because dropping them on a format slip would lose the facts this feature exists
             // to protect.
-            if (parsed.sections === 'ok') {
-                live.narrative_anchors = mergeAnchors(previousAnchors, parsed);
-                live.narrative_knowledge = mergeKnowledge(previousKnowledge, parsed);
-            } else {
-                if (previousAnchors?.active?.length) live.narrative_anchors = { ...previousAnchors,
-                    active: previousAnchors.active.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
-                    parse: 'missing', updated_at: Date.now() };
-                if (previousKnowledge?.entries?.length) live.narrative_knowledge = { ...previousKnowledge,
-                    entries: previousKnowledge.entries.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
-                    parse: 'missing', updated_at: Date.now() };
-            }
+            if (parsed.anchor_section === 'ok') live.narrative_anchors = anchors;
+            else if (previousAnchors?.active?.length) live.narrative_anchors = { ...previousAnchors,
+                active: previousAnchors.active.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
+                parse: 'missing', updated_at: Date.now() };
+            if (parsed.sections === 'ok') live.narrative_knowledge = mergeKnowledge(previousKnowledge, parsed);
+            else if (previousKnowledge?.entries?.length) live.narrative_knowledge = { ...previousKnowledge,
+                entries: previousKnowledge.entries.map(item => ({ ...item, unconfirmed: (Number(item.unconfirmed) || 0) + 1 })),
+                parse: 'missing', updated_at: Date.now() };
             // Two versions, because they answer two questions: which sources this state read, and what
             // this state says. Only the second can tell an old injection from the current state, since
             // coverage is a count of floors and two different states can share it.
@@ -352,7 +389,10 @@ export function updateNarrative(ctx, services) {
             // recovered rather than erasing it: a failure that disappears the moment the retry works is
             // exactly the failure nobody can diagnose afterwards.
             diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
-                summary_block: null, anchor_parse: parsed.sections,
+                summary_block: null, summary_batch_changed: null, anchor_parse: parsed.anchor_section,
+                // The operation counts of the batch that was actually committed, and no refusal left over
+                // from an earlier one: the panel reads a refusal as "the current answer was not applied".
+                anchor_ops: anchorOps, anchor_op_errors: null,
                 summary_last_error: pastFailure ? { ...pastFailure, recovered: true, recovered_at: Date.now(),
                     recovered_by: { source_revision: sourceRevision,
                         state_revision: live.narrative_summary.state_revision } } : null });
@@ -365,12 +405,18 @@ export function updateNarrative(ctx, services) {
                 const live = storeOf(ctx);
                 const stage = error?.stage || 'transport';
                 const previousFailure = live.narrative_diagnostics?.summary_last_error;
-                const batchId = [batch.sources[0], batch.sources.at(-1), batch.covered.length].join('|');
+                const batchId = batchIdOf(batch);
                 const sameBatch = previousFailure && !previousFailure.recovered && previousFailure.batch_id === batchId;
                 const failures = Number(live.narrative_diagnostics?.summary_failures) || 0;
                 const response = error?.response || null;
                 diagnose(ctx, { summary_error: String(error.message || error), summary_failures: failures + 1,
+                    // A refused operation set is kept beside the failure so the panel can name the rule that
+                    // was broken. A model-call failure keeps whatever the last refusal was.
+                    anchor_op_errors: error?.anchor_errors
+                        ? { at: Date.now(), stage, batch_id: batchId, errors: error.anchor_errors }
+                        : (live.narrative_diagnostics?.anchor_op_errors || null),
                     summary_last_error: {
+                        anchor_errors: error?.anchor_errors || null,
                         at: Date.now(), stage, stage_label: stageLabel(stage),
                         reason: bounded(error?.message || error),
                         batch_id: batchId,
@@ -478,8 +524,18 @@ function warningsFor(state, opts) {
         out.push('已有 ' + state.pending_floors + ' 个已完成 user turns（约 ' + state.pending_tokens
             + ' token）等待总结，但没有正在进行的总结任务；检查总结接口或调整总结间隔。');
     }
-    if (state.anchors_unconfirmed >= opts.anchorUnconfirmedWarn) {
-        out.push('有 ' + state.anchors_unconfirmed + ' 条锚点已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
+    // The anchor-unconfirmed alarm is gone on purpose. It counted a protocol in which the model had to
+    // restate every anchor, so "not restated" meant "the format slipped". Under the change protocol not
+    // restating is the required shape, and an untouched anchor says nothing about whether its fact still
+    // holds - an alarm on it would fire on every healthy batch. What replaces it is the shape that is
+    // actually wrong: two live records under one label, which is what a missed "更新 A#" looks like.
+    if (state.anchors_same_subject > 0) {
+        out.push('有 ' + state.anchors_same_subject + ' 组锚点同时存在多条活值（同一主体）；同一事实的新状态应当用'
+            + '“更新 A#”提交，“新增”不取代旧值，两组都会被注入。请检查总结是否漏用了“更新”。');
+    }
+    if (state.anchor_op_errors?.errors?.length) {
+        out.push('最近一批锚点变更被拒绝（' + state.anchor_op_errors.errors.length + ' 条无效引用或冲突）：'
+            + describeAnchorErrors(state.anchor_op_errors.errors) + '。本批没有提交，原文保持可见。');
     }
     if (state.knowledge_unconfirmed >= opts.anchorUnconfirmedWarn) {
         out.push('有 ' + state.knowledge_unconfirmed + ' 条知情边界已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
@@ -495,7 +551,7 @@ function warningsFor(state, opts) {
         out.push('锚点块装不下当前活值：共 ' + (state.anchors_total || 0) + ' 条，注入 '
             + (state.anchors_injected || 0) + ' 条，搁置 ' + state.anchors_truncated
             + ' 条（按类型轮流各取一条、类型内新→旧，裁掉的是最旧的活值；被取代的旧陈述本来就不会注入）。'
-            + '可调高“锚点 token 预算”，或让总结把已解决的条目写进【已解决】。');
+            + '可调高“锚点 token 预算”，或让总结用“结束 A#”结束已经结束的事实。');
     }
     return out;
 }
@@ -710,6 +766,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchors_unconfirmed: continuity.anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: continuity.anchorsTruncated,
         anchors_total: continuity.anchors.length, anchors_injected: continuity.anchorsInjected,
+        anchors_same_subject: countAnchorCollisions(continuity.anchors),
+        anchor_op_errors: live.narrative_diagnostics?.anchor_op_errors || null,
         knowledge_unconfirmed: continuity.knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
@@ -729,6 +787,10 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchors_without_subject: continuity.anchors.filter(item => !String(item.subject || '').trim()).length,
         anchors_unconfirmed: continuity.anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: continuity.anchorsTruncated,
+        anchors_same_subject: countAnchorCollisions(continuity.anchors),
+        anchors_ops: live.narrative_diagnostics?.anchor_ops || null,
+        anchor_op_errors: live.narrative_diagnostics?.anchor_op_errors?.errors || null,
+        anchors_superseded_limit: MAX_SUPERSEDED,
         // What the accepted summary covers right now. The injected numbers are written by
         // runNarrativeGeneration, after the host has actually been given the block: a build is not an
         // injection, and a report that conflated them could not tell a pending pass from a delivered one.
@@ -887,6 +949,8 @@ export function readNarrativeReport(ctx) {
         anchors_unconfirmed: activeAnchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: anchorsTruncated,
         anchors_total: activeAnchors.length, anchors_injected: reportSelection.injected.length,
+        anchors_same_subject: countAnchorCollisions(activeAnchors),
+        anchor_op_errors: store.narrative_diagnostics?.anchor_op_errors || null,
         knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0 };
@@ -924,6 +988,18 @@ export function readNarrativeReport(ctx) {
         anchors_truncated: anchorsTruncated,
         anchors_resolved: (store.narrative_anchors?.resolved || []).length,
         anchor_parse: store.narrative_diagnostics?.anchor_parse || store.narrative_anchors?.parse || null,
+        // What the last committed batch did, what the last refused one was refused for, and what the
+        // retirement window actually keeps. "The retired history is complete" is not a claim this makes:
+        // the window is 40 records, and past it only the original floors remain.
+        anchors_ops: store.narrative_diagnostics?.anchor_ops || null,
+        anchor_op_errors: store.narrative_diagnostics?.anchor_op_errors?.errors || null,
+        anchor_op_errors_at: store.narrative_diagnostics?.anchor_op_errors?.at || null,
+        anchors_same_subject: countAnchorCollisions(activeAnchors),
+        anchors_superseded_limit: MAX_SUPERSEDED,
+        anchors_superseded_recent: (store.narrative_anchors?.superseded || []).slice(0, 6).map(item => ({
+            kind: String(item.kind || '其他'), subject: String(item.subject || ''),
+            text: String(item.text || '').slice(0, 80), source: String(item.source || ''),
+            reason: String(item.reason || '') })),
         knowledge_entries: (store.narrative_knowledge?.entries || []).length,
         knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
@@ -996,6 +1072,7 @@ export function mountNarrativeSettings(getContext, createServices) {
         + '<button class="menu_button" data-action="summarize">总结下一完整批次</button>'
         + '<button class="menu_button" data-action="restore">恢复原文显示</button>'
         + '<div data-state class="aum-v51-status"></div>'
+        + '<div data-anchors class="aum-v51-status"></div>'
         + '<div data-notice class="aum-v51-status"></div>'
         + '<div data-warning class="aum-v51-status"></div><pre data-status></pre>';
     const settings = narrativeSettings(ctx);
@@ -1050,6 +1127,26 @@ function renderNarrativePanel(root, ctx) {
     }
     // A notice is not a fault: it is something about the configuration the user should know, shown apart
     // from the warnings so that a real fault is not read as one more line of advice.
+    // The anchor line states what the last committed batch did to the ledger and what the last refused one
+    // was refused for. It is separate from the warnings because "3 updates applied" and "the batch was not
+    // applied" are different sentences, and a user who only sees the second cannot tell whether the feature
+    // is working at all.
+    const anchorState = root.querySelector('[data-anchors]');
+    if (anchorState) {
+        const ops = report.anchors_ops;
+        const parts = [];
+        if (ops) parts.push('上一批锚点变更：共 ' + ops.total + ' 条（新增 ' + ops.added + '，更新 ' + ops.updated
+            + '，结束 ' + ops.ended + '，重复 ' + ops.restated + '）');
+        parts.push('锚点活值 ' + report.anchors_active + ' 条，注入 ' + report.anchors_injected + ' 条'
+            + (report.anchors_parked ? '（搁置 ' + report.anchors_parked + '）' : '')
+            + '，退场记录 ' + report.anchors_superseded + ' 条（最多保留 ' + report.anchors_superseded_limit + ' 条）');
+        if (report.anchors_same_subject) parts.push('同一主体多活值 ' + report.anchors_same_subject + ' 组');
+        if (report.anchor_op_errors?.length) parts.push('最近一批被拒绝 ' + report.anchor_op_errors.length + ' 条');
+        anchorState.textContent = parts.join('；');
+        const retired = report.anchors_superseded_recent?.[0];
+        if (retired) anchorState.textContent += '；最近退场：' + retired.kind + '／' + (retired.subject || '无主体')
+            + '（来源 ' + (retired.source || '未知') + '）';
+    }
     const notice = root.querySelector('[data-notice]');
     if (notice) {
         notice.textContent = report.notices.length ? 'ℹ ' + report.notices.join(' ') : '';

@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSummary,
     nextSummaryBatch, summaryMessages, summaryRequest, applyNarrativeFolds, parseAnchors, mergeAnchors,
+    parseAnchorChanges,
     mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall,
     profileTargets, profileRecall } from './raw-history.js';
@@ -21,6 +22,11 @@ import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrati
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
+/** The first source id the request actually offered, so no fixture depends on the raw_N numbering. */
+const anySource = prompt => (String(prompt).match(/\[(raw_\d+)\]/) || [])[1] || 'raw_1';
+/** The alias the frozen request assigned to the live anchor whose old value contains this marker. */
+const aliasOf = (prompt, marker) => ((String(prompt).split('\n')
+    .find(row => /^- A\d+ \|/.test(row.trim()) && row.includes(marker)) || '').match(/A\d+/) || ['A1'])[0];
 
 function makeHost(floors, { settings = {}, summarize } = {}) {
     const chat = [];
@@ -350,15 +356,28 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 // --- 12. continuity anchors survive rewrites, and silence is not a resolution ---------------------
 {
     const PROSE = '局面：主角在大厅与管家交谈。';
+    // Every answer is a change list against the ledger the request showed, so the fixture reads the alias and
+    // the source out of that request. A real summarizer has to work the same way: the table it was given is
+    // the only thing an update is allowed to name.
+    const add = (prompt, kind, subject, text) => '- 新增 | ' + kind + ' | ' + subject
+        + ' | 来源 ' + anySource(prompt) + ' | ' + text;
+    const inside = [
+        prompt => [add(prompt, '承诺', '林舟的承诺', '林舟答应苏晚不把钥匙的事说出去'),
+            add(prompt, '秘密', '钥匙来源', '钥匙来自林舟')].join('\n'),
+        prompt => add(prompt, '所有权', '钥匙归属', '钥匙现在在苏晚手里'),
+        prompt => '- 结束 ' + aliasOf(prompt, '林舟答应苏晚不把钥匙的事说出去')
+            + ' | 来源 ' + anySource(prompt) + ' | 承诺已兑现',
+        () => '无',   // the model stops emitting the section altogether, see the last paragraph
+    ];
     const replies = [
-        PROSE + '\n【锚点】\n- 承诺 | 林舟答应苏晚不把钥匙的事说出去\n- 秘密 | 钥匙来自林舟\n【已解决】\n无',
-        PROSE + '\n【锚点】\n- 承诺 | 林舟答应苏晚不把钥匙的事说出去\n- 秘密 | 钥匙来自林舟\n- 所有权 | 钥匙现在在苏晚手里\n【已解决】\n无',
-        PROSE + '\n【锚点】\n- 秘密 | 钥匙来自林舟\n- 所有权 | 钥匙现在在苏晚手里\n【已解决】\n- 承诺 | 林舟答应苏晚不把钥匙的事说出去',
-        PROSE,   // the model stops emitting the sections altogether
+        prompt => PROSE + '\n【锚点变更】\n' + inside[0](prompt) + '\n【知情边界】\n无',
+        prompt => PROSE + '\n【锚点变更】\n' + inside[1](prompt) + '\n【知情边界】\n无',
+        prompt => PROSE + '\n【锚点变更】\n' + inside[2](prompt) + '\n【知情边界】\n无',
+        () => PROSE,   // the model stops emitting the sections altogether
     ];
     const prompts = [];
     let call = 0;
-    const host = makeHost(12, { settings: { narrative_every: 2 }, summarize: async (ctx, prompt) => { prompts.push(prompt); return replies[Math.min(call++, replies.length - 1)]; } });
+    const host = makeHost(12, { settings: { narrative_every: 2 }, summarize: async (ctx, prompt) => { prompts.push(prompt); return replies[Math.min(call++, replies.length - 1)](prompt); } });
     const { ctx, services } = host;
     const addFloor = n => {
         host.chat.push({ name: 'User', is_user: true, mes: '第' + n + '层：主角走回大厅。' });
@@ -367,14 +386,16 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 
     await updateNarrative(ctx, services, { force: true });
     let report = readNarrativeReport(ctx);
-    assert.equal(report.anchors_active, 2, 'the anchors the summarizer listed are recorded');
-    assert.match(prompts[0], /【当前锚点】/, 'the summarizer is given the anchors it must carry forward');
+    assert.equal(report.anchors_active, 2, 'the anchors the summarizer added are recorded');
+    assert.equal(report.anchors_ops.added, 2, 'and the batch reports what it did');
+    assert.match(prompts[0], /【当前锚点】/, 'the summarizer is given the ledger it must reason about');
 
     addFloor(13); addFloor(14);
     await updateNarrative(ctx, services, { force: true });
     report = readNarrativeReport(ctx);
-    assert.equal(report.anchors_active, 3, 'a new anchor is added while the others carry forward');
-    assert.match(prompts[1], /林舟答应苏晚不把钥匙的事说出去/, 'and the carrying list is fed back verbatim');
+    assert.equal(report.anchors_active, 3, 'a new anchor is added while the others are left alone');
+    assert.match(prompts[1], /- A\d+ \| 承诺 \| 林舟的承诺 \| 林舟答应苏晚不把钥匙的事说出去/,
+        'and the ledger is fed back with the id an update would name');
 
     const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
     assert.match(bundle.currentStateBlock, /BINDING CONTINUITY ANCHORS/,
@@ -384,7 +405,8 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     addFloor(15); addFloor(16);
     await updateNarrative(ctx, services, { force: true });
     report = readNarrativeReport(ctx);
-    assert.equal(report.anchors_active, 2, 'an explicitly resolved anchor leaves the active list');
+    assert.equal(report.anchors_ops.ended, 1, 'the ending was an operation on a named record');
+    assert.equal(report.anchors_active, 2, 'an explicitly ended anchor leaves the active list');
     assert.equal(report.anchors_resolved, 1, 'and is recorded as resolved rather than forgotten');
 
     addFloor(17); addFloor(18);
@@ -392,12 +414,20 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     report = readNarrativeReport(ctx);
     assert.equal(report.anchor_parse, 'missing', 'the format slip is recorded');
     assert.equal(report.anchors_active, 2, 'a missing section changes nothing: silence is not a resolution');
-    assert.equal(report.warnings.some(text => /锚点已连续多轮/.test(text)), true,
-        'but the anchors the model stopped repeating are announced');
+    // The old alarm on "anchors the model stopped repeating" is gone on purpose. It counted a protocol in
+    // which every anchor had to be restated, so not restating meant the format had slipped; here not
+    // restating is the required shape, and the alarm would fire on every healthy batch. The number stays.
+    assert.equal(report.warnings.some(text => /锚点已连续多轮/.test(text)), false,
+        'an untouched anchor is not a fault under the change protocol');
+    assert.equal(report.anchors_unconfirmed, 2, 'but it is still counted as unreferenced');
 
     // The injection budget is separate from the summary budget, and it never sends half a line.
+    const three = prompt => PROSE + '\n【锚点变更】\n'
+        + [add(prompt, '承诺', '林舟的承诺', '林舟答应苏晚不把钥匙的事说出去'),
+            add(prompt, '秘密', '钥匙来源', '钥匙来自林舟'),
+            add(prompt, '所有权', '钥匙归属', '钥匙现在在苏晚手里')].join('\n') + '\n【知情边界】\n无';
     const tight = makeHost(12, { settings: { narrative_anchor_tokens: 0 },
-        summarize: async () => replies[1] });
+        summarize: async (_ctx, prompt) => three(prompt) });
     await updateNarrative(tight.ctx, tight.services, { force: true });
     const clipped = await buildNarrativeContext(tight.ctx, tight.services, { contextSize: 32768 });
     assert.doesNotMatch(clipped.currentStateBlock, /\[承诺\]/, 'no anchor is injected without budget for it');
@@ -468,11 +498,11 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 // the same way the anchors are, because a character silently learning a secret is a story change.
 {
     const PROSE = '局面：两人在地窖里。';
-    const withBoundaries = PROSE
-        + '\n【锚点】\n- 秘密 | 钥匙来自林舟\n【已解决】\n无'
+    const withBoundaries = prompt => PROSE
+        + '\n【锚点变更】\n- 新增 | 秘密 | 钥匙来源 | 来源 ' + anySource(prompt) + ' | 钥匙来自林舟'
         + '\n【知情边界】\n- 苏晚 | 不知道 | 钥匙来自林舟\n- 林舟 | 知道 | 钥匙现在在苏晚手里';
     let reply = withBoundaries;
-    const host = makeHost(12, { summarize: async () => reply });
+    const host = makeHost(12, { summarize: async (_ctx, prompt) => reply(prompt) });
     const { ctx, services } = host;
     const addFloor = n => {
         host.chat.push({ name: 'User', is_user: true, mes: '第' + n + '层：两人继续说话。' });
@@ -489,7 +519,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         'including what a character must not act on, with the state in the label');
 
     // The format slips: the boundaries stay, and they are reported as unrepeated.
-    reply = PROSE;
+    reply = () => PROSE;
     addFloor(13); addFloor(14);
     await updateNarrative(ctx, services, { force: true });
     report = readNarrativeReport(ctx);
@@ -497,7 +527,8 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(report.knowledge_unconfirmed, 2, 'it flags them as unrepeated instead');
 
     // And the block has its own budget: it sends whole lines or none.
-    const tight = makeHost(12, { settings: { narrative_knowledge_tokens: 0 }, summarize: async () => withBoundaries });
+    const tight = makeHost(12, { settings: { narrative_knowledge_tokens: 0 },
+        summarize: async (_ctx, prompt) => withBoundaries(prompt) });
     await updateNarrative(tight.ctx, tight.services, { force: true });
     const clipped = await buildNarrativeContext(tight.ctx, tight.services, { contextSize: 32768 });
     assert.doesNotMatch(clipped.currentStateBlock, /KNOWLEDGE BOUNDARIES/, 'no budget, no block');
@@ -510,13 +541,15 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
 // and faithful only to the two structured sections, which is exactly the drift the anchors exist to
 // survive. A model that also drops the sections is covered by section 12.
 {
-    const ANCHOR = '- 承诺 | 林舟答应苏晚不把钥匙的事说出去';
+    const ANCHOR = '林舟答应苏晚不把钥匙的事说出去';
     const BOUNDARY = '- 苏晚 | 不知道 | 钥匙来自林舟';
     let pass = 0;
-    const host = makeHost(12, { settings: { narrative_every: 1 }, summarize: async () => {
+    // Each pass re-adds the same fact, which the host folds back onto the record it already has: the point
+    // of this block is that ten rewrites of the prose cannot lose it, not that the model behaves perfectly.
+    const host = makeHost(12, { settings: { narrative_every: 1 }, summarize: async (_ctx, prompt) => {
         pass += 1;
-        return '局面：第' + pass + '次重写之后的场景。\n【锚点】\n' + ANCHOR + '\n【已解决】\n无'
-            + '\n【知情边界】\n' + BOUNDARY;
+        return '局面：第' + pass + '次重写之后的场景。\n【锚点变更】\n- 新增 | 承诺 | 林舟的承诺 | 来源 '
+            + anySource(prompt) + ' | ' + ANCHOR + '\n【知情边界】\n' + BOUNDARY;
     } });
     const { ctx, chat, services } = host;
     const addFloor = n => {
@@ -544,20 +577,26 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(chat.filter(row => row.is_system === true).length > 0, true, 'and covered floors are still folded');
 }
 
-// --- 16. the same anchor spelled two ways is one anchor ------------------------------------------
+// --- 16. the same fact spelled two ways is one record --------------------------------------------
 // Found on a live 40-floor run: the model wrote "- 身份 | ..." on one pass and "- [身份] ..." on the
 // next. The second parsed as kind "其他" with the bracket inside the text, so the two spellings
-// coexisted, the list grew from 11 real entries to 19, and the panel warned that eight anchors "had not
-// been repeated" - they were duplicates of the ones that had.
+// coexisted and the list grew from 11 real entries to 19. The bracket is still stripped from the kind
+// field, and an exact restatement is still one record - the difference is that neither is now the rule
+// that decides which value is current.
 {
-    const first = parseAnchors('局面。\n【锚点】\n- 身份 | Seraphina 自称森林守护者。\n【已解决】\n无');
-    const second = parseAnchors('局面。\n【锚点】\n- [身份] Seraphina 自称森林守护者。\n【已解决】\n无');
-    assert.deepEqual(first.anchors[0], second.anchors[0], 'both spellings parse to the same entry');
-    let state = mergeAnchors(undefined, first, 1);
-    state = mergeAnchors(state, second, 2);
-    assert.equal(state.active.length, 1, 'so a rewrite that changes the spelling does not duplicate it');
-    assert.equal(state.active[0].passes, 2, 'and it counts as confirmed twice, not as one unconfirmed');
-    assert.equal(state.active[0].unconfirmed, 0);
+    const sources = new Set(['raw_1', 'raw_2']);
+    const { changes, errors } = parseAnchorChanges([
+        '新增 | 身份 | Seraphina | 来源 raw_1 | Seraphina 自称森林守护者。',
+        '新增 | [身份] | Seraphina | 来源 raw_2 | Seraphina 自称森林守护者。'], { plan: [], batchSources: sources });
+    assert.deepEqual(errors, []);
+    assert.deepEqual(changes.map(row => row.kind), ['身份', '身份'], 'both spellings parse to the same kind');
+    assert.deepEqual(changes.map(row => row.text), [changes[0].text, changes[0].text]);
+    const created = mergeAnchors(undefined, [changes[0]], { at: 1 }).ledger;
+    const restated = mergeAnchors(created, [changes[1]], { at: 2 });
+    assert.equal(restated.ledger.active.length, 1, 'so a rewrite that changes the spelling does not duplicate it');
+    assert.equal(restated.stats.restated, 1, 'it is recognised as the same statement, not as a second value');
+    assert.equal(restated.ledger.active[0].passes, 2, 'and it counts as confirmed twice, not as one unconfirmed');
+    assert.equal(restated.ledger.active[0].unconfirmed, 0);
 
     // A boundary the model states with and without its state word is also one boundary.
     const withState = parseAnchors('局面。\n【知情边界】\n- 苏晚 | 不知道 | 钥匙来自林舟');

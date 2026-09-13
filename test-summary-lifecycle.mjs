@@ -4,20 +4,26 @@ import { parseAnchors, mergeKnowledge, summaryPrompt } from './raw-history.js';
 import { requestSummary, summaryResponse } from './summary-transport.js';
 
 const K = 'aetheriaUnifiedMemoryV54';
-const body = '队伍在大厅等候。\n【锚点】\n- 所有权 | 钥匙属于甲\n【已解决】\n- 无\n【知情边界】\n- 乙 | 不知道 | 密码';
+// The anchor section is a change list, and its source id has to exist in the batch the model was given, so
+// the fixture reads the request rather than hard-coding an id that is only right for the first batch.
+const anySource = prompt => (String(prompt).match(/\[(raw_\d+)\]/) || [])[1] || 'raw_1';
+const bodyFor = prompt => '队伍在大厅等候。\n【锚点变更】\n- 新增 | 所有权 | 钥匙 | 来源 '
+    + anySource(prompt) + ' | 钥匙属于甲\n【知情边界】\n- 乙 | 不知道 | 密码';
+const body = bodyFor('');
 const pair = n => [{ is_user: true, mes: `第${n}轮进入大厅。` }, { is_user: false, mes: `管家回应第${n}轮，钥匙属于甲。` }];
 function host() {
     const ctx = { extensionSettings: { [K]: { enabled: true, narrative_every: 10, narrative_setting_tokens: 0 } },
         chatMetadata: { [K]: {} }, chat: [{ is_user: false, mes: '角色开场白。' }],
         saveMetadataDebounced() {}, setExtensionPrompt() {} };
-    const services = { vector: () => ({ supported: false }), isCurrent: () => true, summarize: async () => body };
+    const services = { vector: () => ({ supported: false }), isCurrent: () => true,
+        summarize: async (_ctx, prompt) => bodyFor(prompt) };
     return { ctx, services, store: () => ctx.chatMetadata[K] };
 }
 
 // Cadence is ten completed user turns = twenty dialogue floors, excluding the greeting.
 {
     const h = host(); let calls = 0;
-    h.services.summarize = async () => { calls++; return body; };
+    h.services.summarize = async (_ctx, prompt) => { calls++; return bodyFor(prompt); };
     for (let n = 1; n <= 20; n++) {
         h.ctx.chat.push(pair(n)[0]); await updateNarrative(h.ctx, h.services);
         assert.equal(calls, Math.floor((n - 1) / 10), 'a pending user message cannot trigger a summary');
@@ -48,7 +54,7 @@ function host() {
     assert.equal(h.ctx.chat.at(-3).is_system, undefined, 'unsummarized tail stays visible');
     assert.equal(h.ctx.extensionSettings[K].__narrative_summary_in_progress, undefined);
     // Appending during the request does not invalidate the unchanged source prefix.
-    h.ctx.chat.push(...pair(21)); release(body); await job;
+    h.ctx.chat.push(...pair(21)); release(bodyFor(captured)); await job;
     assert.doesNotMatch(captured, /第21轮/);
     assert.equal(h.store().narrative_summary.covered.length, 41);
     assert.equal(h.store().raw_history.active.length, 43);
@@ -59,7 +65,7 @@ function host() {
 // Backlog is consumed in exact batches; force cannot bypass cadence or the input budget.
 {
     const h = host(); let prompts = [];
-    h.services.summarize = async (_ctx, prompt) => { prompts.push(prompt); return body; };
+    h.services.summarize = async (_ctx, prompt) => { prompts.push(prompt); return bodyFor(prompt); };
     h.ctx.chat.push(...Array.from({ length: 9 }, (_, i) => pair(i + 1)).flat());
     await updateNarrative(h.ctx, h.services, { force: true });
     assert.equal(prompts.length, 0);
@@ -77,7 +83,7 @@ function host() {
     h.ctx.extensionSettings[K].narrative_input_chars = 2000;
     h.ctx.chat.push(...Array.from({ length: 10 }, (_, i) => pair(i)).flat());
     h.ctx.chat[2].mes += '完整原文'.repeat(600);
-    h.services.summarize = async () => { calls++; return body; };
+    h.services.summarize = async (_ctx, prompt) => { calls++; return bodyFor(prompt); };
     await updateNarrative(h.ctx, h.services);
     assert.equal(calls, 0, 'an over-budget batch is never sent');
     assert.ok(h.ctx.chat.every(row => !row.is_system));

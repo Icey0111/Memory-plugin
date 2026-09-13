@@ -12,7 +12,12 @@ import { updateNarrative, buildNarrativeContext, runNarrativeGeneration, readNar
     narrativeSettings, generateNarrativeSummary, NARRATIVE_PROMPTS } from './narrative-runtime.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
-const SUMMARY_BODY = '局面稳定。\n【锚点】\n- 所有权 | 钥匙属于甲\n【已解决】\n- 无\n【知情边界】\n- 乙 | 不知道 | 密码';
+// The anchor section is a change list now, and its source id has to exist in the batch the model was
+// given - so the fixture reads the first id out of the request instead of hard-coding one that only
+// happens to be right for the first batch.
+const anySource = prompt => (String(prompt).match(/\[(raw_\d+)\]/) || [])[1] || 'raw_1';
+const SUMMARY_BODY = prompt => '局面稳定。\n【锚点变更】\n- 新增 | 所有权 | 钥匙 | 来源 '
+    + anySource(prompt) + ' | 钥匙属于甲\n【知情边界】\n- 乙 | 不知道 | 密码';
 const pair = n => [{ is_user: true, mes: '第' + n + '轮：主角走进大厅。' },
     { is_user: false, mes: '第' + n + '轮：管家回应，钥匙仍在甲手里，乙不知道密码。' }];
 
@@ -25,7 +30,7 @@ function host({ settings = {}, summarize } = {}) {
     let live = true;
     const services = { vector: () => ({ supported: false, reason: 'vector disabled in this test' }),
         isCurrent: () => live, leave: () => { live = false; },
-        summarize: summarize || (async () => SUMMARY_BODY) };
+        summarize: summarize || (async (_ctx, prompt) => SUMMARY_BODY(prompt)) };
     return { ctx, services, store: () => ctx.chatMetadata[KEY] };
 }
 const add = (h, n) => h.ctx.chat.push(...pair(n));
@@ -52,7 +57,7 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
     assert.equal(report.diagnostics.summary_error !== null, true, 'the current error is also set');
 
     // A later success clears the current error and keeps the history, marked recovered.
-    h.services.summarize = async () => SUMMARY_BODY;
+    h.services.summarize = async (_ctx, prompt) => SUMMARY_BODY(prompt);
     await updateNarrative(h.ctx, h.services);
     report = readNarrativeReport(h.ctx);
     assert.equal(report.summary_failures, 0, 'the failure counter resets on success');
@@ -98,7 +103,7 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
 }
 {
     // Format: anchors but no prose.
-    const h = host({ summarize: async () => '【锚点】\n- 所有权 | 钥匙属于甲\n【已解决】\n- 无\n【知情边界】\n- 无' });
+    const h = host({ summarize: async () => '【锚点变更】\n- 更新 A1 | 来源 raw_3 | 钥匙属于甲\n【知情边界】\n- 无' });
     fill(h, 10);
     await updateNarrative(h.ctx, h.services);
     assert.equal(readNarrativeReport(h.ctx).summary_last_error.stage, 'format');
@@ -220,16 +225,16 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
 
 // --- 6. the report shows the warnings the assembly recorded, including a fitted-out anchor block -----
 {
-    // Twenty genuinely different anchors: near-identical ones would be folded by supersession now, and this
-    // block is about the token budget rather than about the ledger.
+    // Twenty genuinely different anchors, added in one batch: this block is about the token budget rather
+    // than about the ledger, so nothing here is a restatement of anything else.
     const many = ['Seraphina答应不把钥匙的事说出去', '林舟承诺不再靠近那座井', '苏晚要求把断扣交还',
         '管家知道密道的位置', '守卫不会在夜里开门', '米拉负责保管那盏青铜灯', '老周欠你一次人情',
         '阿七把船停在了南岸', '护符只对持有者生效', '结界在月圆之夜最弱', '井底的根须会移动',
         '穹顶的裂缝每天变宽', '黑石刀不能带入石室', '刻痕必须在日出前描完', '源泉之水只能喝一次',
         '山下的名字不能念出来', '伤口在左臂而不是右臂', '毒发时钟与心跳同步', '长刀沉在井底槽中',
-        '灯油只够走到第五道刻痕'].map(s => '- 承诺 | ' + s).join('\n');
+        '灯油只够走到第五道刻痕'].map(s => '- 新增 | 承诺 | 来源 raw_3 | ' + s).join('\n');
     const h = host({ settings: { narrative_anchor_tokens: 100 } });
-    h.services.summarize = async () => '局面。\n【锚点】\n' + many + '\n【已解决】\n- 无\n【知情边界】\n- 无';
+    h.services.summarize = async () => '局面。\n【锚点变更】\n' + many + '\n【知情边界】\n- 无';
     fill(h, 10);
     await updateNarrative(h.ctx, h.services);
     const bundle = await buildNarrativeContext(h.ctx, h.services, { contextSize: 32768 });

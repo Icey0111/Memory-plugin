@@ -50,6 +50,17 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
+- **Anchors change by numbered operation.** The summarizer is shown the live ledger with a short id per
+  line (`- A1 | 类型 | 主体 | 陈述`) and answers with a change list instead of restating everything:
+  `更新 A3 | 来源 raw_77 | 新陈述`, `新增 | 类型 | 主体 | 来源 raw_79 | 陈述`,
+  `结束 A5 | 来源 raw_80 | 原因`. An anchor nobody mentions is left alone, and a subject is a label again -
+  "新增" never replaces a value, so two facts that share a subject both stay. Every reference is checked
+  before the summary and the ledger commit together: an unknown id, a source outside the batch, two
+  changes to one record, a record that moved since the request, or a batch text edited during the call all
+  refuse the batch, leave the original floors visible, and are reported per line with the rule they broke.
+  The panel shows the last batch's operation counts, the refused lines, the live values that share a
+  subject, and the retired records with their sources. The retired window is 40 records and is stated in
+  the panel rather than implied to be complete.
 - Historical retrieval focuses on a pending user request while scene names remain available to the
   character-description channel. Continuation keeps the recent-scene query. Pure continuation commands
   remain archived but cannot consume historical evidence slots.

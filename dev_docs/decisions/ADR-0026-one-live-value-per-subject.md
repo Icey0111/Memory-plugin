@@ -1,6 +1,6 @@
 # ADR-0026: One live value per subject, and a block that is filled evenly
 
-- Status: accepted
+- Status: superseded by ADR-0028 (the subject is a label, and a replacement now names its target)
 - Date: 2026-09-13
 - Relates to: ADR-0005 (continuity anchors), ADR-0008 and ADR-0012 (knowledge boundaries), ADR-0024, ADR-0025
 

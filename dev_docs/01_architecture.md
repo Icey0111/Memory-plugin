@@ -126,9 +126,10 @@ the chat file keeps (ADR-0004).
 | N11 | A failed summary records its stage - transport, empty body, truncated, over budget, format - with the input cost and response status, and a later success marks it recovered instead of erasing it (ADR-0025) | tagged, summary_last_error |
 | N12 | A committed state has a source version and a content version; the prompt is called injected only after the host has been given it, and assembly re-composes if the state commits while it waits (ADR-0025) | stateRevisionOf, runNarrativeGeneration, composeContinuity |
 | N13 | The unsummarized tail is a state (idle, accumulating, summarizing, failing, blocked, backlog) and only a block, a real run of failures, or a stalled oversized backlog warns (ADR-0025) | summarizeState, warningsFor |
-| N14 | One live value per subject; a superseded statement is never injected, and supersession moves an entry to a bounded ledger instead of deleting it (ADR-0026) | supersedeAnchors, mergeAnchors |
+| N14 | An anchor changes only by a named operation on a host-assigned alias: `更新 A3`, `新增`, `结束 A5`. A retired value is never injected, and it moves to a bounded ledger instead of being deleted (ADR-0028) | mergeAnchors, planAnchors, parseAnchorChanges |
 | N15 | The anchor block is filled evenly across kinds, newest-first inside each kind, and what it parks is reported (ADR-0026) | orderAnchors, selectAnchors |
-| N16 | A subject identity is a deterministic normalisation - Unicode, whitespace, a dropped "/" suffix - never a similarity, and no rank table decides which kind is served first; recency does (ADR-0027) | anchorSubjectKey, orderAnchors |
+| N16 | A label is a display name, not an identity: it is Unicode-normalised and whitespace-collapsed, and no rank table decides which kind is served first; recency does (ADR-0027, ADR-0028) | anchorSubjectKey, orderAnchors |
+| N17 | Every anchor reference is checked before anything is written - the alias is in the frozen request, the source is in this batch's text, the record is not changed twice and still carries the frozen revision - and a refused batch commits nothing, hides nothing and never falls back to a label match (ADR-0028) | parseAnchorChanges, mergeAnchors, sourceBatchFingerprint |
 
 ### 6. What this architecture does not do yet
 

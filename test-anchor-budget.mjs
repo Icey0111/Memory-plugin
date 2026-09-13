@@ -3,14 +3,14 @@
 // Written before the implementation. The measured problem: 30 live anchors, 10 injected, and the cut kept
 // the OLDEST because the block was filled in the order the model emitted lines. Two of the dropped ones
 // were the corrected current values of facts whose stale versions stayed. So:
-//   A. a superseded statement is never injected;
-//   B. two statements about the same subject are never injected together;
-//   C. the ledger keeps its history: supersession moves an entry, it does not delete it;
-//   D. when the budget still binds, the cut is by kind priority and newest-first, and it is reported.
+//   A. a retired statement is never injected;
+//   B. one label can hold several live records now, and the collision is counted rather than resolved;
+//   C. the ledger keeps its history: a replacement moves an entry, it does not delete it;
+//   D. when the budget still binds, the cut is by kind round-robin and newest-first, and it is reported.
 import assert from 'node:assert/strict';
-import { supersedeAnchors, orderAnchors, selectAnchors, mergeAnchors, parseAnchors, formatAnchors,
-    formatAnchorPrompt, ANCHOR_DUPLICATE_SIMILARITY, MAX_SUPERSEDED } from './raw-history.js';
-import { updateNarrative, buildNarrativeContext, runNarrativeGeneration, readNarrativeReport,
+import { orderAnchors, selectAnchors, mergeAnchors, parseAnchors, parseAnchorChanges, formatAnchors,
+    formatAnchorPrompt, planAnchors, anchorSubjectKey, MAX_SUPERSEDED, MAX_RESOLVED } from './raw-history.js';
+import { updateNarrative, buildNarrativeContext, readNarrativeReport,
     narrativeSettings } from './narrative-runtime.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
@@ -23,67 +23,75 @@ function host({ settings = {}, summarize } = {}) {
         saveMetadataDebounced() {}, saveSettingsDebounced() {}, setExtensionPrompt() {},
         eventTypes: {}, eventSource: { on() {} } };
     const services = { vector: () => ({ supported: false, reason: 'vector disabled in this test' }),
-        isCurrent: () => true, summarize: summarize || (async () =>
-            '局面。\n【锚点】\n- 无\n【已解决】\n- 无\n【知情边界】\n- 无') };
+        isCurrent: () => true, summarize: summarize || (async () => '局面。\n【锚点变更】\n- 无\n【知情边界】\n- 无') };
     return { ctx, services, store: () => ctx.chatMetadata[KEY] };
 }
 const anchor = (kind, text, extra = {}) => ({ id: 'a_' + text.slice(0, 6), kind, text, subject: '',
-    first_seen: 1000, last_confirmed: 1000, passes: 1, unconfirmed: 0, ...extra });
+    revision: 1, source: 'raw_1', first_seen: 1000, last_confirmed: 1000, passes: 1, unconfirmed: 0, ...extra });
+/** Apply checked operations to a ledger, for the sections that are about the ledger rather than the wire. */
+const apply = (active, lines, sources) => {
+    const plan = planAnchors(active);
+    const { changes, errors } = parseAnchorChanges(lines, { plan, batchSources: new Set(sources) });
+    assert.deepEqual(errors, []);
+    return { plan, ...mergeAnchors({ version: 1, active, superseded: [], resolved: [] }, changes, { plan, at: 5000 }) };
+};
 const POISON_OLD = 'Seraphina被黑石刀伤中毒，魔法无法治愈，约不足一日内或及心脏。';
 const POISON_DUP = 'Seraphina被黑石刀伤中毒，魔法无法治愈，约一日内或及心脏。';
 const KNIFE_HELD = 'Ilyra的长刀现由你持有；它能切割符咒与魔法无法处理之物。';
 const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁住，不在你手中。';
 
-// --- 1. a restatement is one entry, and the one that is kept is the newer -------------------------
+// --- 1. an explicit update retires a value; a matching label does not -------------------------------
 {
-    const older = anchor('生死状态', POISON_OLD, { id: 'old', last_confirmed: 1000, passes: 3 });
-    const newer = anchor('生死状态', POISON_DUP, { id: 'new', last_confirmed: 2000, passes: 1 });
-    const result = supersedeAnchors([older, newer]);
-    assert.equal(result.active.length, 1, 'a near-verbatim restatement is not a second fact');
-    assert.equal(result.active[0].id, 'new', 'the newer statement is the live value');
-    assert.equal(result.superseded.length, 1);
-    assert.equal(result.superseded[0].id, 'old', 'and the older one is kept, not deleted');
-    assert.match(result.superseded[0].reason, /restatement/);
-    assert.ok(ANCHOR_DUPLICATE_SIMILARITY <= 0.775 && ANCHOR_DUPLICATE_SIMILARITY >= 0.1,
-        'the threshold sits between the measured restatements (0.775-0.800) and unrelated facts (0.011-0.014)');
-    assert.ok(MAX_SUPERSEDED > 0);
+    const held = anchor('所有权', KNIFE_HELD, { id: 'held', subject: 'Ilyra之刀', last_confirmed: 1000 });
+    const updated = apply([held], ['更新 A1 | 来源 raw_2 | ' + KNIFE_SUNK], ['raw_2']);
+    assert.equal(updated.ledger.active.length, 1, 'the named record is the one that changes');
+    assert.equal(updated.ledger.active[0].id, 'held', 'and it keeps its identity while its value moves');
+    assert.equal(updated.ledger.active[0].revision, 2);
+    assert.equal(updated.ledger.superseded[0].text, KNIFE_HELD, 'the old value is archived, not deleted');
+    assert.match(updated.ledger.superseded[0].reason, /update/);
+    // Lexically these two are 0.021 apart, which is why a similarity rule could never be the whole rule.
+    const added = apply([held], ['新增 | 所有权 | Ilyra之刀 | 来源 raw_2 | ' + KNIFE_SUNK], ['raw_2']);
+    assert.equal(added.ledger.active.length, 2, 'an add is not an update, whatever label it carries');
+    assert.equal(added.ledger.superseded.length, 0, 'nothing was retired by a label match');
+    assert.equal(added.ledger.subject_collisions, 1, 'and the collision is counted, not guessed away');
+    assert.ok(MAX_SUPERSEDED > 0 && MAX_RESOLVED > 0);
 }
 
 // --- 2. two different facts survive together ------------------------------------------------------
 {
-    const a = anchor('承诺', 'Seraphina承诺会保护你、不让你独自面对危险。');
-    const b = anchor('承诺', 'Seraphina要求你走山羊小径下到旧火道路，在第三道螺旋刻痕处汇合。');
-    const result = supersedeAnchors([a, b]);
-    assert.equal(result.active.length, 2, 'unrelated promises are two facts');
-    assert.equal(result.superseded.length, 0);
+    const active = [anchor('承诺', 'Seraphina承诺会保护你、不让你独自面对危险。', { id: 'a' }),
+        anchor('承诺', 'Seraphina要求你走山羊小径下到旧火道路，在第三道螺旋刻痕处汇合。', { id: 'b' })];
+    const result = apply(active, ['新增 | 承诺 | 护送 | 来源 raw_2 | 管家会护送你到第三道刻痕。'], ['raw_2']);
+    assert.equal(result.ledger.active.length, 3, 'unrelated promises are three facts');
+    assert.equal(result.ledger.superseded.length, 0);
 }
 
-// --- 3. the same subject with a new value: invariant B --------------------------------------------
+// --- 3. a restatement is one entry, and the record that survives is the existing one ---------------
 {
-    const held = anchor('所有权', KNIFE_HELD, { id: 'held', subject: 'Ilyra之刀', last_confirmed: 1000 });
-    const sunk = anchor('所有权', KNIFE_SUNK, { id: 'sunk', subject: 'Ilyra之刀', last_confirmed: 2000 });
-    // Lexically these are 0.021 apart, so nothing but an explicit subject can tell they are one fact.
-    const result = supersedeAnchors([held, sunk]);
-    assert.equal(result.active.length, 1, 'one subject holds one live value');
-    assert.equal(result.active[0].id, 'sunk', 'the newer value wins');
-    assert.equal(result.superseded[0].id, 'held');
-    assert.match(result.superseded[0].reason, /same subject/);
-    const both = supersedeAnchors([held, sunk]).active.map(item => item.id);
-    assert.equal(both.includes('held') && both.includes('sunk'), false, 'invariant B holds');
+    const older = anchor('生死状态', POISON_OLD, { id: 'old', subject: 'Seraphina的毒', last_confirmed: 1000, passes: 3 });
+    const result = apply([older], ['新增 | 生死状态 | Seraphina的毒 | 来源 raw_2 | ' + POISON_OLD], ['raw_2']);
+    assert.equal(result.ledger.active.length, 1, 'the same text and label is one record');
+    assert.equal(result.ledger.active[0].id, 'old', 'and the record that already exists is the one kept');
+    assert.equal(result.ledger.active[0].passes, 4, 'the restatement counts as a confirmation');
+    assert.equal(result.stats.restated, 1);
+    // A near-verbatim restatement is NOT folded any more: the threshold could not tell it from a new value,
+    // and the explicit update is what makes the distinction now.
+    const near = apply([anchor('生死状态', POISON_OLD, { id: 'old', subject: 'Seraphina的毒' })],
+        ['新增 | 生死状态 | Seraphina的毒 | 来源 raw_2 | ' + POISON_DUP], ['raw_2']);
+    assert.equal(near.ledger.active.length, 2, 'the retired similarity threshold no longer folds near matches');
 }
 
-// --- 4. the injected block never carries a superseded statement, and invariant A holds ------------
+// --- 4. the injected block never carries a retired statement --------------------------------------
 {
     const held = anchor('所有权', KNIFE_HELD, { id: 'held', subject: 'Ilyra之刀', last_confirmed: 1000 });
-    const sunk = anchor('所有权', KNIFE_SUNK, { id: 'sunk', subject: 'Ilyra之刀', last_confirmed: 2000 });
-    const state = supersedeAnchors([held, sunk]);
-    const selection = selectAnchors(state.active, { budget: 600 });
+    const updated = apply([held], ['更新 A1 | 来源 raw_2 | ' + KNIFE_SUNK], ['raw_2']);
+    const selection = selectAnchors(updated.ledger.active, { budget: 600 });
     assert.match(selection.text, /沉入井底/, 'the live value is injected');
-    assert.doesNotMatch(selection.text, /现由你持有/, 'the superseded one is not');
+    assert.doesNotMatch(selection.text, /现由你持有/, 'the retired one is not');
     assert.equal(selection.parked.length, 0);
 }
 
-// --- 5. when the budget binds, the cut is by kind priority and newest first -----------------------
+// --- 5. when the budget binds, the cut is by recency, made fair by kind round-robin ---------------
 {
     const active = [
         anchor('状态', '很久以前的一个场景状态，现在早已无关。', { id: 'old-state', last_confirmed: 1000 }),
@@ -109,9 +117,9 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
 {
     const h = host({ settings: { narrative_anchor_tokens: 30 } });
     for (let n = 1; n <= 10; n += 1) h.ctx.chat.push(...pair(n));
-    h.services.summarize = async () => '局面。\n【锚点】\n- 无\n【已解决】\n- 无\n【知情边界】\n- 无';
+    h.services.summarize = async () => '局面。\n【锚点变更】\n- 无\n【知情边界】\n- 无';
     await updateNarrative(h.ctx, h.services);
-    h.store().narrative_anchors = { version: 1, active: [
+    h.store().narrative_anchors = { version: 2, active: [
         anchor('生死状态', 'Seraphina被黑石刀伤中毒，自估约四小时。'),
         anchor('秘密', '井底女声是Ilyra反复自语被岩石记住的句子。'),
         anchor('承诺', 'Seraphina要求你见面时不要说出那个名字本身。'),
@@ -131,65 +139,74 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     // warning that still promised "kind priority" was found live after that deletion.
     assert.doesNotMatch(parkedWarning, /类型优先级/);
     assert.match(parkedWarning, /类型轮流/);
+    // And it has to name the operation that really ends an anchor, not the section the old protocol used.
+    assert.match(parkedWarning, /结束 A#/);
+    assert.doesNotMatch(parkedWarning, /【已解决】/);
 }
 
-// --- 7. a legacy store is normalised on load, and history survives --------------------------------
+// --- 7. a legacy ledger is migrated as it stands, and a label collision is reported ---------------
 {
+    // The fold that used to run here is the rule this protocol removes. Running it on load would leave one
+    // place where a label still authorised a replacement, so the restatement survives and is counted.
     const h = host();
     for (let n = 1; n <= 10; n += 1) h.ctx.chat.push(...pair(n));
     await updateNarrative(h.ctx, h.services);
     h.store().narrative_anchors = { version: 1, active: [
-        anchor('生死状态', POISON_OLD, { id: 'old', last_confirmed: 1000 }),
-        anchor('生死状态', POISON_DUP, { id: 'new', last_confirmed: 2000 }),
-        anchor('承诺', 'Seraphina承诺会保护你、不让你独自面对危险。', { id: 'keep' }),
+        anchor('生死状态', POISON_OLD, { id: 'old', subject: 'Seraphina的毒', last_confirmed: 1000 }),
+        anchor('生死状态', POISON_DUP, { id: 'new', subject: 'Seraphina的毒', last_confirmed: 2000, revision: undefined }),
     ], superseded: [], resolved: [] };
     const bundle = await buildNarrativeContext(h.ctx, h.services, { contextSize: 32768 });
     const store = h.store().narrative_anchors;
-    assert.equal(store.active.length, 2, 'the restatement is folded away on load');
-    assert.equal(store.superseded.length, 1, 'and it is archived, not dropped');
-    assert.equal(store.superseded[0].text, POISON_OLD, 'the older statement is the archive entry');
-    assert.match(bundle.currentStateBlock, /救命|不足一日|一日内/, 'the live value is what gets injected');
+    assert.equal(store.active.length, 2, 'a legacy ledger is migrated exactly as it stands');
+    assert.equal(store.superseded.length, 0, 'nothing is folded on load any more');
+    assert.equal(bundle.diagnostics.anchors_same_subject, 1,
+        'and the collision the old rule would have hidden is reported');
+    assert.equal(readNarrativeReport(h.ctx).anchors_same_subject, 1, 'the read-only report derives it too');
+    assert.ok(store.active.every(item => item.subject === 'Seraphina的毒'));
 }
 
-// --- 8. the summarizer is told the subject field and the supersession duty -------------------------
+// --- 8. the summarizer is told the alias table and the operation rules ----------------------------
 {
-    const parsed = parseAnchors('局面。\n【锚点】\n- 所有权 | Ilyra之刀 | 已沉入井底，不在你手中。\n【已解决】\n- 所有权 | 现由你持有。');
-    assert.equal(parsed.anchors[0].subject, 'Ilyra之刀', 'a three-field anchor carries an explicit subject');
-    assert.equal(parsed.anchors[0].kind, '所有权');
-    assert.equal(parsed.anchors[0].text, '已沉入井底，不在你手中。');
-    const two = parseAnchors('局面。\n【锚点】\n- 承诺 | 她说：先走 | 后停\n【已解决】\n- 无');
-    assert.equal(two.anchors[0].subject, '', 'an old-style line is still one statement, not a subject and a remainder');
-    const prompt = formatAnchorPrompt([anchor('所有权', '已沉入井底，不在你手中。', { subject: 'Ilyra之刀' })]);
-    assert.match(prompt, /- 所有权 \| Ilyra之刀 \| 已沉入井底/, 'the prompt shows the subject so the model can keep it stable');
-    const merged = mergeAnchors({ active: [], superseded: [] }, parseAnchors(
-        '局面。\n【锚点】\n- 所有权 | Ilyra之刀 | 现由你持有。\n【已解决】\n- 无'));
-    assert.equal(merged.active[0].subject, 'Ilyra之刀');
+    const active = [anchor('所有权', '已沉入井底，不在你手中。', { id: 'k', subject: 'Ilyra之刀', revision: 3 })];
+    const plan = planAnchors(active);
+    assert.equal(plan[0].alias, 'A1');
+    assert.equal(plan[0].revision, 3, 'the table freezes the version the answer will be checked against');
+    const prompt = formatAnchorPrompt(plan);
+    assert.match(prompt, /- A1 \| 所有权 \| Ilyra之刀 \| 已沉入井底/, 'the id, the label and the whole old value');
+    const { changes, errors } = parseAnchorChanges(
+        ['更新 A1 | 来源 raw_9 | 已由乙捞出，放在井边。'], { plan, batchSources: new Set(['raw_9']) });
+    assert.deepEqual(errors, []);
+    assert.equal(changes[0].id, 'k', 'the alias resolves to the record the host actually sent');
+    assert.equal(changes[0].revision, 3, 'and carries the version it was approved against');
 }
 
-// --- 9. one subject written two ways is one subject -----------------------------------------------
+// --- 9. a slash label keeps the content after the slash ------------------------------------------
 {
-    // Measured on the live ledger: the model wrote "心脏石植入者/制造者" in one pass and
-    // "心脏石植入者" in the next, and the fact survived twice. The kind field already drops a "/" suffix.
-    const a = anchor('威胁', '有人在 Eldoria 野兽体内植入心脏石。', { id: 'a', subject: '心脏石植入者', first_seen: 1000 });
-    const b = anchor('威胁', '有人或某物在野兽与桥上身影体内植入心脏石。', { id: 'b', subject: '心脏石植入者/制造者', first_seen: 2000 });
-    const result = supersedeAnchors([a, b]);
-    assert.equal(result.active.length, 1, 'one subject written two ways is one fact');
-    assert.equal(result.active[0].id, 'b', 'and the newer spelling is the live one');
-    assert.match(result.superseded[0].reason, /same subject/);
+    // The old rule dropped the suffix to make "心脏石植入者/制造者" equal "心脏石植入者". It made
+    // "刀/位置" equal "刀/所有者" too, and there is no reading of the label that separates those two.
+    assert.equal(anchorSubjectKey({ subject: '刀/位置' }), '刀/位置');
+    assert.notEqual(anchorSubjectKey({ subject: '刀/位置' }), anchorSubjectKey({ subject: '刀/所有者' }));
+    assert.equal(anchorSubjectKey({ subject: '  心脏石植入者 / 制造者 ' }), '心脏石植入者 / 制造者',
+        'only whitespace is collapsed now');
+    const active = [anchor('位置', '刀在井底。', { id: 'pos', subject: '刀/位置' }),
+        anchor('所有权', '刀属于甲。', { id: 'own', subject: '刀/所有者' })];
+    const result = apply(active, ['更新 A1 | 来源 raw_2 | 刀已被乙捞出。'], ['raw_2']);
+    assert.equal(result.ledger.active.length, 2, 'retiring one attribute leaves the other alone');
+    assert.equal(result.ledger.superseded.length, 1);
 }
 
-// --- 10. a subject that merely contains another is a different subject ----------------------------
+// --- 10. a label that merely contains another is a different label --------------------------------
 {
     // Measured: containment would merge these five, and every one of them is a different fact - a person
-    // and their rope, a place and its barrier, a character and her pouch. So containment is not a rule.
+    // and their rope, a place and its barrier, a character and her pouch. So containment is not a rule, and
+    // under the change protocol neither is equality: only the id decides what an update replaces.
     for (const [left, right] of [['user', 'user的保护绳'], ['Seraphina', 'Seraphina的额外小袋'],
         ['格莱德', '格莱德结界'], ['Seraphina', 'Seraphina的嗡鸣承诺'], ['Seraphina', 'Seraphina的计数策略']]) {
-        const result = supersedeAnchors([
-            anchor('状态', left + '的说明。', { id: 'l', subject: left, first_seen: 1000 }),
-            anchor('状态', right + '的说明。', { id: 'r', subject: right, first_seen: 2000 }),
-        ]);
-        assert.equal(result.active.length, 2,
-            JSON.stringify(left) + ' and ' + JSON.stringify(right) + ' are two facts, not one');
+        assert.notEqual(anchorSubjectKey({ subject: left }), anchorSubjectKey({ subject: right }),
+            JSON.stringify(left) + ' and ' + JSON.stringify(right) + ' are two labels');
+        const result = apply([anchor('状态', left + '的说明。', { id: 'l', subject: left })],
+            ['新增 | 状态 | ' + right + ' | 来源 raw_2 | ' + right + '的说明。'], ['raw_2']);
+        assert.equal(result.ledger.active.length, 2, 'and adding one never retires the other');
     }
 }
 
@@ -221,6 +238,13 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.equal(ordered.findIndex(item => item.id === 'k0') >= 5, true,
         'the older threat waits for the second round while the newer one takes the first slot');
     assert.equal(selectAnchors(active, { budget: 600 }).parked.length, 0, 'and all six fit when there is room');
+}
+
+// --- 13. the legacy anchor budget is reported, never overwritten ----------------------------------
+{
+    const h = host({ settings: { narrative_anchor_tokens: 300 } });
+    assert.ok(readNarrativeReport(h.ctx).notices.some(n => /300/.test(n) && /旧默认值/.test(n)));
+    assert.equal(narrativeSettings(h.ctx).narrative_anchor_tokens, 300);
 }
 
 console.log('anchor-budget: ok');
