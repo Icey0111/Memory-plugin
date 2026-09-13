@@ -59,11 +59,22 @@ The 421757c acceptance run separated four failures the numbered-operation protoc
   deliberately not relaxed to accept a trailing label such as '结束 A1 旧状态', because stripping the label would
   execute the conflicting end it hides; the line reaches the repair instead, and the duplicate-target check still
   refuses an end that names a record the same batch updated.
+- The anchor guidance branches on whether the ledger is empty, with the output protocol unchanged. An empty
+  ledger is asked to establish the initial anchors its continuation needs, judged by whether the ledger has
+  recorded a fact rather than by whether the story just changed; a non-empty ledger keeps the delta question.
+  Neither branch imposes a minimum count or asks for an exhaustive list, and an empty ledger may still answer
+  '无'. A fixed three-call contrast found the branch extracts more anchors (10 vs 6 on the frozen first batch),
+  but a no-anchor counterexample was still given two anchors, so the branch trades some precision for recall and
+  the single-sample difference between the arms is not attributed to the branch.
+- The narrow prose-completion path is documented as a candidate and is not implemented: the only evidence is one
+  missing-body probe failure, while the larger evidenced problem is over-annotation and protocol drift, which the
+  existing one-repair path already reaches.
 
-The instruction block grew from 760 characters (ADR-0028's measurement) to 1,018 with the three ledger checks,
-the multi-source shape and the update/end distinction. The input-budget pressure the acceptance run recorded is
-therefore slightly worse by construction. Raising the input budget or adding an explicit capacity setting is a
-separate decision and is not made here; a blocked batch still calls no model, hides no floor and stays visible.
+The instruction block branches on whether the ledger is empty: 1,041 characters for an empty ledger and 964 for a
+non-empty one (from 760 measured in ADR-0028), with the output protocol identical in both. The input-budget
+pressure the acceptance run recorded is unchanged by construction; raising the input budget or adding an explicit
+capacity setting is a separate decision and is not made here, and a blocked batch still calls no model, hides no
+floor and stays visible.
 
 ## Runtime precondition
 

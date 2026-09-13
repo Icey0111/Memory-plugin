@@ -59,6 +59,11 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
+- The anchor guidance branches on whether the ledger is empty: a fresh chat is asked to establish the initial
+  anchors its continuation needs, judged by whether the ledger has recorded a fact rather than by whether the
+  story just changed, while a non-empty ledger keeps the delta question. The output protocol is unchanged and
+  neither branch imposes a minimum count.
+
 - The summary prompt states the update/end distinction: an update archives the old value, so the same number
   must not also be ended in one batch; an end means the whole fact no longer holds. The trailing-label spelling
   a model produced ("结束 A1 旧状态") still refuses and is fixed by the repair, never by executing a
