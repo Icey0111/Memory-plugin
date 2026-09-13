@@ -34,6 +34,10 @@ Comparing against a stale page load costs a whole run: one 421757c run had every
 repo while the page still executed the pre-421757c `parseAnchorChanges`. Exit 2 is unknown, never a pass;
 deploy and reload, then re-run.
 
+Live summary probes must save, per call: `finish_reason`, the requested output cap, prompt and completion
+usage, the raw body and the actual commit result. A field that was not captured is reported as unknown; a finish
+reason is never inferred from a token count; reasoning text is not stored.
+
 A batch refused for its anchor section is retried once by the host with a targeted repair that shows the model
 its own answer and the rejected lines. The repair is a second call with its own recorded cost; a failed repair
 still refuses the batch and keeps the original refusal. Replaying a prior run's frozen responses

@@ -67,11 +67,14 @@ The 421757c acceptance run separated four failures the numbered-operation protoc
   unresolved items the branch committed 3 of 3 where the single prefix committed 1 of 3 with zero operations.
   Both prefixes committed useless anchors on the no-anchor counterexamples, and the branch's 【当前锚点】 echo
   drift made it take 5 repairs to the single prefix's 3. With no net committed advantage and a higher repair
-  cost, the branch is reverted and the empty-ledger initialization wording is not adopted. The narrow
-  prose-completion path stays deferred.
-- The narrow prose-completion path is documented as a candidate and is not implemented: the only evidence is one
-  missing-body probe failure, while the larger evidenced problem is over-annotation and protocol drift, which the
-  existing one-repair path already reaches.
+  cost, the branch is reverted and the empty-ledger initialization wording is not adopted. The 8,192-completion
+  run is recorded as suspected truncation with an unknown finish reason, never as a verified truncation
+  refusal, and M2's output-side failures are not claimed to be prompt-independent.
+- The narrow prose-completion path was tested in isolation on the existing failures and is not implemented. It
+  restored the commit when the body was missing (one call, 517 tokens, frozen operations committed) and
+  compressed a slightly over-budget body (611 -> 327), but it did not bring a large over-budget body under the
+  cap (748 -> 611, still refused), and the only trigger observed on the current baseline failed. With no clear
+  net benefit the path stays a documented candidate, not default code.
 
 The instruction block is 1,018 characters (from 760 measured in ADR-0028). The input-budget pressure the
 acceptance run recorded is unchanged by construction; raising the input budget or adding an explicit capacity
