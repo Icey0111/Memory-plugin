@@ -220,17 +220,25 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
 
 // --- 6. the report shows the warnings the assembly recorded, including a fitted-out anchor block -----
 {
-    const many = Array.from({ length: 20 }, (_, i) => '- 承诺 | 第 ' + i + ' 条仍然生效且必须逐字保留的承诺').join('\n');
+    // Twenty genuinely different anchors: near-identical ones would be folded by supersession now, and this
+    // block is about the token budget rather than about the ledger.
+    const many = ['Seraphina答应不把钥匙的事说出去', '林舟承诺不再靠近那座井', '苏晚要求把断扣交还',
+        '管家知道密道的位置', '守卫不会在夜里开门', '米拉负责保管那盏青铜灯', '老周欠你一次人情',
+        '阿七把船停在了南岸', '护符只对持有者生效', '结界在月圆之夜最弱', '井底的根须会移动',
+        '穹顶的裂缝每天变宽', '黑石刀不能带入石室', '刻痕必须在日出前描完', '源泉之水只能喝一次',
+        '山下的名字不能念出来', '伤口在左臂而不是右臂', '毒发时钟与心跳同步', '长刀沉在井底槽中',
+        '灯油只够走到第五道刻痕'].map(s => '- 承诺 | ' + s).join('\n');
     const h = host({ settings: { narrative_anchor_tokens: 100 } });
     h.services.summarize = async () => '局面。\n【锚点】\n' + many + '\n【已解决】\n- 无\n【知情边界】\n- 无';
     fill(h, 10);
     await updateNarrative(h.ctx, h.services);
     const bundle = await buildNarrativeContext(h.ctx, h.services, { contextSize: 32768 });
-    assert.ok(bundle.diagnostics.anchors_truncated > 0, 'the assembly dropped anchors over the budget');
+    assert.equal(bundle.diagnostics.anchors_active, 20, 'twenty distinct anchors, none of them superseded');
+    assert.ok(bundle.diagnostics.anchors_truncated > 0, 'the assembly parked anchors over the budget');
     const report = readNarrativeReport(h.ctx);
-    const warning = report.warnings.find(w => /锚点超出注入预算/.test(w));
+    const warning = report.warnings.find(w => /锚点块装不下/.test(w));
     assert.ok(warning, 'and the read-only report shows the same warning, not a hard-coded zero');
-    assert.match(warning, new RegExp('已省略 ' + bundle.diagnostics.anchors_truncated + ' 条'),
+    assert.match(warning, new RegExp('搁置 ' + bundle.diagnostics.anchors_truncated + ' 条'),
         'with the same count the assembly reported');
     assert.equal(report.anchors_truncated, bundle.diagnostics.anchors_truncated);
 }

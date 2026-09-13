@@ -126,6 +126,8 @@ the chat file keeps (ADR-0004).
 | N11 | A failed summary records its stage - transport, empty body, truncated, over budget, format - with the input cost and response status, and a later success marks it recovered instead of erasing it (ADR-0025) | tagged, summary_last_error |
 | N12 | A committed state has a source version and a content version; the prompt is called injected only after the host has been given it, and assembly re-composes if the state commits while it waits (ADR-0025) | stateRevisionOf, runNarrativeGeneration, composeContinuity |
 | N13 | The unsummarized tail is a state (idle, accumulating, summarizing, failing, blocked, backlog) and only a block, a real run of failures, or a stalled oversized backlog warns (ADR-0025) | summarizeState, warningsFor |
+| N14 | One live value per subject; a superseded statement is never injected, and supersession moves an entry to a bounded ledger instead of deleting it (ADR-0026) | supersedeAnchors, mergeAnchors |
+| N15 | The anchor block is filled evenly across kinds, newest-first inside each kind, and what it parks is reported (ADR-0026) | orderAnchors, selectAnchors |
 
 ### 6. What this architecture does not do yet
 

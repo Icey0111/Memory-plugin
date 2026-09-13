@@ -402,7 +402,7 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const clipped = await buildNarrativeContext(tight.ctx, tight.services, { contextSize: 32768 });
     assert.doesNotMatch(clipped.currentStateBlock, /\[承诺\]/, 'no anchor is injected without budget for it');
     assert.equal(clipped.diagnostics.anchors_truncated, 3, 'and the omission is counted');
-    assert.equal(clipped.diagnostics.warnings.some(text => /锚点超出注入预算/.test(text)), true);
+    assert.equal(clipped.diagnostics.warnings.some(text => /锚点块装不下/.test(text)), true);
 }
 
 // --- 13. evidence packing merges, shares and trims instead of dropping ---------------------------------

@@ -1,5 +1,6 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
     summaryMessages, summaryRequest, summaryBlockState, stateRevisionOf, LEGACY_INPUT_CHARS_DEFAULT,
+    supersedeAnchors, selectAnchors, MAX_SUPERSEDED,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
@@ -28,7 +29,11 @@ const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative
     // Continuity anchors: the commitments, ownership, secrets and life states that must survive every
     // rewrite. They are re-fed to the summarizer and re-injected verbatim, so they stop depending on
     // the model remembering to carry them forward in prose.
-    narrative_anchor_tokens: 300, narrative_anchor_unconfirmed_warn: 2,
+    // 600, not 300. The contract is that an anchor is re-injected until something explicitly resolves it,
+    // and the measured corpus does not fit 300: the 40-turn run ended with 30 live anchors, about 29 tokens
+    // each, and the 300-token block injected 10 of them. That is a structural mismatch between the contract
+    // and the budget, not an unexplained failure, so it is sized rather than hoped at.
+    narrative_anchor_tokens: 600, narrative_anchor_unconfirmed_warn: 2,
     // Who knows what. Carried as its own block for the same reason as the anchors: a character
     // silently learning a secret is a story change that no amount of prose quality fixes.
     narrative_knowledge_tokens: 200,
@@ -201,6 +206,17 @@ function prepare(ctx) {
             knowledgeNormalized = true;
         }
     }
+    // Existing installs stored anchors before supersession existed. Fold what can be folded now, so a chat
+    // that already carries restatements is corrected on load instead of waiting for the next pass.
+    let anchorsNormalized = false;
+    if (store.narrative_anchors?.active?.length) {
+        const live = supersedeAnchors(store.narrative_anchors.active, {});
+        if (live.active.length !== store.narrative_anchors.active.length) {
+            store.narrative_anchors = { ...store.narrative_anchors, active: live.active,
+                superseded: [...live.superseded, ...(store.narrative_anchors.superseded || [])].slice(0, MAX_SUPERSEDED) };
+            anchorsNormalized = true;
+        }
+    }
     const { history, changed } = captureHistory(store, ctx.chat || []);
     const chunks = chunkHistory(history);
     const legacy = store.narrative_summary;
@@ -248,7 +264,7 @@ function prepare(ctx) {
     }
     const folded = applyNarrativeFolds(ctx.chat || [], history, chunks, store.narrative_summary,
         settings.enabled !== false && settings.narrative_fold !== false);
-    if (changed || folded || knowledgeNormalized) persist(ctx);
+    if (changed || folded || knowledgeNormalized || anchorsNormalized) persist(ctx);
     return { settings, store, history, chunks };
 }
 
@@ -465,8 +481,14 @@ function warningsFor(state, opts) {
         out.push('有 ' + state.knowledge_duplicate_subjects + ' 个角色在知情边界里占了多行（最多 '
             + state.knowledge_max_per_subject + ' 行）；每个角色应当只有一行，否则同一个角色的两行可以互相矛盾。');
     }
+    // A parked entry is a live fact the model will not see this turn. That is worth saying: it used to be
+    // reported as "省略 N 条" without saying that the block had been filled oldest-first, so the ones cut
+    // were the newest facts in the story.
     if (state.anchors_truncated > 0) {
-        out.push('锚点超出注入预算，已省略 ' + state.anchors_truncated + ' 条；调高“锚点 token 预算”或清理已解决的锚点。');
+        out.push('锚点块装不下当前活值：共 ' + (state.anchors_total || 0) + ' 条，注入 '
+            + (state.anchors_injected || 0) + ' 条，搁置 ' + state.anchors_truncated
+            + ' 条（按类型优先级与新→旧排序，裁掉的是最旧的活值；被取代的旧陈述本来就不会注入）。'
+            + '可调高“锚点 token 预算”，或让总结把已解决的条目写进【已解决】。');
     }
     return out;
 }
@@ -561,17 +583,21 @@ function composeContinuity(store, chunks, opts) {
     // The anchors ride with the summary: same authority, different guarantee. The summary is rewritten
     // from scratch every pass, so a fact it stops mentioning is gone; an anchor is re-fed to the
     // summarizer and re-injected until something explicitly resolves it.
-    const anchorLines = formatAnchors(anchors).split('\n').filter(Boolean);
-    const fittedAnchors = fitLines(anchorLines, opts.anchorTokens);
-    const anchorsTruncated = anchorLines.length - (fittedAnchors ? fittedAnchors.split('\n').length : 0);
+    // The block is filled from the live-value selection, not from the order the model emitted lines.
+    const anchorSelection = selectAnchors(anchors, { budget: opts.anchorTokens });
+    const fittedAnchors = anchorSelection.text;
+    const anchorsTruncated = anchorSelection.parked.length;
     const anchorBlock = fittedAnchors
         ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions' + horizon + ']\n' + fittedAnchors : '';
     const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
     const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
     const knowledgeBlock = fittedKnowledge
         ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not' + horizon + ']\n' + fittedKnowledge : '';
-    return { summaryBlock, anchorBlock, knowledgeBlock, anchors, knowledge, anchorsTruncated, floors, sourceRevision,
-        stateRevision, block: [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n') };
+    return { summaryBlock, anchorBlock, knowledgeBlock, anchors, knowledge, anchorsTruncated,
+        anchorsInjected: anchorSelection.injected.length,
+        anchorsParkedTerms: anchorSelection.parked.map(item => ({ kind: String(item.kind || '其他'),
+            text: String(item.text || '').slice(0, 80) })),
+        floors, sourceRevision, stateRevision, block: [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n') };
 }
 
 /** The content version of the committed state, or null when there is none to inject. */
@@ -676,6 +702,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         summarizing: jobs.has(hostKey(ctx)), every: opts.every,
         anchors_unconfirmed: continuity.anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: continuity.anchorsTruncated,
+        anchors_total: continuity.anchors.length, anchors_injected: continuity.anchorsInjected,
         knowledge_unconfirmed: continuity.knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
@@ -686,6 +713,13 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         pending_floors: pending.pending_floors, pending_tokens: pending.pending_tokens,
         summary_failures: Number(live.narrative_diagnostics?.summary_failures) || 0,
         anchors_active: continuity.anchors.length,
+        anchors_injected: continuity.anchorsInjected,
+        anchors_parked: continuity.anchorsTruncated,
+        anchors_parked_terms: continuity.anchorsParkedTerms,
+        anchors_superseded: (live.narrative_anchors?.superseded || []).length,
+        // Entries with no subject can only be folded when they are near-verbatim, so this is the number that
+        // says how much of the ledger supersession still cannot reason about.
+        anchors_without_subject: continuity.anchors.filter(item => !String(item.subject || '').trim()).length,
         anchors_unconfirmed: continuity.anchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: continuity.anchorsTruncated,
         // What the accepted summary covers right now. The injected numbers are written by
@@ -833,19 +867,19 @@ export function readNarrativeReport(ctx) {
     const injectedRevision = store.narrative_diagnostics?.injected_state_revision ?? null;
     const summarizing = jobs.has(hostKey(ctx));
     const every = bound(settings.narrative_every, defaults.narrative_every, 1, 100);
-    // The anchor block is fitted on every assembly, so a read-only report has to fit it the same way to
-    // know whether anything was dropped. It used to hard-code zero here, which meant the panel could never
-    // show the truncation warning the generation itself had recorded.
+    // The anchor block is selected on every assembly, so a read-only report runs the same selection to know
+    // what was left out. It used to hard-code zero here, which meant the panel could never show the warning
+    // the generation itself had recorded.
     const activeAnchors = store.narrative_anchors?.active || [];
-    const reportAnchorLines = formatAnchors(activeAnchors).split('\n').filter(Boolean);
-    const reportFitted = fitLines(reportAnchorLines, options(settings).anchorTokens);
-    const anchorsTruncated = reportAnchorLines.length - (reportFitted ? reportFitted.split('\n').filter(Boolean).length : 0);
+    const reportSelection = selectAnchors(activeAnchors, { budget: options(settings).anchorTokens });
+    const anchorsTruncated = reportSelection.parked.length;
     const state = { ...pending, summary_failures: failures,
         summary_error: store.narrative_diagnostics?.summary_error || null,
         summary_block: store.narrative_diagnostics?.summary_block || null,
         summarizing, every,
         anchors_unconfirmed: activeAnchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: anchorsTruncated,
+        anchors_total: activeAnchors.length, anchors_injected: reportSelection.injected.length,
         knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0 };
@@ -873,6 +907,12 @@ export function readNarrativeReport(ctx) {
         pending_tokens: pending.pending_tokens,
         summary_failures: failures,
         anchors_active: activeAnchors.length,
+        anchors_injected: reportSelection.injected.length,
+        anchors_parked: anchorsTruncated,
+        anchors_parked_terms: reportSelection.parked.map(item => ({ kind: String(item.kind || '其他'),
+            text: String(item.text || '').slice(0, 80) })),
+        anchors_superseded: (store.narrative_anchors?.superseded || []).length,
+        anchors_without_subject: activeAnchors.filter(item => !String(item.subject || '').trim()).length,
         anchors_unconfirmed: activeAnchors.filter(item => Number(item.unconfirmed) > 0).length,
         anchors_truncated: anchorsTruncated,
         anchors_resolved: (store.narrative_anchors?.resolved || []).length,

@@ -10,6 +10,19 @@ the measured query and packing failures.
 The default remains ten completed user turns (normally twenty message rows). Summary quality and
 long-run narrative acceptance are a separate task; this retrieval iteration does not establish them.
 
+## Completed anchor-budget work
+
+- One live value per subject, with the retired entry kept in a bounded ledger together with the id of what
+  replaced it (ADR-0026).
+- The subject became part of the summarizer protocol, so a mutable fact keeps one identity across passes and
+  the model is asked to resolve what a new statement replaces.
+- The block is filled evenly across kinds and newest-first inside each kind, instead of in the order the
+  model emitted lines. Measured on the real 30-anchor ledger: the old cut kept facts averaging +165 s old
+  and dropped facts averaging +1024 s old, including the corrected values of two facts whose stale versions
+  stayed in the block.
+- The default anchor budget is 600 rather than 300, and what does not fit is reported
+  (`anchors_parked`, `anchors_parked_terms`, `anchors_without_subject`).
+
 ## Completed summary-diagnostics work
 
 - Classify a failed summary (transport, empty body, truncated, over the accept budget, format) and keep a

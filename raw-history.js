@@ -436,8 +436,12 @@ export function summaryRequest(previous, messages, maxTokens, anchors, knowledge
         + '必须输出四节，顺序固定：\n'
         + '1. 摘要正文（不要标题）。\n'
         + ANCHOR_SECTION + '：列出目前仍然生效的承诺、所有权、秘密、身份与生死状态。'
-        + '输入列表里已有的锚点必须逐条原样照抄（不要改写、合并、翻译或省略），新发现的用同样格式追加。'
-        + '没有就写“无”。格式：- 类型 | 一句陈述\n'
+        + '格式：- 类型 | 主体 | 一句陈述。主体是这条事实唯一的短标识（例如 Ilyra之刀、Seraphina的毒）；'
+        + '同一个可变事实的新旧状态必须用同一个主体，并且只保留最新的那一条。'
+        + '输入列表里已有的锚点必须逐条照抄（主体不要改写、合并、翻译或省略）；'
+        + '输入列表里缺少主体的条目，请补上主体后再照抄。新发现的用同样格式追加。'
+        + '被新陈述取代的旧条目必须原样写进' + RESOLVED_SECTION + '。'
+        + '没有就写“无”。\n'
         + RESOLVED_SECTION + '：只列出本轮原文明确解决、失效或被推翻的锚点与知情边界。用原条目的类型和正文。没有就写“无”。\n'
         + KNOWLEDGE_SECTION + '：列出当前仍然成立的知情边界——谁知道什么、谁明确不知道什么，'
         + '尤其是秘密、隐瞒和误解。每个角色只能有一行：把该角色当前知道与不知道的事实合并写进这一行，'
@@ -445,7 +449,8 @@ export function summaryRequest(previous, messages, maxTokens, anchors, knowledge
         + '学到新事实时改写该角色那一行，被取代的说法不要保留。新出现的角色用同样格式追加。'
         + '没有就写“无”。格式：- 角色 | 知道或不知道 | 事实；事实\n\n';
     const previousText = previous || '无';
-    const anchorText = formatAnchors(anchors) || '无';
+    // The summarizer sees the subject, so a value it updates keeps the identity that supersedes the old one.
+    const anchorText = formatAnchorPrompt(anchors) || '无';
     const knowledgeText = formatAnchors(knowledge) || '无';
     const batchText = messages.map(row => '[' + row.id + '] ' + row.retrievalText).join('\n\n');
     const text = instructions + '【旧摘要】\n' + previousText + '\n\n【当前锚点】\n' + anchorText
@@ -521,6 +526,38 @@ const anchorKey = item => {
     const base = kind.includes('/') ? kind.split('/')[0] : kind;
     return (base + '|' + String(item.text || '').trim()).normalize('NFKC');
 };
+/**
+ * How much two anchor statements have to overlap before they are one fact restated.
+ *
+ * Measured on the 30 live anchors of a 40-turn run. A restatement ("约不足一日内或及心脏" against
+ * "约一日内或及心脏") scores 0.800, and the mentor sentence with its tail trimmed scores 0.775, while
+ * unrelated anchors score 0.011-0.014. 0.6 sits in the empty band between them.
+ *
+ * The same measurement is why overlap cannot be the whole rule: a NEW VALUE for one subject - the knife
+ * held against the knife sunk in the well - scores 0.021, which is indistinguishable from an unrelated
+ * fact at 0.014. Word overlap cannot see supersession; only an explicit subject can, which is why the
+ * summarizer protocol now asks for one.
+ */
+export const ANCHOR_DUPLICATE_SIMILARITY = 0.6;
+/** How much of the retired ledger is kept. It is history for the panel, not an injected block. */
+export const MAX_SUPERSEDED = 40;
+/** Which kind a reader would rather lose last: life-or-death first, a scene note last. */
+export const ANCHOR_KIND_RANK = { '生死状态': 0, '身份': 1, '所有权': 2, '秘密': 3, '承诺': 4, '状态': 5 };
+const OTHER_KIND_RANK = 6;
+const ANCHOR_SUBJECT_MAX = 20;
+// A subject is an identifier, not a phrase: punctuation in the middle field means the line is a statement
+// that happens to contain pipes, and splitting it would silently delete half of what the model wrote.
+const ANCHOR_SUBJECT_FORBIDDEN = /[。！？；：，、,.:!?;\n]/;
+const anchorTokens = text => new Set(tokenizeBaselineText(String(text || '')));
+/** Distinct from the packer's shingle jaccard below, which works on character shingles. */
+const anchorOverlap = (a, b) => {
+    if (!a.size || !b.size) return 0;
+    let shared = 0;
+    for (const token of a) if (b.has(token)) shared += 1;
+    return shared / (a.size + b.size - shared);
+};
+export const anchorSubject = item => String(item?.subject || '').trim().normalize('NFKC');
+
 const KIND_IN_TEXT = /^[\[【]([^\]】]{1,12})[\]】]\s*(.*)$/;
 const KNOWLEDGE_STATE = /^(知道|不知道|未知|知情|不知情)\s*[|｜:：]?\s*/;
 const normalizeEntry = (raw) => {
@@ -551,6 +588,23 @@ const normalizeEntry = (raw) => {
  * silently dropped (that loses a commitment) nor silently kept (that accumulates forever). It is
  * kept, flagged as unconfirmed, and reported. Only a line under 【已解决】 removes it.
  */
+/**
+ * One anchor line, with an optional subject: "类型 | 主体 | 陈述".
+ *
+ * The subject is what makes the newer value of a mutable fact recognisable as the same fact. It is only
+ * read from a line with three fields, a short middle field and no sentence punctuation in it, so an
+ * ordinary statement that happens to contain a pipe is still one statement rather than a subject and a
+ * remainder - the older two-field form stays exactly what it was.
+ */
+const anchorItem = body => {
+    const parts = String(body).split(/[|｜]/).map(part => part.trim()).filter(Boolean);
+    if (parts.length >= 3 && parts[1].length <= ANCHOR_SUBJECT_MAX && !ANCHOR_SUBJECT_FORBIDDEN.test(parts[1])) {
+        const rest = normalizeEntry(parts[0] + ' | ' + parts.slice(2).join(' | '));
+        return { kind: rest.kind, text: rest.text, subject: parts[1] };
+    }
+    return { ...normalizeEntry(body), subject: '' };
+};
+
 export function parseAnchors(text) {
     const lines = String(text ?? '').split('\n');
     const prose = [];
@@ -571,7 +625,7 @@ export function parseAnchors(text) {
         if (!body || body === '无' || body === '（无）' || body === 'none') continue;
         const item = normalizeEntry(body);
         if (!item.text) continue;
-        if (section === ANCHOR_SECTION) anchors.push(item);
+        if (section === ANCHOR_SECTION) anchors.push(anchorItem(body));
         else if (section === RESOLVED_SECTION) resolved.push(item);
         else knowledge.push(item);
     }
@@ -582,6 +636,106 @@ export function parseAnchors(text) {
 /** The injected form: one short line per anchor, no ids, no bookkeeping. */
 export function formatAnchors(anchors) {
     return (anchors || []).map(item => '- [' + String(item.kind || '其他').trim() + '] ' + String(item.text || '').trim()).join('\n');
+}
+
+/** The form the summarizer sees: the subject is shown so the model can keep it stable across passes. */
+export function formatAnchorPrompt(anchors) {
+    return (anchors || []).map(item => '- ' + String(item.kind || '其他').trim() + ' | '
+        + (anchorSubject(item) ? anchorSubject(item) + ' | ' : '') + String(item.text || '').trim()).join('\n');
+}
+
+/**
+ * One live value per subject. The loser is moved to the superseded ledger, never deleted.
+ *
+ * An entry with a subject supersedes the previous value of that subject whatever it says - that is the only
+ * way the knife held against the knife sunk is one fact. Without a subject, only a near-verbatim
+ * restatement is folded, because the measurement above says overlap cannot tell a new value from a new
+ * fact.
+ */
+export function supersedeAnchors(active, { maxSuperseded = MAX_SUPERSEDED, at = Date.now() } = {}) {
+    const ordered = [...(active || [])].sort(newestFirst);
+    const kept = [];
+    const superseded = [];
+    for (const item of ordered) {
+        const subject = anchorSubject(item);
+        const family = String(item.kind || '其他').split('/')[0];
+        const tokens = anchorTokens(item.text);
+        const winner = subject ? kept.find(other => anchorSubject(other) === subject)
+            : kept.find(other => String(other.kind || '其他').split('/')[0] === family
+                && anchorOverlap(anchorTokens(other.text), tokens) >= ANCHOR_DUPLICATE_SIMILARITY);
+        if (!winner) { kept.push(item); continue; }
+        superseded.push({ id: item.id, kind: item.kind, text: item.text, subject: item.subject || '',
+            superseded_by: winner.id, superseded_at: at,
+            reason: subject ? 'newer statement about the same subject' : 'restatement of an existing anchor' });
+    }
+    return { active: kept, superseded: superseded.slice(0, maxSuperseded) };
+}
+
+/**
+ * Newest statement first.
+ *
+ * `passes` must not come before `first_seen` here. It counts how often the summarizer has re-emitted an
+ * entry, so it is highest for the OLDEST anchors, and putting it first made "newest first" serve the oldest
+ * again - measured on the real 30-anchor set, where the corrected values (the four-hour poison clock, the
+ * knife sunk in the well) were still parked behind their stale versions. Reinforcement is a tiebreaker
+ * after age, not before it.
+ */
+const newestFirst = (a, b) => (b.last_confirmed || 0) - (a.last_confirmed || 0)
+    || (b.first_seen || 0) - (a.first_seen || 0) || (b.passes || 0) - (a.passes || 0);
+
+/**
+ * The injected order: one line per kind in turn, newest-first inside each kind.
+ *
+ * It used to be the order the model emitted lines, which is insertion order, so filling the budget from
+ * the top dropped the newest facts and kept the oldest - measured on the 40-turn run as +165s average age
+ * kept against +1024s dropped.
+ *
+ * Two alternatives were measured and rejected on that same chat:
+ * - Relevance to the last few messages: those messages are already in the prompt, so selecting by them
+ *   overlapped the old cut by 1 of 8 and picked the topic of the last three messages over the facts those
+ *   messages depend on.
+ * - Kind priority in blocks: it starved the promises completely (0 of 8 injected at a 600-token budget,
+ *   including the current scene's own instructions), because life-or-death facts filled every slot first.
+ *
+ * Round-robin is also what this ecosystem already uses for the same job: SillyTavern's lorebook ordering
+ * extension requires the world-info insertion strategy to be "evenly" for exactly this reason. Kind rank
+ * still decides who is served first in each round, so a life-or-death fact gets the first slot and the
+ * last slot is a promise rather than the sixth scene note.
+ */
+export function orderAnchors(active) {
+    const groups = new Map();
+    for (const item of active || []) {
+        const family = String(item?.kind || '其他').split('/')[0];
+        if (!groups.has(family)) groups.set(family, []);
+        groups.get(family).push(item);
+    }
+    const rank = family => ANCHOR_KIND_RANK[family] ?? OTHER_KIND_RANK;
+    const families = [...groups.keys()].sort((a, b) => rank(a) - rank(b));
+    for (const family of families) groups.get(family).sort(newestFirst);
+    const total = (active || []).length;
+    const out = [];
+    for (let round = 0; out.length < total; round += 1) {
+        for (const family of families) {
+            const item = groups.get(family)[round];
+            if (item) out.push(item);
+        }
+    }
+    return out;
+}
+
+/** What fits the anchor budget, and what was left out. A short line later can still fit. */
+export function selectAnchors(active, { budget = 600 } = {}) {
+    const injected = [];
+    const parked = [];
+    let text = '';
+    for (const item of orderAnchors(active)) {
+        const line = formatAnchors([item]);
+        const next = text ? text + '\n' + line : line;
+        if (estimateTokens(next) > budget) { parked.push(item); continue; }
+        text = next;
+        injected.push(item);
+    }
+    return { injected, parked, text, tokens: estimateTokens(text) };
 }
 
 export function anchorId(item) {
@@ -596,6 +750,8 @@ export function mergeAnchors(previous, parsed, at = Date.now()) {
         const before = prior.get(key);
         prior.delete(key);
         active.push({ id: before?.id || anchorId(item), kind: item.kind, text: item.text,
+            // A subject the model stopped writing is not a reason to forget the identity of the fact.
+            subject: item.subject || before?.subject || '',
             first_seen: before?.first_seen ?? at, last_confirmed: at,
             passes: (before?.passes || 0) + 1, unconfirmed: 0 });
     }
@@ -605,8 +761,13 @@ export function mergeAnchors(previous, parsed, at = Date.now()) {
     const kept = active.filter(item => !resolvedKeys.has(anchorKey(item)));
     const closed = active.filter(item => resolvedKeys.has(anchorKey(item)))
         .map(item => ({ id: item.id, kind: item.kind, text: item.text, resolved_at: at }));
+    // One live value per subject, applied at merge time so the ledger stops growing without bound. The
+    // retired entry moves to a bounded history: the panel can show what a newer statement replaced, and
+    // nothing the model ever wrote is deleted.
+    const live = supersedeAnchors(kept, { at });
     return { version: 1,
-        active: kept,
+        active: live.active,
+        superseded: [...live.superseded, ...(previous?.superseded || [])].slice(0, MAX_SUPERSEDED),
         resolved: [...(previous?.resolved || []), ...closed].slice(-20),
         parse: parsed.sections,
         updated_at: at };

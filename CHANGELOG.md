@@ -120,6 +120,14 @@ belongs in Git commits and pull requests.
   threshold no longer raises a fault on its own.
 - `narrative_input_chars` defaults to 40000 for new installs, the measured size of a ten-turn batch. An
   install still on the old 18000 default keeps it and is told, not silently changed.
+- Continuity anchors now hold one live value per subject. A newer statement about the same subject replaces
+  the older one and the replaced entry is kept in a history rather than deleted, so the block can no longer
+  carry both "the knife is in your hand" and "the knife is locked under the well". The summarizer is asked
+  for the subject field, and the injected block is filled evenly across kinds and newest-first inside each
+  kind instead of in the order the model happened to write lines — measured on a live ledger, the old cut
+  kept facts averaging 165 seconds old and dropped ones averaging 1024 seconds old. The default anchor
+  budget rises from 300 to 600 tokens, and whatever still does not fit is reported instead of being
+  summarised as "N omitted" (ADR-0026).
 
 - Knowledge boundaries accept bracketed, pipe-delimited and `character/state: fact` forms consistently;
   old format duplicates are normalized while distinct same-pass assertions remain visible.
