@@ -526,7 +526,10 @@ export const MAX_KNOWLEDGE = 20;
 const anchorKey = item => {
     const kind = String(item.kind || '其他').trim();
     const base = kind.includes('/') ? kind.split('/')[0] : kind;
-    return (base + '|' + String(item.text || '').trim()).normalize('NFKC');
+    // The subject joins the identity when there is one, so two facts that happen to read alike but are
+    // about different things stay two. Without one the key is unchanged, so a legacy ledger keeps its ids.
+    const subject = anchorSubjectKey(item);
+    return (base + '|' + (subject ? subject + '|' : '') + String(item.text || '').trim()).normalize('NFKC');
 };
 /**
  * How much two anchor statements have to overlap before they are one fact restated.
@@ -543,9 +546,6 @@ const anchorKey = item => {
 export const ANCHOR_DUPLICATE_SIMILARITY = 0.6;
 /** How much of the retired ledger is kept. It is history for the panel, not an injected block. */
 export const MAX_SUPERSEDED = 40;
-/** Which kind a reader would rather lose last: life-or-death first, a scene note last. */
-export const ANCHOR_KIND_RANK = { '生死状态': 0, '身份': 1, '所有权': 2, '秘密': 3, '承诺': 4, '状态': 5 };
-const OTHER_KIND_RANK = 6;
 const ANCHOR_SUBJECT_MAX = 20;
 // A subject is an identifier, not a phrase: punctuation in the middle field means the line is a statement
 // that happens to contain pipes, and splitting it would silently delete half of what the model wrote.
@@ -558,7 +558,24 @@ const anchorOverlap = (a, b) => {
     for (const token of a) if (b.has(token)) shared += 1;
     return shared / (a.size + b.size - shared);
 };
+/** The subject as the model wrote it, for display. */
 export const anchorSubject = item => String(item?.subject || '').trim().normalize('NFKC');
+
+/**
+ * The subject as an identity, which is what matching uses.
+ *
+ * Measured on a live 40-turn ledger: the model wrote "心脏石植入者/制造者" in one pass and
+ * "心脏石植入者" in the next, and one fact survived twice. Dropping a "/" suffix - exactly what the kind
+ * field already does - merges that pair and nothing else on the ledger.
+ *
+ * Containment was measured as well and rejected: it would also merge "user" with "user的保护绳",
+ * "Seraphina" with "Seraphina的额外小袋", "Seraphina" with "Seraphina的嗡鸣承诺", "Seraphina" with
+ * "Seraphina的计数策略" and "格莱德" with "格莱德结界" - five merges of genuinely different facts, against one
+ * real merge. A fuzzy rule that costs five truths to catch one duplicate is not worth having, so identity
+ * here is deterministic: normalise, and drop a slash suffix. Nothing more.
+ */
+export const anchorSubjectKey = item => String(item?.subject || '').trim().normalize('NFKC')
+    .replace(/\s+/g, ' ').split('/')[0].trim();
 
 const KIND_IN_TEXT = /^[\[【]([^\]】]{1,12})[\]】]\s*(.*)$/;
 const KNOWLEDGE_STATE = /^(知道|不知道|未知|知情|不知情)\s*[|｜:：]?\s*/;
@@ -640,10 +657,13 @@ export function formatAnchors(anchors) {
     return (anchors || []).map(item => '- [' + String(item.kind || '其他').trim() + '] ' + String(item.text || '').trim()).join('\n');
 }
 
-/** The form the summarizer sees: the subject is shown so the model can keep it stable across passes. */
+/**
+ * The form the summarizer sees: the subject is shown, in its canonical form, so the model reuses one
+ * spelling instead of inventing a new variant every pass.
+ */
 export function formatAnchorPrompt(anchors) {
     return (anchors || []).map(item => '- ' + String(item.kind || '其他').trim() + ' | '
-        + (anchorSubject(item) ? anchorSubject(item) + ' | ' : '') + String(item.text || '').trim()).join('\n');
+        + (anchorSubjectKey(item) ? anchorSubjectKey(item) + ' | ' : '') + String(item.text || '').trim()).join('\n');
 }
 
 /**
@@ -659,10 +679,10 @@ export function supersedeAnchors(active, { maxSuperseded = MAX_SUPERSEDED, at = 
     const kept = [];
     const superseded = [];
     for (const item of ordered) {
-        const subject = anchorSubject(item);
+        const subject = anchorSubjectKey(item);
         const family = String(item.kind || '其他').split('/')[0];
         const tokens = anchorTokens(item.text);
-        const winner = subject ? kept.find(other => anchorSubject(other) === subject)
+        const winner = subject ? kept.find(other => anchorSubjectKey(other) === subject)
             : kept.find(other => String(other.kind || '其他').split('/')[0] === family
                 && anchorOverlap(anchorTokens(other.text), tokens) >= ANCHOR_DUPLICATE_SIMILARITY);
         if (!winner) { kept.push(item); continue; }
@@ -700,9 +720,13 @@ const newestFirst = (a, b) => (b.last_confirmed || 0) - (a.last_confirmed || 0)
  *   including the current scene's own instructions), because life-or-death facts filled every slot first.
  *
  * Round-robin is also what this ecosystem already uses for the same job: SillyTavern's lorebook ordering
- * extension requires the world-info insertion strategy to be "evenly" for exactly this reason. Kind rank
- * still decides who is served first in each round, so a life-or-death fact gets the first slot and the
- * last slot is a promise rather than the sixth scene note.
+ * extension requires the world-info insertion strategy to be "evenly" for exactly this reason.
+ *
+ * Who is served first each round is decided by recency, not by a rank table. A hand-written table was tried
+ * and measured inert: one live run produced 保护, 关系, 地点, 威胁, 承诺, 条件/命令, 秘密, 计数 and 身份/状态,
+ * of which a table covering the original six kinds ranked three. The taxonomy belongs to the model, so any
+ * table silently decays; "the kind the scene just touched goes first" needs no maintenance and is
+ * self-correcting.
  */
 export function orderAnchors(active) {
     const groups = new Map();
@@ -711,9 +735,9 @@ export function orderAnchors(active) {
         if (!groups.has(family)) groups.set(family, []);
         groups.get(family).push(item);
     }
-    const rank = family => ANCHOR_KIND_RANK[family] ?? OTHER_KIND_RANK;
-    const families = [...groups.keys()].sort((a, b) => rank(a) - rank(b));
-    for (const family of families) groups.get(family).sort(newestFirst);
+    // Sort inside each family first: the family order is decided by each family's newest member.
+    for (const family of groups.keys()) groups.get(family).sort(newestFirst);
+    const families = [...groups.keys()].sort((a, b) => newestFirst(groups.get(a)[0], groups.get(b)[0]));
     const total = (active || []).length;
     const out = [];
     for (let round = 0; out.length < total; round += 1) {

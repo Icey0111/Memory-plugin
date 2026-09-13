@@ -128,6 +128,12 @@ belongs in Git commits and pull requests.
   kept facts averaging 165 seconds old and dropped ones averaging 1024 seconds old. The default anchor
   budget rises from 300 to 600 tokens, and whatever still does not fit is reported instead of being
   summarised as "N omitted" (ADR-0026).
+- A subject written two ways is one subject: identity is normalised (Unicode, whitespace, a dropped `/`
+  suffix), so a fact like "心脏石植入者/制造者" and "心脏石植入者" can no longer survive twice, and the
+  summarizer is shown the canonical spelling. Containment matching was measured and refused — it merged five
+  genuinely different subjects to catch that one duplicate. The fixed kind-priority table is gone as well: it
+  ranked three of the nine kinds one live run produced, so which kind is served first is now decided by
+  recency (ADR-0027).
 
 - Knowledge boundaries accept bracketed, pipe-delimited and `character/state: fact` forms consistently;
   old format duplicates are normalized while distinct same-pass assertions remain visible.

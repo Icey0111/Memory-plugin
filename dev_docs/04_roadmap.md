@@ -23,6 +23,16 @@ long-run narrative acceptance are a separate task; this retrieval iteration does
 - The default anchor budget is 600 rather than 300, and what does not fit is reported
   (`anchors_parked`, `anchors_parked_terms`, `anchors_without_subject`).
 
+## Completed anchor-identity work
+
+- Subject identity is a deterministic normalisation (Unicode, whitespace, a dropped `/` suffix). Measured on
+  the live ledger: it folds 17 active anchors to 16, frees one parked slot, and leaves every remaining
+  subject distinct. Containment was measured and refused: it would merge five different facts to catch that
+  one duplicate (ADR-0027).
+- The hand-written kind rank table is deleted. It ranked three of the nine kinds one live run produced, so
+  "life-or-death first" was not operating. Round-robin remains and service order is decided by recency, which
+  needs no maintenance as the model's vocabulary drifts (ADR-0027).
+
 ## Completed summary-diagnostics work
 
 - Classify a failed summary (transport, empty body, truncated, over the accept budget, format) and keep a

@@ -92,7 +92,9 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
         anchor('所有权', 'Ilyra长刀已沉入井底根结槽中，不在你手中。', { id: 'knife', last_confirmed: 2500 }),
     ];
     const ordered = orderAnchors(active).map(item => item.id);
-    assert.equal(ordered[0], 'death', 'a life-or-death fact outranks a scene note');
+    // Kind priority is gone (ADR-0027): the taxonomy is the model's, so a hand-written rank table goes
+    // stale silently. The rule that survives is recency, made fair by serving one line per kind in turn.
+    assert.equal(ordered[0], 'new-state', 'the kind whose newest fact is newest is served first');
     assert.equal(ordered.indexOf('knife') < ordered.indexOf('old-state'), true);
     assert.equal(ordered.indexOf('new-state') < ordered.indexOf('old-state'), true,
         'within one kind the newest value comes first, so a tight budget drops the oldest');
@@ -157,6 +159,63 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     const merged = mergeAnchors({ active: [], superseded: [] }, parseAnchors(
         '局面。\n【锚点】\n- 所有权 | Ilyra之刀 | 现由你持有。\n【已解决】\n- 无'));
     assert.equal(merged.active[0].subject, 'Ilyra之刀');
+}
+
+// --- 9. one subject written two ways is one subject -----------------------------------------------
+{
+    // Measured on the live ledger: the model wrote "心脏石植入者/制造者" in one pass and
+    // "心脏石植入者" in the next, and the fact survived twice. The kind field already drops a "/" suffix.
+    const a = anchor('威胁', '有人在 Eldoria 野兽体内植入心脏石。', { id: 'a', subject: '心脏石植入者', first_seen: 1000 });
+    const b = anchor('威胁', '有人或某物在野兽与桥上身影体内植入心脏石。', { id: 'b', subject: '心脏石植入者/制造者', first_seen: 2000 });
+    const result = supersedeAnchors([a, b]);
+    assert.equal(result.active.length, 1, 'one subject written two ways is one fact');
+    assert.equal(result.active[0].id, 'b', 'and the newer spelling is the live one');
+    assert.match(result.superseded[0].reason, /same subject/);
+}
+
+// --- 10. a subject that merely contains another is a different subject ----------------------------
+{
+    // Measured: containment would merge these five, and every one of them is a different fact - a person
+    // and their rope, a place and its barrier, a character and her pouch. So containment is not a rule.
+    for (const [left, right] of [['user', 'user的保护绳'], ['Seraphina', 'Seraphina的额外小袋'],
+        ['格莱德', '格莱德结界'], ['Seraphina', 'Seraphina的嗡鸣承诺'], ['Seraphina', 'Seraphina的计数策略']]) {
+        const result = supersedeAnchors([
+            anchor('状态', left + '的说明。', { id: 'l', subject: left, first_seen: 1000 }),
+            anchor('状态', right + '的说明。', { id: 'r', subject: right, first_seen: 2000 }),
+        ]);
+        assert.equal(result.active.length, 2,
+            JSON.stringify(left) + ' and ' + JSON.stringify(right) + ' are two facts, not one');
+    }
+}
+
+// --- 11. the kind the scene just touched is served first, newest first inside it ------------------
+{
+    const active = [
+        anchor('状态', '很久以前的一个场景状态。', { id: 'old-state', first_seen: 1000, last_confirmed: 1000 }),
+        anchor('状态', '刚刚更新的场景状态。', { id: 'new-state', first_seen: 5000, last_confirmed: 5000 }),
+        anchor('生死状态', '被黑石刀伤中毒，自估约四小时。', { id: 'death', first_seen: 2000, last_confirmed: 2000 }),
+    ];
+    const ordered = orderAnchors(active).map(item => item.id);
+    assert.equal(ordered[0], 'new-state', 'the kind with the newest fact is served first');
+    assert.equal(ordered.indexOf('old-state'), ordered.length - 1, 'its stale sibling is served last');
+    const tight = selectAnchors(active, { budget: 35 });
+    assert.equal(tight.injected.some(item => item.id === 'old-state'), false, 'a tight budget parks the oldest');
+    assert.equal(tight.parked[0].id, 'old-state');
+}
+
+// --- 12. no kind starves, whatever taxonomy the model invents -------------------------------------
+{
+    // The taxonomy in the live run was 保护, 关系, 地点, 威胁, 承诺, 条件/命令, 秘密, 计数, 身份/状态 - none of
+    // which a hand-written table can be trusted to keep up with. Round-robin needs no table.
+    const active = ['威胁', '计数', '条件/命令', '保护', '地点'].map((kind, i) =>
+        anchor(kind, kind + ' 的第一条事实。', { id: 'k' + i, first_seen: 1000 + i }));
+    active.push(anchor('威胁', '威胁的第二条事实。', { id: 'threat2', first_seen: 9000 }));
+    const ordered = orderAnchors(active);
+    const firstRound = ordered.slice(0, 5).map(item => String(item.kind).split('/')[0]);
+    assert.equal(new Set(firstRound).size, 5, 'five kinds are all served before any kind is served twice');
+    assert.equal(ordered.findIndex(item => item.id === 'k0') >= 5, true,
+        'the older threat waits for the second round while the newer one takes the first slot');
+    assert.equal(selectAnchors(active, { budget: 600 }).parked.length, 0, 'and all six fit when there is room');
 }
 
 console.log('anchor-budget: ok');

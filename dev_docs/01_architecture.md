@@ -128,6 +128,7 @@ the chat file keeps (ADR-0004).
 | N13 | The unsummarized tail is a state (idle, accumulating, summarizing, failing, blocked, backlog) and only a block, a real run of failures, or a stalled oversized backlog warns (ADR-0025) | summarizeState, warningsFor |
 | N14 | One live value per subject; a superseded statement is never injected, and supersession moves an entry to a bounded ledger instead of deleting it (ADR-0026) | supersedeAnchors, mergeAnchors |
 | N15 | The anchor block is filled evenly across kinds, newest-first inside each kind, and what it parks is reported (ADR-0026) | orderAnchors, selectAnchors |
+| N16 | A subject identity is a deterministic normalisation - Unicode, whitespace, a dropped "/" suffix - never a similarity, and no rank table decides which kind is served first; recency does (ADR-0027) | anchorSubjectKey, orderAnchors |
 
 ### 6. What this architecture does not do yet
 
