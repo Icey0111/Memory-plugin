@@ -833,12 +833,19 @@ export function readNarrativeReport(ctx) {
     const injectedRevision = store.narrative_diagnostics?.injected_state_revision ?? null;
     const summarizing = jobs.has(hostKey(ctx));
     const every = bound(settings.narrative_every, defaults.narrative_every, 1, 100);
+    // The anchor block is fitted on every assembly, so a read-only report has to fit it the same way to
+    // know whether anything was dropped. It used to hard-code zero here, which meant the panel could never
+    // show the truncation warning the generation itself had recorded.
+    const activeAnchors = store.narrative_anchors?.active || [];
+    const reportAnchorLines = formatAnchors(activeAnchors).split('\n').filter(Boolean);
+    const reportFitted = fitLines(reportAnchorLines, options(settings).anchorTokens);
+    const anchorsTruncated = reportAnchorLines.length - (reportFitted ? reportFitted.split('\n').filter(Boolean).length : 0);
     const state = { ...pending, summary_failures: failures,
         summary_error: store.narrative_diagnostics?.summary_error || null,
         summary_block: store.narrative_diagnostics?.summary_block || null,
         summarizing, every,
-        anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
-        anchors_truncated: 0,
+        anchors_unconfirmed: activeAnchors.filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_truncated: anchorsTruncated,
         knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0 };
@@ -865,8 +872,9 @@ export function readNarrativeReport(ctx) {
         pending_floors: pending.pending_floors,
         pending_tokens: pending.pending_tokens,
         summary_failures: failures,
-        anchors_active: (store.narrative_anchors?.active || []).length,
-        anchors_unconfirmed: (store.narrative_anchors?.active || []).filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_active: activeAnchors.length,
+        anchors_unconfirmed: activeAnchors.filter(item => Number(item.unconfirmed) > 0).length,
+        anchors_truncated: anchorsTruncated,
         anchors_resolved: (store.narrative_anchors?.resolved || []).length,
         anchor_parse: store.narrative_diagnostics?.anchor_parse || store.narrative_anchors?.parse || null,
         knowledge_entries: (store.narrative_knowledge?.entries || []).length,

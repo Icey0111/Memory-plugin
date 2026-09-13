@@ -218,7 +218,24 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
     assert.ok(!report.warnings.some(w => /积压/.test(w)), 'while a pass runs, the backlog is progress');
 }
 
-// --- 6. the input budget default is set for new installs and never silently overwritten -----------
+// --- 6. the report shows the warnings the assembly recorded, including a fitted-out anchor block -----
+{
+    const many = Array.from({ length: 20 }, (_, i) => '- 承诺 | 第 ' + i + ' 条仍然生效且必须逐字保留的承诺').join('\n');
+    const h = host({ settings: { narrative_anchor_tokens: 100 } });
+    h.services.summarize = async () => '局面。\n【锚点】\n' + many + '\n【已解决】\n- 无\n【知情边界】\n- 无';
+    fill(h, 10);
+    await updateNarrative(h.ctx, h.services);
+    const bundle = await buildNarrativeContext(h.ctx, h.services, { contextSize: 32768 });
+    assert.ok(bundle.diagnostics.anchors_truncated > 0, 'the assembly dropped anchors over the budget');
+    const report = readNarrativeReport(h.ctx);
+    const warning = report.warnings.find(w => /锚点超出注入预算/.test(w));
+    assert.ok(warning, 'and the read-only report shows the same warning, not a hard-coded zero');
+    assert.match(warning, new RegExp('已省略 ' + bundle.diagnostics.anchors_truncated + ' 条'),
+        'with the same count the assembly reported');
+    assert.equal(report.anchors_truncated, bundle.diagnostics.anchors_truncated);
+}
+
+// --- 7. the input budget default is set for new installs and never silently overwritten -----------
 {
     const fresh = { extensionSettings: { [KEY]: { enabled: true } } };
     assert.equal(narrativeSettings(fresh).narrative_input_chars, 40000, 'a new install gets the measured default');
