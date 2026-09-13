@@ -34,9 +34,13 @@ Comparing against a stale page load costs a whole run: one 421757c run had every
 repo while the page still executed the pre-421757c `parseAnchorChanges`. Exit 2 is unknown, never a pass;
 deploy and reload, then re-run.
 
-Live summary probes must save, per call: `finish_reason`, the requested output cap, prompt and completion
-usage, the raw body and the actual commit result. A field that was not captured is reported as unknown; a finish
-reason is never inferred from a token count; reasoning text is not stored.
+Live summary probes must save, per call and **including the one targeted repair**: `finish_reason`, the requested
+output cap, prompt and completion usage, the raw body and the actual commit result. The harness must recognise
+the repair request as its own call kind - the repair prompt does not carry the summary marker, so a marker-only
+test drops it, which is how the 421757c long-chat run lost the repair's raw request, response and elapsed time.
+The exact injected state block must be saved for **every** turn, not only the batch and final turns, or a probe
+turn's reference text is overwritten before it is archived. A field that was not captured is reported as unknown;
+a finish reason is never inferred from a token count; reasoning text is not stored.
 
 A batch refused for its anchor section is retried once by the host with a targeted repair that shows the model
 its own answer and the rejected lines. The repair is a second call with its own recorded cost; a failed repair

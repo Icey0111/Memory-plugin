@@ -15,7 +15,7 @@ ten complete user turns (normally twenty message rows); its frozen input and suc
   fields and invalid references reject atomically, while label punctuation and length do not.
 - Statements are stored in full. The 600-token injection budget parks whole entries rather than truncating
   their conditions. Selection stays round-robin by kind, newest-first within each kind.
-- Input/summary/anchor defaults remain 40000/600/600. The instruction block is 760 characters, including
+- Input/summary/anchor defaults remain 40000/600/600. The instruction block is 1018 characters, including
   the clarification that restating an unchanged state is not an update.
 - The saved 17:45 run finished with 40 completed turns but only 30 covered/folded turns, zero active anchors
   and an unrecovered 619/600 summary-budget failure. Four requests were not four successful commits.
@@ -28,6 +28,25 @@ ten complete user turns (normally twenty message rows); its frozen input and suc
 - Use `node eval-anchor-protocol.mjs --out <report.json>` for the explicit five-call protocol probe. It uses
   the host's summary connection without writing the chat or memory ledger. Raw requests and responses are
   saved for review. Long-run narrative/summary quality remains assigned to a separate task.
+
+## Live long-chat acceptance of the current baseline
+
+One 40-user-turn run (four ten-floor batches plus four recall probes) on `fc9b729` with runtime `9f85ada`:
+no persistent runtime block, the one refused batch (a 610/600 summary body) retried on the same frozen batch one
+turn later and committed, all four batches ended committed, zero parked anchors, the injected state equal to
+the live one, and a recall probe that quoted hidden original floors (`raw_24`, `raw_78`).
+
+That is the floor, not a clearance. The run does not show that the system is free of structural problems or
+that plot continuation is reliable. The character overrode the staged script from about floor 10, so the
+fact-retention half of the test is only partly valid; one summary body contradicted its own anchors; and the
+run's own record was incomplete, because the repair call's raw request and elapsed time were dropped and probe
+turns did not persist their injected text. The harness now records both and `02_development.md` requires it.
+
+The body-level negation-scope probe is the follow-up: three materials x two prefixes x three runs, frozen
+before the first call. The B4 compression did not reproduce - the identical frozen request kept the real place
+real in every replay - and the one added sentence changed none of the real-place outcomes while replacing one
+prose over-affirmation with one internal contradiction on the denied-place material. The sentence is not added
+(ADR-0030), and the body-level compression stays a recorded, low-frequency risk.
 
 ## Completed summary-diagnostics work
 

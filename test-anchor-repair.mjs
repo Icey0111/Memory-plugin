@@ -10,6 +10,8 @@
 // It also pins the pre-send budget check and the separate cost record.
 import assert from 'node:assert/strict';
 import { updateNarrative, readNarrativeReport } from './narrative-runtime.js';
+import { anchorRepairRequest, summaryRequest } from './raw-history.js';
+import { estimateTokens } from './v55-tokenizer.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
 const pair = n => [{ is_user: true, mes: '第' + n + ' 轮。' }, { is_user: false, mes: '第' + n + ' 轮回复。' }];
@@ -278,6 +280,24 @@ const invalidLine = prompt => '更新 A9 | 来源 ' + src(prompt) + ' | 钥匙�
     assert.equal(report.anchors_active, 1);
     assert.equal(report.anchor_repair.errors_after[0].reason, 'duplicate_target');
     assert.equal(report.anchor_repair.valid_preserved, 1);
+}
+
+// --- 14. the record chain keys on the two prompt signatures --------------------------------------------
+{
+    // A live acceptance harness records a model call only when its first message carries a known opener. The
+    // summary call and its targeted repair have different openers: the repair is not a summary and never
+    // carried the summary marker, and the 421757c long-chat run lost the repair's raw request, response and
+    // elapsed time because the harness tested for the summary marker alone. These openers are the contract
+    // between the host and that harness; if either changes, the harness silently stops recording raw bodies
+    // and this test has to fail first.
+    const summary = summaryRequest('', [], 600, [], []);
+    assert.ok(summary.text.startsWith('你是剧情续接摘要器'), 'the summary request keeps its opener');
+    const repair = anchorRepairRequest({ validLines: ['更新 A1 | 来源 raw_1 | 钥匙在袋中。'],
+        errors: [{ line: '更新 A9 | 来源 raw_1 | 钥匙转移。', reason: 'unknown_target' }], plan: [], sources: ['raw_1'] });
+    assert.ok(repair.text.startsWith('你上一轮答案的'), 'the repair request keeps its own opener');
+    assert.ok(!repair.text.startsWith('你是剧情续接摘要器'), 'the repair is a distinct call kind');
+    assert.ok(repair.text.includes('【锚点变更】'), 'the repair names the section it is replacing');
+    assert.ok(estimateTokens(repair.text) > 0, 'the repair request is nonempty');
 }
 
 console.log('anchor-repair: ok');
