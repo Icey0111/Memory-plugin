@@ -512,7 +512,7 @@ for (const [body, reason] of [['', 'empty_section'], ['我改了刀的位置。'
 // --- 21. the ledger-check guidance is in the request, and the host still mandates nothing -------------
 {
     const request = summaryRequest('', [{ id: 'raw_1', retrievalText: 'x' }], 600, [], []);
-    assert.match(request.text, /【当前锚点】为空，这是初始账本/, 'the empty-ledger initialization guidance is present');
+    assert.match(request.text, /【当前锚点】为空时/, 'the empty-ledger guidance is present');
     assert.match(request.text, /其他活值是否与你的新状态矛盾/, 'the contradiction check is present');
     assert.match(request.text, /角色认知与未证猜测/, 'fact, belief and guess are told apart');
     assert.match(request.text, /一条事实依赖多条原文时可以并排写多个来源/, 'the multi-source shape is taught');
@@ -545,27 +545,6 @@ for (const [body, reason] of [['', 'empty_section'], ['我改了刀的位置。'
         { plan, batchSources: new Set(['raw_8']) });
     assert.equal(trailing.errors[0].reason, 'unknown_op');
     assert.equal(trailing.changes.length, 0);
-}
-
-// --- 23. an empty ledger asks for initialization, a non-empty one asks for the delta -------------------
-{
-    const one = [{ id: 'a', kind: '物品状态', subject: '测试', text: '测试事实。' }];
-    const empty = summaryRequest('', [{ id: 'raw_1', retrievalText: 'x' }], 600, [], []);
-    const full = summaryRequest('', [{ id: 'raw_1', retrievalText: 'x' }], 600, one, []);
-    for (const request of [empty, full]) {
-        assert.match(request.text, /- 更新 A3 \| 来源 raw_77 \|/);
-        assert.match(request.text, /- 新增 \| 类型 \| 主体 \| 来源 raw_79 \|/);
-        assert.match(request.text, /- 结束 A5 \| 来源 raw_80 \|/);
-        assert.match(request.text, /来源必须是本批【新增原文】里真实出现的编号/);
-    }
-    assert.match(empty.text, /【当前锚点】为空，这是初始账本/);
-    assert.match(empty.text, /判断依据是账本尚未记录它，而不是剧情本轮刚发生变化/);
-    assert.match(empty.text, /确实没有需要长期保留的事实时写“无”/);
-    assert.doesNotMatch(empty.text, /只写本轮变化的事实/);
-    assert.match(full.text, /只写本轮变化的事实。编号只能取自【当前锚点】/);
-    assert.doesNotMatch(full.text, /这是初始账本/);
-    assert.doesNotMatch(empty.text, /必须新增|至少新增/);
-    assert.doesNotMatch(full.text, /必须新增|至少新增/);
 }
 
 console.log('anchor-changes: ok');

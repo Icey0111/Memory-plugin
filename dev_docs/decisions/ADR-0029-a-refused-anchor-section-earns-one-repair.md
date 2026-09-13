@@ -59,28 +59,24 @@ The 421757c acceptance run separated four failures the numbered-operation protoc
   deliberately not relaxed to accept a trailing label such as '结束 A1 旧状态', because stripping the label would
   execute the conflicting end it hides; the line reaches the repair instead, and the duplicate-target check still
   refuses an end that names a record the same batch updated.
-- The anchor guidance branches on whether the ledger is empty, with the output protocol unchanged. An empty
-  ledger is asked to establish the initial anchors its continuation needs, judged by whether the ledger has
-  recorded a fact rather than by whether the story just changed; a non-empty ledger keeps the delta question.
-  Neither branch imposes a minimum count or asks for an exhaustive list, and an empty ledger may still answer
-  '无'. A fixed 4-material x 2-prefix x 3-run experiment (24 calls, annotations frozen before running) decided
-  the branch: on the material with conditions and unresolved items the old prefix preserved the necessary facts
-  in 1 of 3 runs (once committing an explicit empty ledger, once losing every line to empty_statement) while the
-  branch preserved them in all 3; on the long first batch both preserved, and the branch's third run hit the
-  completion cap and drifted. On the two no-anchor counterexamples both prefixes over-added, the old prefix
-  returned '无' once each while the branch never did, and the branch emitted a 【当前锚点】 echo block in 4 of 6
-  runs. The branch is therefore kept as the empty-ledger default for the preservation gain, with the emptiness
-  and drift costs recorded as open; no further prompt rules are added, and the drift is left to the existing
-  one-repair path. The narrow prose-completion path stays deferred.
+- An empty-ledger initialization branch (1,041 characters empty / 964 non-empty against the 1,018-character
+  single prefix) was implemented, tested and then reverted. The deciding experiment replayed the saved 24
+  responses through the real validate/commit flow: on the long first batch the single prefix committed 3 of 3
+  runs with strong necessary-fact coverage while the branch committed 0 of 3 (one summary 11 tokens over the 600
+  budget, one with no prose body, one truncated with leaked reasoning); on the material with conditions and
+  unresolved items the branch committed 3 of 3 where the single prefix committed 1 of 3 with zero operations.
+  Both prefixes committed useless anchors on the no-anchor counterexamples, and the branch's 【当前锚点】 echo
+  drift made it take 5 repairs to the single prefix's 3. With no net committed advantage and a higher repair
+  cost, the branch is reverted and the empty-ledger initialization wording is not adopted. The narrow
+  prose-completion path stays deferred.
 - The narrow prose-completion path is documented as a candidate and is not implemented: the only evidence is one
   missing-body probe failure, while the larger evidenced problem is over-annotation and protocol drift, which the
   existing one-repair path already reaches.
 
-The instruction block branches on whether the ledger is empty: 1,041 characters for an empty ledger and 964 for a
-non-empty one (from 760 measured in ADR-0028), with the output protocol identical in both. The input-budget
-pressure the acceptance run recorded is unchanged by construction; raising the input budget or adding an explicit
-capacity setting is a separate decision and is not made here, and a blocked batch still calls no model, hides no
-floor and stays visible.
+The instruction block is 1,018 characters (from 760 measured in ADR-0028). The input-budget pressure the
+acceptance run recorded is unchanged by construction; raising the input budget or adding an explicit capacity
+setting is a separate decision and is not made here, and a blocked batch still calls no model, hides no floor
+and stays visible.
 
 ## Runtime precondition
 
