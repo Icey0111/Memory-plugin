@@ -61,26 +61,37 @@ export function stripReasoning(result) {
   } catch (error) { return { unserializable: String(error) }; }
 }
 
+/** The CDP wrapper: await the page expression before stringifying it. Never JSON.stringify a promise. */
+export function awaitJson(expression) {
+  return '(async () => JSON.stringify(await (' + expression + ')))()';
+}
+
 /**
  * The transport boundary. Wrap one raw send and keep the evidence for the two evidence-bearing kinds.
  * The story prompt ('main') is counted but never captured.
  */
+let boundarySeq = 0;
+
 export function createCaptureBoundary({ transport, now = Date.now }) {
   if (typeof transport !== 'function') throw new Error('createCaptureBoundary needs a transport function');
   const calls = [];
+  let nextId = 0;
+  const instance = (boundarySeq += 1);
   const send = async (data, extractData = true, signal = null) => {
     const kind = classifyModelCall(data);
-    const record = { at: now(), kind };
+    const record = { id: 'call_' + instance + '_' + (nextId += 1), at: now(), kind, status: 'running' };
     if (kind !== 'main') { record.request = redact(data); record.request_json_chars = JSON.stringify(data).length; }
     calls.push(record);
     try {
       const result = await transport(data, extractData, signal);
       record.ok = true;
+      record.status = 'succeeded';
       if (kind !== 'main') record.response = stripReasoning(result);
       record.elapsed_ms = now() - record.at;
       return result;
     } catch (error) {
       record.ok = false;
+      record.status = 'failed';
       record.error = String((error && error.message) || error);
       record.elapsed_ms = now() - record.at;
       throw error;
@@ -91,6 +102,23 @@ export function createCaptureBoundary({ transport, now = Date.now }) {
     calls,
     modelCalls: () => calls.filter(call => call.kind === 'summary' || call.kind === 'repair'),
   };
+}
+
+/**
+ * Which settled calls a snapshot has not reported yet. A running call is never reported as a completed
+ * call and is not marked seen, so its completion is collected on a later turn instead of being lost
+ * between two snapshots (F-17).
+ */
+export function collectSettled(allCalls, collected = new Set()) {
+  const out = [];
+  for (const call of allCalls || []) {
+    if (!call || call.status === 'running') continue;
+    const key = call.id != null ? call.id : call;
+    if (collected.has(key)) continue;
+    collected.add(key);
+    out.push(call);
+  }
+  return out;
 }
 
 /** Install the boundary on a host context and return it. */
@@ -270,8 +298,12 @@ export function summarizeCall(call) {
   const request = call.request || null;
   const messages = request && Array.isArray(request.messages) ? request.messages : [];
   const repairMessage = messages.find(m => m && typeof m.content === 'string' && m.content.startsWith(REPAIR_OPENER));
+  const status = call.status || (call.ok === true ? 'succeeded' : call.ok === false ? 'failed' : 'running');
   return {
-    at: call.at, kind: call.kind || 'summary', ok: call.ok === true, error: call.error || null,
+    id: call.id != null ? call.id : null,
+    status,
+    at: call.at, kind: call.kind || 'summary', ok: status === 'succeeded' ? true : status === 'failed' ? false : null,
+    error: call.error || null,
     elapsed_ms: call.elapsed_ms != null ? call.elapsed_ms : null,
     request_json_chars: call.request_json_chars != null ? call.request_json_chars : null,
     requested_output_cap: request ? (request.max_tokens != null ? request.max_tokens : (request.max_completion_tokens != null ? request.max_completion_tokens : (request.maxTokens != null ? request.maxTokens : null))) : null,
@@ -286,9 +318,10 @@ export function summarizeCall(call) {
 }
 
 /** One turn's record. The injected block is carried for every turn, not only the batch and final turns. */
-export function buildTurnRecord({ turn, userText, at, isBatch, error = null, turnRes = null, pre = null, post = null, wait = null, newCalls = [] }) {
+export function buildTurnRecord({ turn, userText, at, isBatch, error = null, turnRes = null, pre = null, post = null, wait = null, newCalls = [], inFlight = [] }) {
   return {
     turn, userText, at, isBatch, error,
+    inFlight: (inFlight || []).map(call => (call && call.id != null ? call.id : null)),
     turnRes: turnRes ? {
       beforeLen: turnRes.beforeLen, afterLen: turnRes.afterLen, elapsed_ms: turnRes.elapsed_ms,
       genError: turnRes.genError || null, retries: turnRes.retries, blanks: turnRes.blanks,
@@ -368,6 +401,7 @@ export function buildBatchEvidence({ batchTurn, at, pre = null, post = null, new
       injection: post && post.diagnostics ? null : 'no_injection_diagnostics',
       injected_text: post && post.prompts && post.prompts.current_state ? null : 'missing_current_state',
       repair_elapsed: calls.some(call => call.kind === 'repair' && call.elapsed_ms == null) ? 'repair_elapsed_null' : null,
+      in_flight: calls.some(call => call.status === 'running') ? 'request_started_without_settlement' : null,
     },
   };
 }

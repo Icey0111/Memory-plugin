@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildTurnRecord, buildBatchEvidence, splitRequest } from './acceptance-capture.js';
+import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest } from './acceptance-capture.js';
 
 const args = process.argv.slice(2);
 const valueOf = (name, fallback = null) => { const at = args.indexOf(name); return at >= 0 ? args[at + 1] : fallback; };
@@ -62,7 +62,9 @@ const evaluate = async (expression, timeout = 900000) => {
   if (reply.error || reply.result?.exceptionDetails) throw new Error('Host evaluation failed: ' + JSON.stringify(reply.result?.exceptionDetails || reply.error));
   return reply.result.result.value;
 };
-const asJson = async (expression, timeout) => JSON.parse(await evaluate('JSON.stringify(' + expression + ')', timeout));
+// Await the page expression before stringifying it (F-12): submitTurn and waitForSummary are async, and
+// JSON.stringify(promise) is the string '{}', which is how a live run silently recorded empty turn results.
+const asJson = async (expression, timeout) => JSON.parse(await evaluate(awaitJson(expression), timeout));
 
 const installExpression = "(async () => {"
   + " const module = await import('/scripts/extensions/third-party/Memory-plugin/acceptance-capture.js');"
@@ -95,12 +97,12 @@ let summaryEvidence = [];
 if (fs.existsSync(evidencePath)) { try { summaryEvidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8')); } catch (error) { summaryEvidence = []; } }
 
 const last = Math.min(turns.length, maxTurn || turns.length);
+const collected = new Set();
 for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
   const text = turns[turnNo - 1];
   const isBatch = batches.includes(turnNo);
   const deep = isBatch || turnNo === last;
   const pre = await snapshot(deep);
-  const offset = (await modelCalls()).length;
   const prevCovered = pre.summary && Array.isArray(pre.summary.covered) ? pre.summary.covered.length : 0;
   const prevErrorAt = (pre.diagnostics && pre.diagnostics.summary_last_error && pre.diagnostics.summary_last_error.at) || 0;
   let turnRes = null;
@@ -117,8 +119,9 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
     try { post = await snapshot(deep); } catch (ignored) { /* keep what we have */ }
   }
   const allCalls = await modelCalls();
-  const newCalls = allCalls.slice(offset);
-  const record = buildTurnRecord({ turn: turnNo, userText: text, at: nowIso(), isBatch, error, turnRes, pre, post, wait: waitRes, newCalls });
+  const newCalls = collectSettled(allCalls, collected);
+  const inFlight = allCalls.filter(call => call.status === 'running');
+  const record = buildTurnRecord({ turn: turnNo, userText: text, at: nowIso(), isBatch, error, turnRes, pre, post, wait: waitRes, newCalls, inFlight });
   fs.appendFileSync(jsonlPath, JSON.stringify(record) + '\n');
   fs.writeFileSync(callsPath, JSON.stringify(allCalls, null, 2));
   if (deep) fs.writeFileSync(path.join(snapDir, 'turn' + String(turnNo).padStart(2, '0') + '.json'), JSON.stringify({ pre, post, wait: waitRes }, null, 2));
@@ -145,9 +148,12 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
     + ' fails=' + (state.summaryFailures != null ? state.summaryFailures : '?') + ' injRev=' + (state.injected ? state.injected.state_revision : '?'));
 }
 
+const unfinished = (await modelCalls()).filter(call => call.status === 'running');
+if (unfinished.length) console.log('WARNING: ' + unfinished.length + ' request(s) started but never settled (incomplete capture): '
+  + unfinished.map(call => call.id).join(', '));
 const finalSnap = await snapshot(true);
 fs.writeFileSync(path.join(snapDir, 'final.json'), JSON.stringify(finalSnap, null, 2));
 try { fs.writeFileSync(callsPath, JSON.stringify(await modelCalls(), null, 2)); } catch (error) { /* keep the last full list */ }
-fs.writeFileSync(metaPath, JSON.stringify(Object.assign({}, meta, { finishedAt: nowIso() }), null, 2));
+fs.writeFileSync(metaPath, JSON.stringify(Object.assign({}, meta, { finishedAt: nowIso(), unfinishedCalls: unfinished.map(call => call.id) }), null, 2));
 console.log('DONE');
 socket.close();

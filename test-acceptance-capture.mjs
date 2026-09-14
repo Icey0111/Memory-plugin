@@ -9,8 +9,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  META_KEY, classifyModelCall, createCaptureBoundary, installCapture, redact, stripReasoning,
-  buildTurnRecord, buildBatchEvidence, deepSnapshot, summarizeCall, splitRequest, promptsOf,
+  META_KEY, classifyModelCall, createCaptureBoundary, collectSettled, awaitJson, installCapture, redact,
+  stripReasoning, buildTurnRecord, buildBatchEvidence, deepSnapshot, summarizeCall, splitRequest, promptsOf,
 } from './acceptance-capture.js';
 
 const request = content => ({ messages: [{ role: 'system', content }], max_tokens: 8192 });
@@ -146,6 +146,51 @@ const reply = content => ({ choices: [{ message: { content }, finish_reason: 'st
   assert.equal(split.previous.trim(), '旧');
   assert.deepEqual(split.batchEntries.map(entry => entry.id), ['raw_1', 'raw_2']);
   assert.deepEqual(split.plan.map(entry => entry.alias), ['A1']);
+}
+
+// --- 9. F-12: the CDP wrapper awaits before stringifying; a promise is never recorded as '{}' ----------
+{
+  assert.equal(JSON.stringify(eval('Promise.resolve(42)')), '{}', 'the raw bug: a promise stringifies to {}');
+  assert.equal(await eval(awaitJson('Promise.resolve(42)')), '42', 'the wrapper awaits the expression');
+  assert.equal(await eval(awaitJson('({ a: 1 })')), '{"a":1}', 'a plain value still round-trips');
+}
+
+// --- 10. F-17: a started request carries an id and running status, and is never called successful ----
+{
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let clock = 500;
+  const boundary = createCaptureBoundary({ now: () => clock, transport: () => gate });
+  const pending = boundary.send(summaryRequest('slow'));
+  const running = boundary.modelCalls();
+  assert.equal(running.length, 1, 'a started request is visible before it settles');
+  assert.ok(running[0].id, 'a started request has an id');
+  assert.equal(running[0].status, 'running');
+  assert.equal(summarizeCall(running[0]).status, 'running');
+  assert.equal(summarizeCall(running[0]).ok, null, 'an in-flight request is not recorded as failed');
+  clock = 525;
+  release(reply('late'));
+  await pending;
+  assert.equal(boundary.modelCalls()[0].status, 'succeeded');
+  assert.equal(boundary.modelCalls()[0].ok, true);
+}
+
+// --- 11. F-17: a completion between two snapshots is collected once, not lost -------------------------
+{
+  const collected = new Set();
+  const boundary = createCaptureBoundary({ transport: async () => reply('ok') });
+  await boundary.send(summaryRequest('one'));
+  assert.equal(collectSettled(boundary.modelCalls(), collected).length, 1, 'a settled call is collected');
+  assert.equal(collectSettled(boundary.modelCalls(), collected).length, 0, 'a settled call is collected once');
+
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const slow = createCaptureBoundary({ transport: () => gate });
+  const pending = slow.send(summaryRequest('slow'));
+  assert.equal(collectSettled(slow.modelCalls(), collected).length, 0, 'a running call is not a completed call');
+  release(reply('late'));
+  await pending;
+  assert.equal(collectSettled(slow.modelCalls(), collected).length, 1, 'its completion is not lost between snapshots');
 }
 
 console.log('PASS acceptance capture: both call kinds record raw bodies and elapsed, and consecutive turns keep separate injected blocks');
