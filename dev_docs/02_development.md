@@ -200,6 +200,15 @@ missed were quoted and then cut by the trim, not left unranked.
 restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
 an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
 
+The character-description rewrite (ADR-0044) also had to bound its own risk. The first version sent objects and
+places to whichever chunk described a *person* most densely - the real chat's amber pendant and its barrier were
+both routed to the character's introduction row - because the dense window is name-independent. A cluster must
+now lie within 200 characters of a mention of the name (measured in that row: 7 characters from her name, 290
+from the pendant, 248 from the barrier). Across the twelve frozen chats and the real one, 52 scored pairs: the
+picked chunk changed in 28, the dense window contains the scored name in 33 cases against 26 without the range,
+and contains no name at all in 11 against 23. Eight still have another candidate name inside the window, which
+is the residual to watch.
+
 The character-description channel was rewritten (ADR-0044) after a real chat asked what a character looked like
 and the reply invented it. The channel scored *descriptor words within +/-60 characters of a mention of the
 name*, so a 700-character action beat where the character is physically present (eleven body/weapon words near

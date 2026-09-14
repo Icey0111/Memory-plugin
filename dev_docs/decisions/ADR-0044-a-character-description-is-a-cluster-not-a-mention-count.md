@@ -40,6 +40,9 @@ character while the quoted row never said what she looked like. A baseline over 
 - `profileRecall.detailed` needs a **cluster** in the quoted row, at least 60% of the target's own cluster with
   an absolute floor of `PROFILE_DENSE_MIN` (5), so quoting the row the channel picked counts, quoting a scene
   that merely packs body words does not, and a short description is not punished for being short.
+- The cluster is **anchored to the name**: it must lie within `PROFILE_ANCHOR_RANGE` (200 characters) of a
+  mention of that name, or the chunk is not a candidate for it. The cluster itself is name-independent, so
+  without this a chunk that mentions an object once and describes a person densely wins for the object.
 - `describingWindow` does not depend on the name, so it is computed lazily once per mentioned chunk and reused
   for every name in the batch.
 
@@ -51,10 +54,15 @@ character while the quoted row never said what she looked like. A baseline over 
   0.68 ms after. The whole-ranker measurements are dominated by noise and are not used here.
 - The labelled A/B on the frozen FactSurvival3 chat is unchanged (6 authored questions: 4/6 answers in evidence,
   4 of 30 quoted spans carrying their answer).
-- **Known risk, introduced by this ADR**: the dense window is name-independent, so a chunk that mentions a name
-  once while densely describing *someone else* can win. The thirteen-chat comparison counts these cases
-  (development log); the follow-up rule, if they are frequent, is to require the cluster to be nearer a mention
-  of the name than to another candidate name.
+- **The risk this ADR introduced was measured and bounded.** The dense window is name-independent, so a first
+  version sent objects and places to whichever chunk described a *person* most densely: on the real chat the
+  amber pendant and the barrier were both routed to the character's introduction row. Distances in that row are
+  7 characters from her name, 290 from the pendant and 248 from the barrier, which is what fixed the range at
+  200. Comparing all candidate names across the twelve frozen chats and the real one (52 scored pairs, before
+  the range and after): the picked chunk unchanged 24, changed 28; the dense window contains the scored name in
+  **33** cases against 26 without the range, and contains no name at all in **11** against 23. Eight still show
+  another candidate name inside the window, which is the residual to watch - a cluster within 200 characters of
+  a name can still describe whoever is standing next to them.
 - The other half of that live failure is **not** addressed here, and the acceptance run says so. Replaying the
   user's own appearance question on that chat with the profile channel on: before the change the introduction row
   was not quoted at all; after it, it is (`raw_9[437, 643]`, and that window contains the eye colour). But of ten

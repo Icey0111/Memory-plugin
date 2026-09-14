@@ -135,6 +135,25 @@ export const PROFILE_LIMIT = 4;
 /** The window a description has to fit in, and how many of the words above make it one. */
 export const PROFILE_DENSE_WINDOW = 140;
 export const PROFILE_DENSE_MIN = 5;
+/**
+ * How far a descriptor cluster may sit from a mention of the name and still be about that name.
+ *
+ * The cluster itself is name-independent, so without this a chunk that mentions an object once and describes a
+ * person densely would win for the object: measured on the real chat, the paragraph about the character sits 7
+ * characters from her name, while the same chunk mentions a pendant 290 characters past it and a barrier 248.
+ * 200 keeps the appositive introduction - a description in front of the name - and rejects the other names in
+ * the same row.
+ */
+export const PROFILE_ANCHOR_RANGE = 200;
+
+/** How far a cluster is from the nearest mention of the name: 0 when the mention is inside the window. */
+function windowToNameDistance(text, win, name) {
+    let best = Infinity;
+    for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
+        best = Math.min(best, Math.max(0, Math.max(win.from - (at + name.length), at - win.to)));
+    }
+    return best;
+}
 
 /**
  * The densest descriptor window of a passage, wherever it is.
@@ -206,6 +225,7 @@ export function profileTargets(chunks, names, { visibleSources = new Set(), limi
             }
             if (!occurrences) continue;
             const dense = denseOf(chunk);
+            if (windowToNameDistance(text, dense, name) > PROFILE_ANCHOR_RANGE) continue;
             const descriptors = dense.hits.length;
             const score = descriptors * 3 + Math.min(occurrences, 3) * 2;
             if (!best || score > best.score || (score === best.score && chunk.index < best.chunk.index)) {
@@ -236,9 +256,13 @@ export function profileRecall(chunks, history, { names = [], visibleSources = ne
         // Relative to the cluster the channel found for this character, with an absolute floor: quoting the
         // row the channel picked counts, and so does a row nearly as dense, while a scene whose body words
         // merely happen to sit close together does not. A short description is not punished for being short.
-        detailed: rows.some(row => row.text.includes(target.name)
-            && describingWindow(row.text).hits.length
-                >= Math.min(target.descriptors, Math.max(PROFILE_DENSE_MIN, Math.ceil(target.descriptors * 0.6)))),
+        detailed: rows.some(row => {
+            if (!row.text.includes(target.name)) return false;
+            const win = describingWindow(row.text);
+            if (windowToNameDistance(row.text, win, target.name) > PROFILE_ANCHOR_RANGE) return false;
+            return win.hits.length
+                >= Math.min(target.descriptors, Math.max(PROFILE_DENSE_MIN, Math.ceil(target.descriptors * 0.6)));
+        }),
     }));
 }
 
