@@ -230,6 +230,24 @@ The attempt does leave a usable instrument and a sharper diagnosis:
   candidate name misattributed a pronoun-subject sentence ("he has an old scar") to the innkeeper named in the
   next clause instead of the man named in the previous sentence.
 
+The first of those rules shipped (ADR-0045, N41): a span quoted because a channel picked it now keeps the
+region that channel found, a character's introduction row is a candidate of its own, window terms are filtered
+by story frequency, and one descriptor run is chosen for density rather than for count in a wide window. The
+labelled probe set went from **2/10** needles inside a quoted window to **8/10** (7/10 without the lexicon
+extension that the describing sentences actually need), with each mechanism measured behind a switch before
+the combination shipped. The channel's ranking score did not change, so the 43-name pick table from ADR-0044
+was re-measured rather than re-litigated: the baseline reproduced exactly (43/43), 3 top picks moved with no
+improvement and no regression (both rows of each pair read the same way as before), and the totals stay 23 / 20.
+The introduction candidate was measured too - 25 rows, 8 of them read as *not* introducing that name, all eight
+the same shape (a name whose first mention is a passing clause inside another character's introduction). A row
+that mentions another candidate name earlier than this one is that character's row, and requiring it removes all
+eight plus a ninth of the same shape, at the cost of one row that introduces two names at once: 15 candidates
+remain, every one of them a describing or introducing row, and the real chat's 薇斯珀 still reaches `raw_9` row
+8. The two misses left are named in
+the ADR - one is a ranking defect (`s_hair`: the row never ranks) and one a window-boundary case (`g_robe`:
+the window starts three characters after the modifier phrase that answers the question), which is the shape
+ADR-0044's second rule is about.
+
 
 A summary body refused for `format` or `over_budget` now earns one repair (ADR-0042): the same request
 again, a correction, and the refused text (bounded to 1,600 characters) to cut rather than rewrite. It is

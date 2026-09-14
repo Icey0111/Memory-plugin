@@ -47,6 +47,28 @@ Decision: focused pending requests become the default; character descriptions re
 channel, with the measured regression disclosed. Continuation retains the legacy query. An adaptive
 summary-based continuation query remains an explicit experiment, not the default.
 
+## The character channel's window
+
+The character channel's pick is not the whole answer: what the prompt gets is a window of the row, and that
+window used to follow the question's own words only. On ten labelled questions from a real chat - every needle
+verified unique, six about appearance or clothing - **2/10** needles sat inside a quoted window. A span quoted
+because a channel picked it now keeps the region that channel found, a character's introduction row is a
+candidate of its own, window terms are filtered by the story's own frequency, and one descriptor run is chosen
+for density rather than for count in a wide window; the same ten questions reach **8/10** (7/10 without the
+lexicon extension the describing sentences need), each mechanism measured alone and together before shipping
+(ADR-0045). The two misses are one ranking defect - a row the channel never speaks for - and one
+window-boundary case, both named in the ADR.
+
+The change was also measured against ADR-0044's hand-judged 43-name table. The baseline reproduced exactly
+(43/43), 3 of 43 top picks moved and none of them improves or regresses (both rows of each pair read as before),
+so the totals stay 23 not-a-description / 20 a description: the ranking score is unchanged and only the lexicon
+changes which words it counts. The introduction candidate needed a qualification the table found: 8 of its 25
+rows were a name whose first mention is a passing clause inside another character's introduction ("她还说，
+渡船是下游老谈的。" closes 秦婶's introduction and is the first mention of 老谈 in eight chats). A row that
+mentions another candidate name earlier than this one belongs to that character; requiring it removes the eight
+and a ninth of the same shape, and costs one row that introduces two names at once. Fifteen candidates remain,
+every one a row that introduces or describes its name, including the real chat's 薇斯珀 at `raw_9` row 8.
+
 ## Real vector and rerank comparison
 
 A fixed 103-row archived chat snapshot was evaluated against twelve historical questions whose answer

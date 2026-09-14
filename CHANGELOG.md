@@ -7,6 +7,18 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- A quoted original window now follows the region the channel that picked the span actually found, and a
+  character's introduction row is a candidate of its own (ADR-0045, N41). On a real chat the reply had
+  described a character's appearance confidently and wrongly, because the describing paragraph - which comes
+  *before* she is named - was never quoted for a question about her appearance. Window terms are filtered by
+  story frequency (a word the whole story uses cannot move a window), a character's own name is never a window
+  seat, and the descriptor run that defines a description is chosen for density rather than for count in a wide
+  window. A ten-question labelled probe set from that chat went from 2/10 to 8/10 needles inside a quoted
+  window; the two misses are named in the ADR. The channel's ranking score is unchanged, and its pick table
+  was re-measured by hand (43 rows reproduced exactly; 3 moved, none better or worse). A row that mentions
+  another candidate character earlier than the name it would introduce is that character's row and no longer
+  counts as this one's introduction - that qualification removed 9 of 25 introduction candidates, all of them a
+  passing reference inside somebody else's introduction, at the cost of one row that introduces two names.
 - The evidence window rule (ADR-0037) was inert in every shipped prompt: the runtime called `packRawEvidence`
   without `query`, so the term list was empty and the rule returned immediately, while both harnesses that
   accepted the change passed the query themselves. The runtime passes it now and a runtime-level test through
