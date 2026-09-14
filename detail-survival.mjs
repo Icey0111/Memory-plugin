@@ -36,6 +36,20 @@ export const DETAIL_CHANNELS = Object.freeze(['continuity', 'evidence', 'both', 
 export const DETAIL_EXPECTATIONS = Object.freeze(['summary', 'dropped', 'unsure']);
 
 /**
+ * The kinds a declared fact can have, and whether losing it is a defect. This is the product contract's
+ * list, not a new taxonomy: the summary is supposed to keep identity, place, still-live state, promises,
+ * conditions, negations and knowledge boundaries, while an incidental detail is what retrieval exists for.
+ */
+export const FACT_KINDS = Object.freeze({
+    identity: { mustKeep: true }, place: { mustKeep: true }, state: { mustKeep: true },
+    promise: { mustKeep: true }, condition: { mustKeep: true }, negation: { mustKeep: true },
+    knowledge: { mustKeep: true }, detail: { mustKeep: false },
+});
+export const DEFAULT_FACT_KIND = 'detail';
+/** Losing this kind is a defect; losing an incidental detail is the division of labour working. */
+export function isMustKeep(kind) { return Boolean(FACT_KINDS[kind] && FACT_KINDS[kind].mustKeep); }
+
+/**
  * Case, width and whitespace folding for substring matching. NFKC turns full-width digits and letters into
  * their ASCII forms, so a needle written in one width still matches a reply in the other.
  */
@@ -97,6 +111,26 @@ export function matchNeedle(text, forms) {
         }
     }
     return { matched: false, how: null, token: null };
+}
+
+/**
+ * Does a probe question give its own answer away? Stricter than matchNeedle: a question legitimately shares
+ * short phrases with its answer, so only a verbatim needle or a run of at least three content characters
+ * counts. A question ending "什么时候才开？" against a needle "雾散了才开" is not a leak - and charging it as
+ * one aborted a paid run after phase 1 had already generated twenty turns.
+ */
+export function leaksNeedle(text, forms) {
+    if (containsAny(text, forms)) return true;
+    const hay = normalizeText(text);
+    for (const form of forms || []) {
+        const chars = contentChars(form);
+        for (let len = Math.min(4, chars.length); len >= 3; len -= 1) {
+            for (let start = 0; start + len <= chars.length; start += 1) {
+                if (hay.includes(chars.slice(start, start + len).join(''))) return true;
+            }
+        }
+    }
+    return false;
 }
 
 const cleanId = value => String(value == null ? '' : value).trim();
@@ -164,9 +198,12 @@ export function parseTurnsFile(raw) {
         const details = [];
         const rawDetails = Array.isArray(turn.details) ? turn.details : [];
         rawDetails.forEach((detail, detailIndex) => {
-            const record = readProbe(detail, where + ' detail ' + (detailIndex + 1), 'detail');
+            const record = readProbe(detail, where + ' detail ' + (detailIndex + 1), DEFAULT_FACT_KIND);
             record.turn = index + 1;
             record.expect = DETAIL_EXPECTATIONS.includes(detail && detail.expect) ? detail.expect : 'unsure';
+            const factKind = typeof (detail && detail.kind) === 'string' && detail.kind ? detail.kind : DEFAULT_FACT_KIND;
+            if (!FACT_KINDS[factKind]) errors.push(where + ' detail ' + (detailIndex + 1) + ' 未知 kind: ' + factKind);
+            record.kind = factKind;
             details.push(record);
             out.details.push(record);
         });
@@ -254,7 +291,8 @@ export function buildProbeQuestion(items) {
     const text = [header].concat(lines).join('\n');
     // Tolerant, because a leading question that repeats a content run of the answer has leaked it even
     // when it does not repeat the whole needle.
-    const leaks = (items || []).filter(item => matchNeedle(text, item.needle).matched).map(item => item.id);
+    // A leak is verbatim or a long content run; a shared short phrase is not one (see leaksNeedle).
+    const leaks = (items || []).filter(item => leaksNeedle(text, item.needle)).map(item => item.id);
     return { text, leaks };
 }
 
@@ -378,6 +416,65 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
             expectationMismatches: retention.expectationMismatches || [],
         } : null,
     };
+}
+
+/**
+ * Per-merge survival of the declared facts, by kind.
+ *
+ * `observations` are the committed-summary readings in batch order: [{ batchTurn, retained: [ids] }]. A fact
+ * kept at the first merge and absent from the second was **lost in a merge** - the case the product contract
+ * cares about - while a fact absent from the first merge was never carried at all.
+ */
+export function summarizeFactSurvival(details = [], observations = []) {
+    const batches = observations.map(observation => observation.batchTurn);
+    const facts = (details || []).map(detail => {
+        const retainedAt = {};
+        for (const observation of observations) {
+            retainedAt[observation.batchTurn] = (observation.retained || []).includes(detail.id);
+        }
+        let lostAt = null;
+        for (const turn of batches) if (retainedAt[turn] !== true) { lostAt = turn; break; }
+        const everRetained = batches.some(turn => retainedAt[turn] === true);
+        return { id: detail.id, kind: detail.kind || DEFAULT_FACT_KIND, retainedAt, lostAt, everRetained,
+            lostInMerge: lostAt !== null && everRetained };
+    });
+    const kinds = {};
+    for (const fact of facts) {
+        const row = kinds[fact.kind] || (kinds[fact.kind] = { kind: fact.kind, mustKeep: isMustKeep(fact.kind),
+            total: 0, keptAtLastMerge: 0, lostInAMerge: 0, idsLost: [] });
+        row.total += 1;
+        const lastTurn = batches.length ? batches[batches.length - 1] : null;
+        if (lastTurn !== null && fact.retainedAt[lastTurn] === true) row.keptAtLastMerge += 1;
+        if (fact.lostInMerge) { row.lostInAMerge += 1; row.idsLost.push(fact.id); }
+    }
+    const mustKeep = facts.filter(fact => isMustKeep(fact.kind));
+    const incidental = facts.filter(fact => !isMustKeep(fact.kind));
+    const lastTurn = batches.length ? batches[batches.length - 1] : null;
+    return { batches, facts, kinds,
+        mustKeepTotal: mustKeep.length,
+        mustKeepLostInAMerge: mustKeep.filter(fact => fact.lostInMerge).map(fact => fact.id),
+        mustKeepLostAtLastMerge: lastTurn === null ? []
+            : mustKeep.filter(fact => fact.retainedAt[lastTurn] !== true).map(fact => fact.id),
+        incidentalKeptAtLastMerge: lastTurn === null ? []
+            : incidental.filter(fact => fact.retainedAt[lastTurn] === true).map(fact => fact.id) };
+}
+
+/** The fact-survival block: one line per kind, then the must-keep losses named. */
+export function formatFactSurvival(summary) {
+    const lines = ['FACT-SURVIVAL across ' + summary.batches.length + ' merge(s) at [' + summary.batches.join(', ') + ']'];
+    for (const row of Object.values(summary.kinds).sort((a, b) => a.kind.localeCompare(b.kind))) {
+        lines.push('  ' + String(row.kind).padEnd(10) + (row.mustKeep ? 'must-keep ' : 'incidental')
+            + ' ' + row.keptAtLastMerge + '/' + row.total + ' kept at the last merge'
+            + (row.idsLost.length ? ' | lost in a merge: ' + row.idsLost.join(', ') : ''));
+    }
+    lines.push('  must-keep lost in a merge: ' + summary.mustKeepLostInAMerge.length + '/' + summary.mustKeepTotal
+        + (summary.mustKeepLostInAMerge.length ? ' (' + summary.mustKeepLostInAMerge.join(', ') + ')' : ''));
+    lines.push('  must-keep absent at the last merge: ' + summary.mustKeepLostAtLastMerge.length
+        + (summary.mustKeepLostAtLastMerge.length ? ' (' + summary.mustKeepLostAtLastMerge.join(', ') + ')' : ''));
+    if (summary.incidentalKeptAtLastMerge.length) {
+        lines.push('  incidental still occupying the summary: ' + summary.incidentalKeptAtLastMerge.join(', '));
+    }
+    return lines.join('\n');
 }
 
 /** The acceptance line: the four counts the mode exists to print, with the extra readings appended. */

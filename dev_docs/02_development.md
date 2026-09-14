@@ -91,6 +91,28 @@ rather than a model miss. The mode measures only and changes no summary, retriev
 A live run on 2026-09-14 (DetailSurvival1, 20 turns, both batches committed, zero failures) re-scores as
 摘要保留 4 / 检索取回 1 / 拒绝 1 / 编造 0: five confirmed passes and the never-written value refused.
 
+A detail may also declare a `kind` from the product contract's list (identity, place, state, promise,
+condition, negation, knowledge, detail). Retention is then read against the committed summary after **every**
+batch, so the report shows which facts a merge loses and of which kind. The question-leak check is verbatim
+or a content run of at least three characters, and the whole declared set is checked before the first
+generation: a two-character run would refuse a legitimate question like "什么时候才开？" against the needle
+"雾散了才开", and that false positive aborted a paid run after phase 1.
+
+### First fact-survival measurement (2026-09-14)
+
+Chat FactSurvival2, 11 declared facts, merges at floors 10 and 20. The floor-10 summary kept **11/11**. The
+floor-20 merge kept **8/11**: it lost a still-live state (`k-state`, the west road blocked by a landslide)
+and a condition (`k-condition`, the boat leaves only when the fog lifts), while keeping three incidental
+details (`d-tea`, `d-cat`, `d-scar`). That is **2/7 must-keep facts lost in a merge**. It answers "what must
+the summary keep": the merge currently prunes by salience, not by kind.
+
+The first attempt (FactSurvival1) never reached the second merge: the batch was blocked with
+`reason: input_budget`, `needed_chars 43,658` against the 40,000 default, a 40,649-character batch of ten
+turns whose replies averaged about 1,800 characters. Per ADR-0024 that is a recorded block - no model call,
+no hidden floor - and the measurement was taken with `narrative_input_chars` raised to 120,000 and restored
+afterwards. The default input budget is a measured limit for long-reply stories, not only for the context
+window.
+
 A restored chat needs the host's own reset path. Replacing `ctx.chat` and re-applying the plugin's fold
 classes leaves the previous message roots mounted; the host's bounded ChatSurface allows one contiguous
 viewport plus the true tail and refuses an ambiguous projection with `ChatSurface projection has 3 ranges;

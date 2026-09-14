@@ -30,7 +30,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest } from './acceptance-capture.js';
 import { parseTurnsFile, continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems,
-  buildProbeQuestion, gradeProbeItem, summarizeDetailSurvival, formatDetailReport, buildDetailEvidence } from './detail-survival.mjs';
+  buildProbeQuestion, gradeProbeItem, summarizeDetailSurvival, formatDetailReport, buildDetailEvidence,
+  summarizeFactSurvival, formatFactSurvival } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
 const args = process.argv.slice(2);
@@ -77,6 +78,17 @@ if (restoreFile) {
     throw new Error('--detail-survival needs a detailed turns file: a bare array of turn strings carries no needles. See detail-survival.mjs for the schema.');
   }
   turns = parsedTurns.turns;
+}
+// Fail before a paid run: a question that gives its own answer away is a fixture defect, and the whole
+// declared set is checked here because a single probe turn may carry every dropped item at once.
+if (detailMode && !restoreFile) {
+  const declared = parsedTurns.details.concat(parsedTurns.negatives)
+    .map(item => ({ id: item.id, needle: item.needle, question: item.question }));
+  const preflight = buildProbeQuestion(declared);
+  if (preflight.leaks.length) {
+    throw new Error('turns file: these questions contain their own needle and would give the answer away: '
+      + preflight.leaks.join(', '));
+  }
 }
 fs.mkdirSync(outDir, { recursive: true });
 const jsonlPath = path.join(outDir, 'longchat.turns.jsonl');
@@ -176,6 +188,8 @@ if (detailMode && parsedTurns.phase1Turns && parsedTurns.phase1Turns !== turns.l
 }
 if (detailMode && !batches.includes(last)) batches = batches.concat(last).sort((a, b) => a - b);
 const collected = new Set();
+// One committed-summary reading per batch, so a fact can be seen crossing more than one merge.
+const factObservations = [];
 
 // One turn: snapshot, generate, wait for a batch summary, capture and append. The plain loop and the
 // detail-survival probe turns both run through here, so a probe turn is recorded exactly like any other.
@@ -225,13 +239,20 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
   const text = turns[turnNo - 1].text;
   const isBatch = batches.includes(turnNo);
   const deep = isBatch || turnNo === last;
-  const { record, error } = await runTurn(turnNo, text, { isBatch, deep });
+  const { record, post, error } = await runTurn(turnNo, text, { isBatch, deep });
   const state = record.post || {};
   console.log('turn ' + turnNo + '/' + last + (error ? ' ERROR=' + error : '')
     + ' len=' + (state.chatLength != null ? state.chatLength : '?') + ' completed=' + (state.completeTurns != null ? state.completeTurns : '?')
     + ' covered=' + (state.covered != null ? state.covered : '?') + ' folded=' + (state.folded != null ? state.folded : '?')
     + ' anchors=' + (state.anchorsActive != null ? state.anchorsActive : '?') + ' pending=' + (state.pendingFloors != null ? state.pendingFloors : '?')
     + ' fails=' + (state.summaryFailures != null ? state.summaryFailures : '?') + ' injRev=' + (state.injected ? state.injected.state_revision : '?'));
+  if (detailMode && isBatch && parsedTurns.details.length) {
+    const split = splitDetailsByRetention(parsedTurns.details, continuityBag(post));
+    factObservations.push({ batchTurn: turnNo, retained: split.retained.map(item => item.id),
+      dropped: split.dropped.map(item => item.id) });
+    console.log('FACT-SURVIVAL batch ' + turnNo + ': kept ' + split.retained.length + '/' + parsedTurns.details.length
+      + (split.dropped.length ? ' dropped ' + split.dropped.map(item => item.id).join(',') : ''));
+  }
 }
 
 // Detail survival: turn the manual baseline into a repeatable mode. Phase 1 has played the turns file and
@@ -248,6 +269,13 @@ if (detailMode) {
   console.log('DETAIL-SURVIVAL retention: 已声明 ' + retention.total + ' 个细节，摘要保留 ' + retention.retained.length
     + ' 个，丢弃 ' + retention.dropped.length + ' 个；预期不符 ' + retention.expectationMismatches.length
     + (retention.expectationMismatches.length ? '（' + retention.expectationMismatches.join(', ') + '）' : ''));
+  if (factObservations.length) {
+    const factSurvival = summarizeFactSurvival(parsedTurns.details, factObservations);
+    console.log('');
+    console.log(formatFactSurvival(factSurvival));
+    fs.writeFileSync(path.join(outDir, 'fact-survival.json'),
+      JSON.stringify({ at: nowIso(), observations: factObservations, summary: factSurvival }, null, 2));
+  }
   if (!retention.dropped.length) {
     console.log('DETAIL-SURVIVAL notice: 摘要没有丢掉任何已声明细节，本次运行只测到 continuity 通道，不能证明检索。');
   }

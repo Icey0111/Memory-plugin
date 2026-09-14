@@ -15,7 +15,8 @@ import {
   DETAIL_CHANNELS, DETAIL_EXPECTATIONS, normalizeText, needleForms, containsAny, parseTurnsFile,
   continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems, buildProbeQuestion,
   attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival,
-  formatDetailReport, buildDetailEvidence, matchNeedle,
+  formatDetailReport, buildDetailEvidence, matchNeedle, FACT_KINDS, DEFAULT_FACT_KIND, isMustKeep,
+  summarizeFactSurvival, formatFactSurvival, leaksNeedle,
 } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
@@ -296,8 +297,51 @@ const adjudicate = graded => {
   const channel = attributeChannel({ current_state: '门柱缺角哑铜铃', reference: null }, { id: 'x', needle: ['缺了一角'] });
   assert.equal(channel.channel, 'continuity');
   assert.equal(channel.continuityMatch.token, '缺角');
-  const leading = buildProbeQuestion([{ id: 'd', kind: 'detail', needle: ['缺了一角'], question: '那铃缺角了吗？' }]);
-  assert.deepEqual(leading.leaks, ['d']);
+  // A leak is verbatim or a long content run; a shared short phrase is not.
+  assert.deepEqual(buildProbeQuestion([{ id: 'd', kind: 'detail', needle: ['缺了一角'], question: '那铃缺了一角吗？' }]).leaks, ['d']);
+  assert.deepEqual(buildProbeQuestion([{ id: 'k', kind: 'condition', needle: ['雾散了才开'], question: '老谈的船什么时候才开？' }]).leaks, [],
+    'a two-character run is not a leak');
+  assert.equal(leaksNeedle('老谈的船什么时候才开？', ['雾散了才开']), false);
+  assert.equal(leaksNeedle('雾散了才开吗？', ['雾散了才开']), true);
+}
+
+// --- 12. fact survival across merges, by kind ---------------------------------------------------------
+{
+  assert.equal(isMustKeep('identity'), true);
+  assert.equal(isMustKeep('state'), true);
+  assert.equal(isMustKeep('knowledge'), true);
+  assert.equal(isMustKeep('detail'), false);
+  assert.equal(isMustKeep('nonsense'), false);
+  assert.deepEqual(Object.keys(FACT_KINDS).sort(),
+    ['condition', 'detail', 'identity', 'knowledge', 'negation', 'place', 'promise', 'state']);
+  const parsedKinds = parseTurnsFile({ turns: [{ text: 't', details: [
+    { id: 'a', needle: 'x', question: 'q', kind: 'identity' },
+    { id: 'b', needle: 'y', question: 'q' },
+    { id: 'c', needle: 'z', question: 'q', kind: 'nope' }] }] });
+  assert.equal(parsedKinds.details.find(item => item.id === 'a').kind, 'identity');
+  assert.equal(parsedKinds.details.find(item => item.id === 'b').kind, DEFAULT_FACT_KIND);
+  assert.ok(parsedKinds.errors.some(error => error.includes('未知 kind: nope')));
+  const summary = summarizeFactSurvival([
+    { id: 'k-id', kind: 'identity' }, { id: 'k-state', kind: 'state' }, { id: 'd-bell', kind: 'detail' }],
+    [{ batchTurn: 10, retained: ['k-id', 'k-state'] }, { batchTurn: 20, retained: ['k-id'] }]);
+  assert.deepEqual(summary.batches, [10, 20]);
+  const state = summary.facts.find(fact => fact.id === 'k-state');
+  assert.equal(state.lostInMerge, true);
+  assert.equal(state.lostAt, 20);
+  const bell = summary.facts.find(fact => fact.id === 'd-bell');
+  assert.equal(bell.everRetained, false, 'a fact the first merge never carried was never carried at all');
+  assert.equal(bell.lostAt, 10);
+  assert.deepEqual(summary.mustKeepLostInAMerge, ['k-state']);
+  assert.equal(summary.mustKeepTotal, 2);
+  assert.deepEqual(summary.mustKeepLostAtLastMerge, ['k-state']);
+  assert.deepEqual(summary.incidentalKeptAtLastMerge, []);
+  const text = formatFactSurvival(summary);
+  assert.ok(text.includes('must-keep lost in a merge: 1/2'), text);
+  assert.ok(text.includes('state'), text);
+  // An incidental that still occupies the summary at the last merge is named as wasted room.
+  const kept = summarizeFactSurvival([{ id: 'd-bell', kind: 'detail' }], [{ batchTurn: 20, retained: ['d-bell'] }]);
+  assert.deepEqual(kept.incidentalKeptAtLastMerge, ['d-bell']);
+  assert.ok(formatFactSurvival(kept).includes('incidental still occupying the summary: d-bell'));
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');
