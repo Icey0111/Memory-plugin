@@ -818,6 +818,7 @@ function composeContinuity(store, chunks, opts) {
         anchorsInjected: anchorSelection.injected.length,
         anchorsParkedTerms: anchorSelection.parked.map(item => ({ kind: String(item.kind || '其他'),
             text: String(item.text || '').slice(0, 80) })),
+        anchorsParkedText: anchorSelection.parked.map(item => String(item.text || '')),
         floors, sourceRevision, stateRevision, block: [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n') };
 }
 
@@ -825,6 +826,20 @@ function composeContinuity(store, chunks, opts) {
 const committedStateRevision = (store, chunks) => validSummary(store.narrative_summary, chunks)
     ? stateRevisionOf(store.narrative_summary, store.narrative_anchors?.active, store.narrative_knowledge?.entries)
     : null;
+
+/**
+ * Feed parked active anchors to the retrieval query.
+ *
+ * A parked anchor is not in the state block, and its derived wording may not appear in the original at
+ * all - the d7eed81 audit's east-room constraint says 遗物间/碰锁 while the source says 朝东的房门还是锁着. The
+ * original is still reachable: measured offline on that frozen state, the base query packed the source row
+ * without the span carrying the constraint, and adding the parked statements recovered the original row
+ * (raw_18). Bounded by the query's existing 5000-character cap.
+ */
+export function parkedAnchorQuery(query, parkedText, maxChars = 5000) {
+    if (!parkedText) return query;
+    return [query, parkedText].join('\n').slice(-maxChars);
+}
 
 /**
  * The injection budget, separated from the summary's own length. `configured` is the worst case the
@@ -856,7 +871,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         String(ctx.name1 || '').trim(), String(ctx.name2 || '').trim()])].filter(name => name.length >= 2 && name.length <= 12);
     const plan = planRetrievalQuery(history, { strategy: settings.narrative_query_strategy || 'focused',
         summary: queryStore.narrative_summary?.text || '', names: knownNames });
-    const query = plan.query;
+    let query = plan.query;
     let dense = [];
     let vectorError = null;
     const index = indexes.get(hostKey(ctx));
@@ -869,6 +884,15 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     let live = storeOf(ctx);
     let visibleSources = new Set(history.active.filter(id => !ctx.chat[history.records[id].index]?.is_system));
     let continuity = composeContinuity(live, chunks, opts);
+    // A parked anchor is invisible to the state block, so give its wording a route back through the
+    // existing retrieval channels before the ranking runs. The dense query above is untouched: this is
+    // not a weight change and not a reserved evidence seat.
+    if (continuity.anchorsTruncated > 0 && continuity.anchorsParkedText.length) {
+        const parkedText = continuity.anchorsParkedText.join('\n');
+        query = parkedAnchorQuery(query, parkedText);
+        diagnose(ctx, { retrieval_parked_anchors: { at: Date.now(), anchors: continuity.anchorsTruncated,
+            query_chars: query.length } });
+    }
     const raw = history.active.filter(id => visibleSources.has(id)).map(id => history.records[id].text).join('\n');
     // Who the situation is about. The knowledge block is keyed by character name, so the names are already
     // extracted and do not need a second model call: a name that the summary tracks and that the last three
@@ -1184,6 +1208,7 @@ export function readNarrativeReport(ctx) {
         entity_candidates: store.narrative_diagnostics?.entity_candidates || 0,
         entity_metric: 'query_term_coverage_only_not_quality',
         query_strategy: store.narrative_diagnostics?.query_strategy || null,
+        retrieval_parked_anchors: store.narrative_diagnostics?.retrieval_parked_anchors || null,
         retrieval_mode: store.narrative_diagnostics?.retrieval_mode || null,
         asked_status: store.narrative_diagnostics?.asked_status || 'not_measured',
         asked_targets: store.narrative_diagnostics?.asked_targets ?? null,

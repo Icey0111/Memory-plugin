@@ -109,6 +109,11 @@ are injected; and three floors were still pending at floor 40.
   Whole-text quotation deduplication still applies (ADR-0022).
 - Add prefix replay and exact-input cached vector/rerank experiments. Final results and limitations are
   in [06_retrieval_research.md](06_retrieval_research.md).
+- The retrieval query carries the parked active anchors' statements, bounded by the query's own
+  5000-character cap, so a constraint the anchor budget parked still has a route back to the original text
+  it paraphrases. Measured on the d7eed81 audit: the base continuation query packed the east-room source row
+  without the span carrying the lock constraint, and adding the parked statements recovered the original row
+  (`raw_18`). The dense query is untouched and reserved evidence seats stay rejected (`raw-history.js`).
 
 ## Measured summary-input budget
 
