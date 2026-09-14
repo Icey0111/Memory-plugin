@@ -37,6 +37,15 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- `answer-adjudication.mjs`: a graded answer becomes a record instead of a verdict. Each row carries the
+  machine verdict, whether the assembled prompt carried the fact, whether the reply conveys it, and whether
+  the probe itself is broken; the classification (`fixture-defect` / `prompt-insufficient` / `model-error` /
+  `scorer-false-negative` / `confirmed-pass` / `scorer-false-positive`) and the memory credit are derived, so
+  a row cannot disagree with its own evidence. A pass requires sufficient prompt evidence: a correct answer on
+  an empty prompt is recorded as ungrounded and classified against the prompt, not credited to memory. Applied
+  to this session's sixteen graded cells: nine machine misses contained **no model error at all** - one was the
+  grader and eight had no evidence in the prompt - while three machine hits were fixture defects (the fact is
+  on the character card) and two correct answers were ungrounded (N27).
 - The second error direction of the ledger is reported: the quoted evidence rows that only a *retired* statement
   names (`superseded_evidence`, `superseded_evidence_sources`, `superseded_source_pool`). An anchor operation
   retires the statement, not the row it was read from, so a row can stay active, stay ranked, and carry the old
