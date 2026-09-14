@@ -28,8 +28,8 @@ function collect() {
             const relative = dir === '.' ? name : dir + '/' + name;
             const target = path.join(DIR, relative);
             if (!statSync(target).isFile()) continue;
-            // Every source file, including the root tools (run-tests, recall-baseline, deploy-live,
-            // chat-scan, fx-dump). The first version of this gate checked only .js plus test-*.mjs, so a
+            // Every source file, including the root tools (run-tests, recall-baseline, deploy-live).
+            // The first version of this gate checked only .js plus test-*.mjs, so a
             // syntax error in a tool that the repository ships was invisible to it.
             if (name.endsWith('.js') || name.endsWith('.mjs')) files.push(relative);
         }
