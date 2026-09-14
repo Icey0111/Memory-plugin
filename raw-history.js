@@ -1566,14 +1566,13 @@ function selectSubmodular(ordered, { query, budget, maxEntries, weights }) {
  * property EVIDENCE_TOKENS_PER_SLOT is derived from and the one ADR-0014 measured situation-term recall
  * against. It is a trade between reaching more messages and keeping the tail of a long one.
  *
- * Both sides were then measured on that labelled set (15 questions, unique needles, paired against the shipped
- * configuration at 8/15), with `spanCost` as the switch: charging the span its own cost gives 9/15 answers,
- * the same 5.0 messages reached, situation-term recall 96% -> 98%, and 988 of 1000 tokens. On the synthetic
- * CJK fixture in test-narrative-pipeline it reaches four messages instead of five, because a 300-character
- * Chinese row costs about 310 tokens against the same 200-token share, where a 700-character English chunk
- * costs about 190. So the change is a small win on this English chat and a reach loss where a chunk does not
- * fit its share, which is a question about script and length, not about the rule. Recorded, default off, and
- * decided by measuring a real Chinese chat the same way.
+ * Both sides were then measured, `spanCost` being the switch. On the labelled English set (15 questions,
+ * unique needles) charging a span its own cost gives 9/15 answers against 8/15, the same 5.00 messages
+ * reached, situation-term recall 96% -> 98%, 986 of 1000 tokens: a small win. On a real Chinese chat
+ * (Seraphina 2026-09-12, 121 messages, 122 chunks, 35 auto-labelled unique needles) it gives 97% recall
+ * against 100% and 979 tokens against 891, and the synthetic CJK fixture in test-narrative-pipeline reaches
+ * four messages instead of five. Half of that chat's anchors are over the 200-token share (median 201, p90
+ * 391, max 444), so charging each its own cost drops spans where trimming them kept them. Decided: off.
  */
 function fitEvidenceSpan(span, budget) {
     const row = span.row;

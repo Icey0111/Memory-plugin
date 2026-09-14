@@ -67,9 +67,10 @@ belongs in Git commits and pull requests.
 - `recall-baseline.mjs --span-cost`: the other side of the evidence budget's allocation, as a switch. It
   charges a span its own cost instead of the fair share, which keeps the tail of an anchor that slightly
   overruns its share and reaches fewer messages when anchors routinely overrun it (`packRawEvidence`
-  `spanCost`, off in the shipped path). Measured on the labelled set: 8/15 to 9/15 answers at the same 5.0
-  messages reached on the English chat under test, and five messages to four on the CJK fixture in
-  `test-narrative-pipeline`, so the deciding measurement is a real Chinese chat.
+  `spanCost`, off in the shipped path). Measured: on the labelled English set it is a small win (8/15 to
+  9/15 answers, same 5.00 messages reached); on a real Chinese chat it is a loss (100% to 97% recall over 35
+  auto-labelled unique needles, 891 to 979 tokens per query), and it reaches four messages instead of five on
+  the CJK fixture, because half of that chat's anchors are over the 200-token share. It stays off.
 - `recall-baseline.mjs`: the committed ruler for archive cost and lexical recall, measured on real
   chats. It also takes a hand-written question set (`--paraphrases`), which is the instrument the
   dense-retrieval decision waits on. Results and limits are in ADR-0004 and ADR-0006.
