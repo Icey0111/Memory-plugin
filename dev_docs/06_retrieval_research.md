@@ -102,6 +102,8 @@ Use the durable decisions for earlier measurements:
 - [ADR-0019](decisions/ADR-0019-the-situation-gets-a-retrieval-channel.md) and
   [ADR-0020](decisions/ADR-0020-a-named-character-gets-their-description.md): situation and profile channels.
 - [ADR-0022](decisions/ADR-0022-the-packer-never-quotes-the-same-text-twice.md): quotation deduplication.
+- [ADR-0037](decisions/ADR-0037-a-trimmed-quote-follows-the-question.md): where inside an over-share span the
+  quote starts, measured as a labelled A/B on a frozen chat (3/6 -> 4/6 answers in evidence, no regression).
 
 Further ranking changes need fixed query classes and independent answer labels. More summaries or
 more retrieval channels do not by themselves demonstrate improvement.

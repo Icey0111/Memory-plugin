@@ -157,6 +157,29 @@ zero retries). The three-range case itself was not reproduced: this install has
 did not throw. The reset path is shared by both controllers, so the sequence is verified; the bounded
 reproduction remains to be run.
 
+### A trimmed quote that answered nothing (2026-09-14)
+
+The FactSurvival3 probe answered "I do not remember" for the ferry crossing. Re-reading that turn showed why:
+the memory block quoted five original rows and none carried the name, although the archive held it twice. One
+of the five was the 833-character reply whose own last sentence names the crossing ("'青石渡'这三个字，是他这渡
+口的名字"), quoted as its first 205 characters, because a span over its per-slot share is trimmed from the head
+whatever the question asked about. Replaying the frozen chat through `packRawEvidence` at the shipped
+1,000-token budget reproduced `{source: raw_29, start: 0, end: 205}` byte for byte, which is what made this a
+packer defect rather than a recording error.
+
+ADR-0037 makes the trimmed window the one that covers the most of the question's own terms, keeping the
+head-anchored window as the incumbent and the length, budget and slot count unchanged. Measured on that frozen
+chat with six authored questions and the same candidate list on both sides (lexical only,
+`recall-baseline.mjs --paraphrases`): answer-in-evidence 3/6 -> 4/6, quoted spans carrying their own answer
+3/30 -> 4/30, 790 -> 783 tokens per query. The recovered question ("灯座内侧有什么痕迹？", needle 两道被磨平)
+had been dropped as `trimmed_out`; nothing regressed. The crossing span is now `{start: 295, end: 500}` and
+ends on the sentence that names it.
+
+Two limits belong with the number. Selection is untouched: in the lexical replay the crossing question still
+ranks 10th and is dropped by the entry cap, and only the live fused ranking reached the row - a row that never
+ranks is a different defect. And a window that already covers as many question terms as any other is left
+where it is, so this repairs the case where the head answers nothing rather than re-ranking every quote.
+
 Run at least 30 completed turns to exercise three automatic summaries. Record summary responses
 (requested output cap, finish reason, body length, reasoning usage when returned), covered sources,
 folded rows, quoted evidence, query, and actual character replies. Keep original text authoritative.
