@@ -37,6 +37,13 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- Every build resolves each live ledger statement to a carrier: its own injected anchor or boundary line, a
+  quoted original row, or nothing. Folding, the anchor budget and the boundary budget each answer a local
+  question, and each can report success while a statement the ledger still calls live reaches no part of the
+  prompt - measured on the live chat, where one negation was parked as an anchor *and* dropped from the
+  boundary block in the same turn. The count with no carrier is reported, the dropped statement is named, and a
+  warning states it (`required_total`, `required_line`, `required_source`, `required_none`,
+  `required_uncarried`; `ledgerCarriers`, N25). It is a lower bound: the summary prose is not read.
 - The shipped retrieval path is written down once (dev_docs/01_architecture.md) and reported per generation as
   `retrieval_config`: scorer, fusion `k`, each channel's weight and the packer policy. "Dense was on" reads the
   same at the shipped 0.1 vote and at 1.0, and the packer's policy was not stated in the trace at all. The

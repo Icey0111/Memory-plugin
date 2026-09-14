@@ -8,7 +8,7 @@
 //   C. the ledger keeps its history: a replacement moves an entry, it does not delete it;
 //   D. when the budget still binds, the cut is by kind round-robin and newest-first, and it is reported.
 import assert from 'node:assert/strict';
-import { orderAnchors, selectAnchors, selectKnowledge, mergeAnchors, parseAnchors, parseAnchorChanges,
+import { orderAnchors, selectAnchors, selectKnowledge, ledgerCarriers, mergeAnchors, parseAnchors, parseAnchorChanges,
     formatAnchors, formatAnchorPrompt, planAnchors, anchorSubjectKey, MAX_SUPERSEDED, MAX_RESOLVED } from './raw-history.js';
 import { updateNarrative, buildNarrativeContext, readNarrativeReport,
     narrativeSettings } from './narrative-runtime.js';
@@ -269,6 +269,31 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     assert.equal(one.parked.length, 1, 'the rest is reported, not silent');
     assert.match(one.parked[0], /林舟/);
     assert.equal(selectKnowledge([], { budget: 4000 }).total, 0, 'an empty ledger has nothing to drop');
+}
+
+// --- 15. a live statement with no carrier is counted, not assumed -----------------------------------
+// Folding, the anchor budget and the boundary budget each answer a local question and each can report success
+// while a statement the ledger still calls live reaches no part of the prompt. This resolves the combination:
+// its own line (exact), a quoted original row (weaker, and reported as such), or nothing.
+{
+    const anchors = [
+        { id: 'a1', kind: '客观事实', text: '甲陈述。', source: 'raw_2' },
+        { id: 'a2', kind: '条件', text: '乙陈述。', source: 'raw_4、raw_6' },
+        { id: 'a3', kind: '承诺', text: '丙陈述。', source: 'raw_8' },
+    ];
+    const knowledge = [{ id: 'k1', kind: '林舟/知道', text: '丁边界。' }];
+    const out = ledgerCarriers({ anchors, knowledge, anchorInjected: new Set(['a1']),
+        knowledgeInjected: new Set(), evidenceSources: new Set(['raw_4', 'raw_8']) });
+    assert.equal(out.rows, 4, 'every live statement is resolved');
+    assert.equal(out.line, 1, 'an injected statement carries itself');
+    assert.equal(out.source, 2, 'a parked statement whose original row is quoted is represented, weakly');
+    assert.equal(out.none, 1, 'and one that is neither is the loss');
+    assert.equal(out.uncarried[0].id, 'k1', 'the loss is named');
+    assert.deepEqual(out.sourceDetail.find(row => row.id === 'a2'),
+        { id: 'a2', type: 'anchor', kind: '条件', quoted: 1, sources: 2 },
+        'how much of a statement source list the evidence reached is kept, not flattened to a yes');
+    assert.equal(out.line + out.source + out.none, out.rows, 'the three buckets partition the ledger');
+    assert.deepEqual(ledgerCarriers({}).rows, 0, 'an empty ledger resolves to nothing');
 }
 
 console.log('anchor-budget: ok');

@@ -20,7 +20,8 @@ The summary does not reread all earlier originals each pass. Saved state, select
 actual prompt injection and correct model use are separate boundaries; source-version validity
 and complete recorded coverage do not prove semantic completeness. Active anchors that do not
 fit their budget remain stored but are parked, without a guarantee that retrieval will recover
-them for a continuation.
+them for a continuation. Parking is a budget outcome, not a loss: the build resolves every live statement to a
+carrier - its own injected line, a quoted original row, or nothing - and reports the ones in neither (N25).
 
 ```mermaid
 flowchart TD
@@ -163,6 +164,7 @@ the chat file keeps (ADR-0004).
 | N21 | A live acceptance run starts only after the repo, the deployed disk and the loaded module agree; the loaded module is hashed, never inferred from the served file (ADR-0029) | runtime-precheck.mjs |
 | N22 | `anchors_same_subject` is a same-label record count, not a contradiction detector, and no label authorizes a replacement (ADR-0027, ADR-0029) | countAnchorCollisions, warningsFor |
 | N23 | The runtime names the packer policy it ships instead of inheriting a default, and every build reports the retrieval configuration built from the same constants the ranker and the packer use, so the experiment cannot be mistaken for the shipped path (ADR-0015, ADR-0016) | SHIPPED_PACK_POLICY, shippedRetrievalConfig |
+| N25 | Every live ledger statement is resolved each build to one of two measured carriers - its own injected line, or a quoted original row - and the residue is reported and warned with the statement named. It is a structural lower bound and says so: the summary prose is not read, knowledge boundaries have no source rows of their own, and records are compared by id rather than by meaning, so an anchor an injected knowledge line restates still counts as uncarried | ledgerCarriers, warningsFor, readNarrativeReport |
 | N24 | The knowledge-boundary block reports what it injected and what the budget left out, the way the anchor block does; an accepted entry that does not fit is named instead of silently omitted | selectKnowledge, warningsFor, readNarrativeReport |
 
 ### 6. What this architecture does not do yet

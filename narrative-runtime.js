@@ -2,7 +2,7 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     summaryMessages, summaryRequest, summaryBlockState, anchorRepairRequest, stateRevisionOf,
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
     selectAnchors, selectKnowledge, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
-    SHIPPED_PACK_POLICY, shippedRetrievalConfig,
+    SHIPPED_PACK_POLICY, shippedRetrievalConfig, ledgerCarriers,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
     summaryLengthVerdict } from './raw-history.js';
@@ -734,6 +734,18 @@ function warningsFor(state, opts) {
             + ' 条（按台账顺序整行装填，装不下的整行留在台账里，本次注入看不到）。'
             + '可调高“知情边界 token 预算”。');
     }
+    // Parking is a budget outcome. This is the outcome that matters: a statement the ledger still calls live,
+    // injected neither as its own line nor represented by a quoted original. Each of the three budgets that
+    // produced it reported success on its own, which is why the count is computed after all of them. It is
+    // stated as exactly what was measured - not as "the model cannot see this" - because the summary prose and
+    // the ledger's other records are not compared here: the anchor "she is the forest's guardian" is parked,
+    // and an injected knowledge line does say the same thing.
+    if (state.required_none > 0) {
+        out.push('有 ' + state.required_none + ' 条仍然有效的陈述在本次注入里没有被自己的台账行承载，'
+            + '它的原文来源也没有被证据块引用：'
+            + (state.required_uncarried || []).map(row => row.kind + '／' + row.text).join('；')
+            + '。这是结构下限，不是语义判断：摘要正文、以及台账里其他记录对同一事实的复述，都没有被比对。');
+    }
     return out;
 }
 
@@ -830,11 +842,15 @@ function composeContinuity(store, chunks, opts) {
         anchorsParkedTerms: anchorSelection.parked.map(item => ({ kind: String(item.kind || '其他'),
             text: String(item.text || '').slice(0, 80) })),
         anchorsParkedText: anchorSelection.parked.map(item => String(item.text || '')),
+        // Which statements were injected as their own line. The carrier resolution needs the ids, not the count:
+        // a statement that is not injected may still be represented by its quoted original text.
+        anchorsInjectedIds: anchorSelection.injected.map(item => item.id),
         // The knowledge block used to report only its surviving text, so a dropped entry was invisible in
         // the trace while a parked anchor was not. Its two carriers report the same way now.
         knowledgeInjected: knowledgeSelection.injected,
         knowledgeParked: knowledgeSelection.parked.length,
         knowledgeParkedTerms: knowledgeSelection.parked.slice(0, 6).map(line => String(line).slice(0, 80)),
+        knowledgeInjectedIds: knowledgeSelection.injectedEntries.map(item => item.id),
         floors, sourceRevision, stateRevision, block: [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n') };
 }
 
@@ -962,6 +978,13 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     // changing a default somewhere else.
     const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources,
         policy: SHIPPED_PACK_POLICY });
+    // The three local questions (may this floor be hidden, what fits the anchor block, what fits the boundary
+    // block) are answered above; this is the one they do not answer between them: of the statements the ledger
+    // still calls live, which ones does this prompt carry at all.
+    const carriers = ledgerCarriers({ anchors: continuity.anchors, knowledge: continuity.knowledge,
+        anchorInjected: new Set(continuity.anchorsInjectedIds || []),
+        knowledgeInjected: new Set(continuity.knowledgeInjectedIds || []),
+        evidenceSources: new Set(evidence.sources.map(row => row.source)) });
     // The metric the hand-written probe runs had to be replaced by: of the rare terms of this situation that
     // exist only in hidden floors, how many came back with the evidence that was actually packed.
     const entityState = entityRecall(chunks, history, { query, visibleSources, packed: evidence.sources });
@@ -987,6 +1010,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         knowledge_entries: continuity.knowledge.length,
         knowledge_injected: continuity.knowledgeInjected,
         knowledge_parked: continuity.knowledgeParked,
+        required_none: carriers.none,
+        required_uncarried: carriers.uncarried,
         entity_missed: 0 }, opts); // Query-term coverage is a trace, not a quality alarm.
     const diagnostics = { summary_tokens: estimateTokens(continuity.summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
@@ -1033,6 +1058,13 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
         warnings,
+        // The carrier resolution for this prompt: how many live ledger statements were injected as their own
+        // line, how many are merely represented by a quoted original, and how many are in neither.
+        required_total: carriers.rows, required_line: carriers.line, required_source: carriers.source,
+        required_none: carriers.none, required_uncarried: carriers.uncarried,
+        required_source_detail: carriers.sourceDetail,
+        // What the number above is, in one machine-readable word, because it is not a reading of the summary.
+        required_metric: 'structural_lower_bound_not_meaning',
         sources: evidence.sources, candidates: ranked.length,
         rerank_model: opts.rerankModel || null, rerank_used: reranked.used, rerank_error: reranked.error,
         rerank_cost: reranked.metrics || null,
@@ -1169,6 +1201,13 @@ export function readNarrativeReport(ctx) {
     // selection, so one rule decides what is missing here and in the generation.
     const knowledgeEntries = store.narrative_knowledge?.entries || [];
     const reportKnowledge = selectKnowledge(knowledgeEntries, { budget: options(settings).knowledgeTokens });
+    // The carrier resolution uses the evidence the last generation actually packed, which the build recorded,
+    // and the two selections recomputed above. So the panel states the same thing the generation did without
+    // running one.
+    const reportCarriers = ledgerCarriers({ anchors: activeAnchors, knowledge: knowledgeEntries,
+        anchorInjected: new Set(reportSelection.injected.map(item => item.id)),
+        knowledgeInjected: new Set(reportKnowledge.injectedEntries.map(item => item.id)),
+        evidenceSources: new Set((store.narrative_diagnostics?.sources || []).map(row => row.source)) });
     const state = { ...pending, summary_failures: failures,
         summary_error: store.narrative_diagnostics?.summary_error || null,
         summary_block: store.narrative_diagnostics?.summary_block || null,
@@ -1183,7 +1222,9 @@ export function readNarrativeReport(ctx) {
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
         knowledge_entries: knowledgeEntries.length,
         knowledge_injected: reportKnowledge.injected,
-        knowledge_parked: reportKnowledge.parked.length };
+        knowledge_parked: reportKnowledge.parked.length,
+        required_none: reportCarriers.none,
+        required_uncarried: reportCarriers.uncarried };
     return {
         enabled: settings.enabled !== false,
         summary_running: summarizing,
@@ -1243,6 +1284,14 @@ export function readNarrativeReport(ctx) {
         knowledge_injected: reportKnowledge.injected,
         knowledge_parked: reportKnowledge.parked.length,
         knowledge_parked_terms: reportKnowledge.parked.slice(0, 6).map(line => String(line).slice(0, 80)),
+        // Live ledger statements with no carrier in the prompt the last generation actually delivered.
+        required_total: reportCarriers.rows,
+        required_line: reportCarriers.line,
+        required_source: reportCarriers.source,
+        required_none: reportCarriers.none,
+        required_uncarried: reportCarriers.uncarried,
+        required_source_detail: reportCarriers.sourceDetail,
+        required_metric: 'structural_lower_bound_not_meaning',
         knowledge_unconfirmed: knowledgeEntries.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
@@ -1394,6 +1443,8 @@ function renderNarrativePanel(root, ctx) {
             + '，退场记录 ' + report.anchors_superseded + ' 条（最多保留 ' + report.anchors_superseded_limit + ' 条）');
         parts.push('知情边界 ' + report.knowledge_entries + ' 条，注入 ' + report.knowledge_injected + ' 条'
             + (report.knowledge_parked ? '（搁置 ' + report.knowledge_parked + '）' : ''));
+        if (report.required_none) parts.push('本次注入里没有任何载体的活陈述 ' + report.required_none
+            + ' 条（共 ' + report.required_total + ' 条）');
         if (report.anchors_same_subject) parts.push('同一主体多活值 ' + report.anchors_same_subject + ' 组');
         if (report.anchor_op_errors?.length) parts.push((report.anchor_op_errors_recovered ? '上一次' : '最近一批')
             + '锚点变更被拒绝 ' + report.anchor_op_errors.length + ' 条'

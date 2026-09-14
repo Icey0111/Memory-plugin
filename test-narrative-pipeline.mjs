@@ -925,6 +925,30 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         'the read-only report states the same, so the panel can show it without running a generation');
 }
 
+// --- 17. a live statement that reaches no part of the prompt is counted, not assumed ----------------
+{
+    const reply = prompt => '局面：两人在地窖里。'
+        + '\n【锚点变更】\n- 新增 | 条件 | 结界 | 来源 ' + anySource(prompt) + ' | 结界只在夜里生效'
+        + '\n【知情边界】\n- 林舟 | 不知道 | 钥匙在苏晚手里';
+    const host = makeHost(12, { settings: { narrative_anchor_tokens: 0, narrative_evidence_tokens: 0 },
+        summarize: async (_ctx, prompt) => reply(prompt) });
+    await updateNarrative(host.ctx, host.services, { force: true });
+    const bundle = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });
+    const d = bundle.diagnostics;
+    assert.equal(d.required_total, d.anchors_active + d.knowledge_entries,
+        'the resolved ledger is the live one, anchors and boundaries together');
+    assert.equal(d.required_line + d.required_source + d.required_none, d.required_total,
+        'every live statement lands in exactly one carrier bucket');
+    assert.ok(d.required_none >= 1, 'a statement injected nowhere and quoted nowhere is counted');
+    assert.ok(d.required_uncarried.some(row => row.text.includes('结界')),
+        'and the count names the statement instead of only counting it');
+    assert.ok(d.warnings.some(line => line.includes('没有被自己的台账行承载')),
+        'a live statement with no carrier is stated, not left to the anchors-parked count');
+    const report = readNarrativeReport(host.ctx);
+    assert.equal(report.required_none, d.required_none,
+        'the read-only report resolves the same carriers from the last packed evidence');
+}
+
 
 // --- 21. a named character in the situation gets the passage that describes them -------------------
 // The split this serves: the summary carries the logic - who these people are and what they want - and

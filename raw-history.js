@@ -1002,7 +1002,14 @@ export function selectAnchors(active, { budget = 600 } = {}) {
  * substitute for an earlier one and the fit stops at the first line that does not fit, as it always did.
  */
 export function selectKnowledge(entries, { budget = 200 } = {}) {
-    const lines = formatAnchors(entries).split('\n').filter(Boolean);
+    // Lines are built per entry so the entry that owns each line is known, which is what lets the caller say
+    // *which* boundary was dropped instead of only how many lines did not fit. Flattening the entries this way
+    // is the same text as formatting the whole list at once, so the injected block is unchanged.
+    const owner = [];
+    const lines = [];
+    (entries || []).forEach((item, index) => {
+        for (const line of formatAnchors([item]).split('\n').filter(Boolean)) { lines.push(line); owner.push(index); }
+    });
     let text = '';
     let injected = 0;
     for (const line of lines) {
@@ -1011,7 +1018,51 @@ export function selectKnowledge(entries, { budget = 200 } = {}) {
         text = next;
         injected += 1;
     }
-    return { text, injected, total: lines.length, parked: lines.slice(injected) };
+    const owners = list => [...new Set(list)].map(index => (entries || [])[index]);
+    return { text, injected, total: lines.length, parked: lines.slice(injected),
+        injectedEntries: owners(owner.slice(0, injected)), parkedEntries: owners(owner.slice(injected)) };
+}
+
+/**
+ * Resolve a carrier for every live statement the ledger holds.
+ *
+ * Folding asks the summary whether a floor may be hidden, the anchor budget asks the anchor block what fits,
+ * and the boundary budget asks the knowledge block what fits. Those are three local questions, and nothing
+ * asked the one the contract actually states: a source may be hidden only while an accepted representation of
+ * it is injected. A statement can therefore be parked by one budget and left out of the other block while all
+ * three report success - measured on the live chat, where the cloak's "does not make you invisible" constraint
+ * was parked as an anchor *and* dropped from the boundary block in the same turn.
+ *
+ * `line` is exact: the statement itself was injected. `source` is weaker and is reported as weaker - the
+ * evidence block quotes a span of one of the statement's source rows, and that span need not contain the
+ * sentence. `none` means neither of those two measured carriers holds it - not "the model cannot see this".
+ * It is a structural lower bound, and the residue is named so a reader can judge it: a knowledge boundary has
+ * no source rows of its own, so a parked one always counts as `none`; an anchor counts as `none` even when an
+ * injected knowledge line restates the same fact, because records are compared by id and not by meaning; and
+ * the summary prose is not read at all. What it measures is the carrier the system promises, not the meaning
+ * the reply ends up conveying.
+ */
+export function ledgerCarriers({ anchors = [], knowledge = [], anchorInjected = new Set(),
+    knowledgeInjected = new Set(), evidenceSources = new Set() } = {}) {
+    const resolve = (item, injected, type) => {
+        const text = String(item?.text || '');
+        const kind = String(item?.kind || '其他');
+        if (item && injected.has(item.id)) return { id: item.id, type, kind, text, carrier: 'line', quoted: 0, sources: 0 };
+        const sources = item ? parseSourceList(item.source) : [];
+        const quoted = sources.filter(id => evidenceSources.has(id)).length;
+        return { id: item?.id || null, type, kind, text, carrier: quoted ? 'source' : 'none',
+            quoted, sources: sources.length };
+    };
+    const rows = [...(anchors || []).map(item => resolve(item, anchorInjected, 'anchor')),
+        ...(knowledge || []).map(item => resolve(item, knowledgeInjected, 'knowledge'))];
+    const at = carrier => rows.filter(row => row.carrier === carrier);
+    return { rows: rows.length, line: at('line').length, source: at('source').length, none: at('none').length,
+        uncarried: at('none').map(row => ({ id: row.id, type: row.type, kind: row.kind,
+            text: row.text.slice(0, 80) })),
+        // Carried only by a quoted original rather than by its own line, with how much of its source list the
+        // evidence actually reached: 1 of 3 rows quoted is a weaker statement than 3 of 3.
+        sourceDetail: at('source').map(row => ({ id: row.id, type: row.type, kind: row.kind,
+            quoted: row.quoted, sources: row.sources })) };
 }
 
 export function anchorId(item) {
