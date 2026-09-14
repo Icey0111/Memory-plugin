@@ -5,14 +5,19 @@
 The measurements below describe commit 2f2a4b3, before ADR-0023 changed folding to exact completed batches.
 The replay's newest-pair visibility policy is a historical comparison condition, not today's folding rule.
 
-Two instruments answer different questions:
+Three tracks share the ruler's scorer and packer, and a number is read with its track
+([ADR-0033](decisions/ADR-0033-three-measurement-tracks-and-a-natural-track.md)):
 
-- **Prefix replay:** user-target and character-description coverage of the actual quoted span.
-  Targets are derived independently of the chosen retrieval query, but remain heuristics.
-- **Labelled retrieval:** a pre-annotated answer string must survive into packed original-text evidence.
-  This measures answer-in-context, not whether a generated reply is correct.
+- **Synthetic probe** (`recall-baseline.mjs`, default): the query is cut out of an answer. Mechanism and
+  budget pressure, not product evidence.
+- **Source-first labelled** (`--paraphrases`): an authored question against a literal chosen from the
+  original before the run. Measures answer-in-context, not whether a generated reply is correct.
+- **Natural capture** (`--natural`): the query is the real user message through `planRetrievalQuery`,
+  and the targets are the prefix's own situation terms, asked thing and character descriptions. This is
+  the only product evidence. `retrieval-audit.mjs` is the same prefix replay across query strategies.
 
-Neither instrument accepts a summary or measures narrative drift. Those are separate acceptance work.
+All three are read-only replays. None accepts a summary, so none measures narrative drift or
+generated-answer correctness, and the natural track's targets are tokenizer-derived proxies.
 
 ## Query comparison
 

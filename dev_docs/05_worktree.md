@@ -16,7 +16,7 @@
 | Tokenizer and lexical baseline | baseline-index.js, v55-tokenizer.js |
 | Other active adapters and projections | see 01_architecture.md |
 | Offline regression and syntax gates | test-*.mjs, run-tests.mjs, check-syntax.mjs |
-| Retrieval measurements | recall-baseline.mjs, recall-embed.mjs, embedding-cassette.mjs, retrieval-audit.mjs, retrieval-experiment.mjs |
+| Retrieval measurements | recall-baseline.mjs, natural-track.mjs, recall-embed.mjs, embedding-cassette.mjs, retrieval-audit.mjs, retrieval-experiment.mjs |
 | Runtime preflight and evidence replay | runtime-precheck.mjs, replay-anchor-evidence.mjs |
 | Long-chat acceptance and detail-survival measurement | acceptance-longchat.mjs, acceptance-capture.js, detail-survival.mjs, answer-adjudication.mjs |
 

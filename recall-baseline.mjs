@@ -17,6 +17,7 @@
 //     node recall-baseline.mjs <chat> --embeddings <cassette.json> --paraphrases <file>
 //     node recall-baseline.mjs <chat> --cassette-requests req.json --model <m> --base <u>   # declare inputs
 //     node recall-baseline.mjs <chat> --embeddings <legacy.json> --adopt-legacy             # unverified
+//     node recall-baseline.mjs <chat> --natural [--cadence 10] [--natural-turns N]           # real queries
 //
 // The --scorer and --pack switches exist so a retrieval change can be attributed to the rule that
 // changed rather than to the version that shipped it: idf and greedy reproduce the old behaviour.
@@ -30,8 +31,19 @@
 // is how the builder is told what to embed.
 //
 // It reads and measures. The only file it writes is the one named by --dump or --cassette-requests, and
-// no plugin code runs: the one module it shares with the plugin is the request builder the cassette key
-// is derived from.
+// no plugin code runs: the modules it shares with the plugin are the request builder the cassette key is
+// derived from and the query planner the natural track runs.
+//
+// Three tracks share this scorer, and every line names the track it came from:
+//   synthetic probe       (default)       the query is cut out of the answer; mechanism and budget pressure
+//   source-first labelled (--paraphrases) an authored question against a literal chosen from the original
+//   natural capture       (--natural)     the real user message through planRetrievalQuery; the only
+//                                         product evidence. Targets are the prefix's own situation terms,
+//                                         asked thing and character descriptions; no summary is fed to an
+//                                         earlier turn and nothing is hand-written.
+//
+// A natural run declares its real queries as cassette inputs, so a dense natural measurement replays
+// offline exactly like a probe one.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,6 +53,8 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, evidenceS
 import { readCassette, cassetteIndex, describeCassette, CASSETTE_REQUESTS_FORMAT } from './embedding-cassette.mjs';
 import { DERIVED_KEYS } from './v55-derived-store.js';
 import { estimateTokens } from './v55-tokenizer.js';
+import { planNaturalTurns, scoreNaturalTurn, summarizeNaturalTrack, formatNaturalTrack,
+    naturalDeclaredInputs, NATURAL_CADENCE as NATURAL_CADENCE_DEFAULT } from './natural-track.mjs';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
 const args = process.argv.slice(2);
@@ -57,7 +71,7 @@ const flagValues = new Set();
 args.forEach((value, index) => {
     if (['--limit', '--probes', '--paraphrases', '--scorer', '--pack', '--dump', '--against',
         '--evidence', '--entries', '--embeddings', '--dense-weight', '--embed-top',
-        '--cassette-requests', '--model', '--base'].includes(value)) {
+        '--cassette-requests', '--model', '--base', '--cadence', '--natural-turns'].includes(value)) {
         flagValues.add(index + 1);
     }
 });
@@ -83,6 +97,11 @@ const requestsFile = word('cassette-requests', null);
 const ADOPT_LEGACY = args.includes('--adopt-legacy');
 const MODEL = word('model', null);
 const BASE = word('base', null);
+const NATURAL = args.includes('--natural');
+const NATURAL_CADENCE = flag('cadence', NATURAL_CADENCE_DEFAULT);
+const NATURAL_TURNS = flag('natural-turns', 0);
+/** Filled by the natural section so one --dump carries it without a second pass. */
+let naturalDump = null;
 
 // A requested cassette that is absent is not "dense off". Silently dropping to lexical under a dense
 // header is the failure this whole switch exists to prevent, so a missing or unreadable file is fatal.
@@ -523,8 +542,9 @@ function scoreParaphrases(resolved) {
         all: rate(counted), precision: spans ? carrying / spans : null, tokens: median(counted.map(row => row.tokens)),
         drops: Object.fromEntries(byRule) };
     if (dumpFile) {
-        fs.writeFileSync(dumpFile, JSON.stringify({ scorer: SCORER, pack: POLICY, spanCost: SPAN_COST,
-            evidenceTokens: EVIDENCE_TOKENS, entries: EVIDENCE_ENTRIES, pinnedEntries: Boolean(SLOTS), summary,
+        fs.writeFileSync(dumpFile, JSON.stringify({ track: 'source-first-labelled', scorer: SCORER, pack: POLICY,
+            spanCost: SPAN_COST, evidenceTokens: EVIDENCE_TOKENS, entries: EVIDENCE_ENTRIES,
+            pinnedEntries: Boolean(SLOTS), summary, natural: naturalDump,
             cassette: cassetteRecord(), dense: Boolean(DENSE), denseWeight: DENSE_WEIGHT, embedTop: EMBED_TOP,
             rows: rows.map(row => ({ question: row.question, kind: row.kind, chat: row.chat,
                 occurrences: row.occurrences, found: row.found, rank: row.rank, slot: row.slot, drop: row.drop,
@@ -634,6 +654,8 @@ if (CASSETTE) {
 } else {
     console.log('dense off (lexical only: pass --embeddings <cassette> to measure the dense channel)');
 }
+console.log('tracks: synthetic probe' + (paraphraseFile ? ' + source-first labelled' : '')
+    + (NATURAL ? ' + natural capture' : ''));
 
 // Resolve every input before printing anything. This is the order that makes a cassette a proof rather
 // than a cache: the run is told it cannot replay its own vectors while there is still nothing to un-read.
@@ -643,11 +665,20 @@ for (const chat of chats) {
         console.log(path.basename(chat.file).padEnd(40) + 'ERROR ' + String(error.message).slice(0, 60));
     }
 }
+// The natural track plans real turns from the messages prepare() already loaded. It runs before the
+// cassette is proved, so its real queries and prefix chunks are declared inputs the run can be told it
+// cannot replay.
+const natural = NATURAL ? prepared.map(row => ({ file: path.basename(row.chat.file),
+    plans: planNaturalTurns(row.messages, { cadence: NATURAL_CADENCE, maxTurns: NATURAL_TURNS }) })) : null;
 const paraphrases = loadParaphrases(paraphraseFile);
 const resolved = paraphrases ? resolveParaphrases(chats, paraphrases) : null;
 const declaredTargets = prepared.map(row => ({ chunks: row.chunks, questions: row.probes.map(probe => probe.query) }));
 if (resolved) for (const row of resolved.rows) {
     if (row.occurrences === 1 && row.chatRef) declaredTargets.push({ chunks: row.chatRef.chunks, questions: [row.question] });
+}
+if (natural) for (const entry of natural) {
+    const inputs = naturalDeclaredInputs(entry.plans);
+    if (inputs.questions.length || inputs.chunks.length) declaredTargets.push(inputs);
 }
 const requests = collectRequests(declaredTargets);
 
@@ -715,6 +746,28 @@ if (rows.length) {
         + Math.round((median(perFloorTokens) || 0) * 500 / 1000) + 'k tokens before any summary folds it');
     console.log('Derived keys now owned by the external record: ' + DERIVED_KEYS.filter(k => ['memories', 'slots', 'hierarchical_summaries'].includes(k)).join(', '));
 }
+if (natural) {
+    const allTurns = [];
+    console.log('');
+    console.log('natural capture (query = the real user message through planRetrievalQuery):');
+    for (const entry of natural) {
+        const turns = entry.plans.map(plan => scoreNaturalTurn(plan, { scorer: SCORER, denseWeight: DENSE_WEIGHT,
+            packPolicy: POLICY, dense: DENSE ? denseFor(plan.chunks, plan.plan.query) : [],
+            evidenceTokens: EVIDENCE_TOKENS, entries: SLOTS, spanCost: SPAN_COST }));
+        allTurns.push(...turns);
+        console.log('  ' + entry.file.padEnd(38) + formatNaturalTrack(summarizeNaturalTrack(turns)));
+    }
+    console.log('  ' + 'ALL'.padEnd(38) + formatNaturalTrack(summarizeNaturalTrack(allTurns)));
+    naturalDump = allTurns;
+    if (dumpFile && !paraphrases) {
+        fs.writeFileSync(dumpFile, JSON.stringify({ track: 'natural-capture', scorer: SCORER, pack: POLICY,
+            spanCost: SPAN_COST, evidenceTokens: EVIDENCE_TOKENS, entries: EVIDENCE_ENTRIES,
+            pinnedEntries: Boolean(SLOTS), cassette: cassetteRecord(), dense: Boolean(DENSE),
+            denseWeight: DENSE_WEIGHT, embedTop: EMBED_TOP, natural: naturalDump }, null, 2));
+        console.log('wrote ' + dumpFile);
+    }
+}
 if (resolved) scoreParaphrases(resolved);
-if (againstFile && dumpFile) reportComparison(againstFile, dumpFile);
+if (againstFile && dumpFile && resolved) reportComparison(againstFile, dumpFile);
 if (againstFile && !dumpFile) console.log('--against needs --dump in the same run: it compares that dump against this run');
+if (againstFile && dumpFile && !resolved) console.log('--against compares source-first labelled dumps; a natural-only dump has no labelled rows to pair');
