@@ -6,7 +6,7 @@
 // also assert the fixture mirrors that run.
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { fingerprint, diffLoaded, fnv1a } from './runtime-precheck.mjs';
+import { fingerprint, diffLoaded, fnv1a, verdictOf } from './runtime-precheck.mjs';
 
 const NAME = 'raw-history.js#parseAnchorChanges';
 const match = { [NAME]: 'function parseAnchorChanges(lines, opts){ return []; }' };
@@ -24,6 +24,13 @@ assert.notEqual(diffs[0].disk, diffs[0].loaded);
 // A watched function missing from the loaded module is a mismatch, never a pass.
 assert.equal(diffLoaded(fingerprint({ [NAME]: current }), {}).length, 1);
 assert.equal(fnv1a('abc'), fnv1a('abc'));
+
+// F-2: a page that could not be checked is unknown, never a pass, even when the disk is clean.
+assert.equal(verdictOf({ stale: null, diskClean: true }), 'unknown', 'an unreachable page is never a pass');
+assert.equal(verdictOf({ stale: null, diskClean: false }), 'unknown');
+assert.equal(verdictOf({ stale: [], diskClean: true }), 'pass');
+assert.equal(verdictOf({ stale: [], diskClean: false }), 'stale', 'a clean loaded check does not excuse a stale disk');
+assert.equal(verdictOf({ stale: [{ name: NAME }], diskClean: true }), 'stale');
 
 // The local evidence this fixture mirrors. Skipped when the ignored acceptance directory is absent.
 const evidence = 'remove/acceptance-anchor-semantics-421757c/raw2/set2.meta.json';

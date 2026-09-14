@@ -53,6 +53,17 @@ export function diffLoaded(disk, loaded) {
         .map(name => ({ name, disk: (disk || {})[name] ?? null, loaded: (loaded || {})[name] ?? null }));
 }
 
+/**
+ * The verdict, kept separate so it can be pinned. `stale === null` means the loaded module was never
+ * checked - an unreachable page or `--no-page` - and dev_docs/02_development.md is explicit that this is
+ * unknown (exit 2), never a pass. `stale: []` is the only state that may pass, and only with a clean disk.
+ */
+export function verdictOf({ stale, diskClean }) {
+    if (stale === null || stale === undefined) return 'unknown';
+    if (stale.length) return 'stale';
+    return diskClean ? 'pass' : 'stale';
+}
+
 function candidateDirs(override) {
     const home = os.homedir();
     return [override, process.env.AETHERIA_LIVE_DIR || '',
@@ -130,17 +141,18 @@ async function main() {
     const liveDir = candidateDirs(option('--dir', '')).find(dir => existsSync(dir));
     const cdp = option('--cdp', 'http://127.0.0.1:9222');
     const prefix = option('--url-prefix', '/scripts/extensions/third-party/Memory-plugin/');
-    const report = { repoDir, liveDir: liveDir || null, disk: null, loaded: null, stale: [], verdict: 'unknown' };
+    const report = { repoDir, liveDir: liveDir || null, disk: null, loaded: null, stale: null, verdict: 'unknown' };
     if (!liveDir) report.reason = 'no live extension directory';
     else report.disk = diskDiff(repoDir, liveDir);
     if (page && liveDir) {
         try {
             const [disk, loaded] = [await diskFingerprint(liveDir), await loadedFingerprint(cdp, prefix)];
+            report.loaded = loaded;
             report.stale = diffLoaded(disk, loaded);
         } catch (error) { report.reason = 'page or module import failed: ' + String(error?.message || error); }
     } else if (!page) report.reason = 'loaded-module check skipped (--no-page)';
     const diskClean = report.disk && !report.disk.changed.length;
-    report.verdict = report.stale ? (report.stale.length ? 'stale' : (diskClean ? 'pass' : 'stale')) : 'unknown';
+    report.verdict = verdictOf({ stale: report.stale, diskClean });
     if (json) {
         console.log(JSON.stringify(report, null, 2));
     } else {
