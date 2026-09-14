@@ -422,6 +422,21 @@ export function summaryMessages(history, batch) {
 }
 
 /**
+ * The length verdict, kept pure so the target and the ceiling stay separable.
+ *
+ * The instruction asks for the target; a body up to the ceiling is accepted and marked, because equal
+ * turn counts can carry different amounts of information and a dense batch deserves the room. Only a
+ * body past the ceiling is refused, and a refusal hides nothing - the caller keeps the original floors.
+ */
+export function summaryLengthVerdict(tokens, { target = 600, ceiling = target } = {}) {
+    const size = Number(tokens) || 0;
+    const aim = Number(target) || 0;
+    const limit = Math.max(Number(ceiling) || 0, aim);
+    if (size > limit) return { accepted: false, over_target: true, reason: 'over_ceiling' };
+    return { accepted: true, over_target: size > aim, reason: size > aim ? 'over_target' : 'within_target' };
+}
+
+/**
  * The exact request text, and what each part of it costs.
  *
  * The parts are reported because the character budget is a local limit on this text and on nothing

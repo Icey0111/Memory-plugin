@@ -1,6 +1,6 @@
 # ADR-0031: Continuity and Original Evidence Define AIRP Memory
 
-Status: Accepted product direction; budget implementation pending.
+Status: Accepted product direction; the budget policy is implemented by [ADR-0032](ADR-0032-a-soft-summary-target-and-an-emergency-ceiling.md).
 
 ## Context
 
@@ -34,11 +34,11 @@ does not alone prove narrative correctness.
 
 ## Consequences and implementation status
 
-This decision revises the fixed-cost product objective. It does not change
-runtime defaults, folding rules, source/version checks or operation validation.
-The 600-token default hard acceptance cap remains implemented until a scoped
-change replaces it. Existing protocol and budget ADRs still describe the
-current behavior; their implementation is not silently superseded here.
+This decision revises the fixed-cost product objective. The target/ceiling split
+that implements it is [ADR-0032](ADR-0032-a-soft-summary-target-and-an-emergency-ceiling.md);
+folding rules, source/version checks and operation validation are unchanged.
+Existing protocol ADRs still describe the current behavior; their implementation
+is not silently superseded here.
 
 The detailed sequence, acceptance cases and call limits belong to
 [Issue #2](https://github.com/Icey0111/Memory-plugin/issues/2), not a second

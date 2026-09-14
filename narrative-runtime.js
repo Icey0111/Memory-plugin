@@ -3,7 +3,8 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
     selectAnchors, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
-    mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries } from './raw-history.js';
+    mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
+    summaryLengthVerdict } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
 import { rerankShortlist, applyRerankOrder } from './v55-rerank.js';
 import { estimateTokens } from './v55-tokenizer.js';
@@ -19,7 +20,8 @@ export const NARRATIVE_PROMPTS = ['aetheria_unified_memory_v5_4_reference', 'aet
 // the chat that failed the first batching acceptance (23,742 characters), not the old 18000 that could not
 // hold it. An install that already stored 18000 keeps it - that value may be a deliberate choice, and a
 // silent overwrite would be a config change nobody asked for - and is told about the discrepancy instead.
-const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative_evidence_tokens: 1000,
+const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative_summary_ceiling_tokens: 0,
+    narrative_evidence_tokens: 1000,
     narrative_setting_tokens: 400, narrative_input_chars: 40000, narrative_fold: true,
     // Guards. The pipeline can fail quietly in exactly two ways, and both are worse than an error,
     // because the story keeps working while the memory behind it stops: the summary job keeps failing
@@ -63,13 +65,21 @@ const bound = (value, fallback, min, max) => Number.isFinite(Number(value))
     ? Math.max(min, Math.min(max, Math.floor(Number(value)))) : fallback;
 
 function options(settings) {
+    const summaryTokens = bound(settings.narrative_summary_tokens, 600, 100, 4000);
+    // The soft target is what the model is asked for; the ceiling is the emergency acceptance line the
+    // runtime enforces. They used to be one number, so a 610-token body was refused against the target it
+    // was told to aim at. 0 means "derive from the target": dense material gets room without adding a
+    // density classifier or an unverified numeric heuristic.
+    const configuredCeiling = bound(settings.narrative_summary_ceiling_tokens, 0, 0, 4000);
+    const summaryCeiling = configuredCeiling > 0 ? Math.max(configuredCeiling, summaryTokens)
+        : Math.min(4000, Math.max(summaryTokens + 100, Math.round(summaryTokens * 1.5)));
     return { pendingWarnTokens: bound(settings.narrative_pending_warn_tokens, 4000, 200, 200000),
         failureWarn: bound(settings.narrative_summary_failure_warn, 3, 1, 50),
         anchorTokens: bound(settings.narrative_anchor_tokens, 300, 0, 4000),
         anchorUnconfirmedWarn: bound(settings.narrative_anchor_unconfirmed_warn, 2, 1, 20),
         knowledgeTokens: bound(settings.narrative_knowledge_tokens, 200, 0, 4000),
         every: bound(settings.narrative_every, 10, 1, 100),
-        summaryTokens: bound(settings.narrative_summary_tokens, 600, 100, 4000),
+        summaryTokens, summaryCeiling,
         evidenceTokens: bound(settings.narrative_evidence_tokens, 1000, 0, 8000),
         settingTokens: bound(settings.narrative_setting_tokens, 400, 0, 4000),
         inputChars: bound(settings.narrative_input_chars, 18000, 2000, 100000),
@@ -329,13 +339,16 @@ export function updateNarrative(ctx, services) {
             if (!parsed.summary) throw tagged('format', new Error('总结接口只返回了锚点，没有摘要正文；保留旧摘要与未总结原文。'),
                 { response: responseMetrics, summary_tokens: estimateTokens(answer) });
             const acceptedTokens = estimateTokens(parsed.summary);
-            if (acceptedTokens > opts.summaryTokens) throw tagged('over_budget',
-                new Error('摘要超过预算，保留旧摘要与未总结原文；请缩短总结输出或增加摘要预算。'),
-                { response: responseMetrics, summary_tokens: acceptedTokens });
+            const lengthVerdict = summaryLengthVerdict(acceptedTokens, { target: opts.summaryTokens, ceiling: opts.summaryCeiling });
+            if (!lengthVerdict.accepted) throw tagged('over_budget',
+                new Error('摘要超过预算（硬上限 ' + opts.summaryCeiling + ' token），保留旧摘要与未总结原文；请缩短总结输出或提高摘要硬上限。'),
+                { response: responseMetrics, summary_tokens: acceptedTokens,
+                    summary_target_tokens: opts.summaryTokens, summary_ceiling_tokens: opts.summaryCeiling });
             if (parsed.anchor_section === 'missing' || parsed.anchor_section === 'empty') {
                 const error = tagged('anchor_ops', new Error('锚点变更章节缺失或为空；本批不提交、不隐藏原文。'),
                     { response: responseMetrics, anchor_errors: [{ line: '', reason: parsed.anchor_section + '_section' }] });
                 error.parsed = parsed; error.valid_lines = []; error.anchor_section = parsed.anchor_section;
+                error.overTarget = lengthVerdict.over_target;
                 throw error;
             }
             const checked = parseAnchorChanges(parsed.anchorLines,
@@ -350,13 +363,14 @@ export function updateNarrative(ctx, services) {
                 error.parsed = parsed;
                 error.valid_lines = checked.changes.map(change => change.line);
                 error.anchor_section = parsed.anchor_section;
+                error.overTarget = lengthVerdict.over_target;
                 throw error;
             }
-            return { parsed, checked };
+            return { parsed, checked, overTarget: lengthVerdict.over_target };
         };
         // The only writer. It takes the already-evaluated summary and boundaries plus one fully re-checked
         // operation set, so the first answer and the repaired answer cannot diverge in what they commit.
-        const commitMerged = (parsed, changes, responseMetrics, repair) => {
+        const commitMerged = (parsed, changes, responseMetrics, repair, overTarget = false) => {
             const live = storeOf(ctx);
             const applied = mergeAnchors(live.narrative_anchors, changes, { plan: request.anchors, at: Date.now() });
             if (!applied.ok) throw tagged('anchor_ops',
@@ -383,6 +397,9 @@ export function updateNarrative(ctx, services) {
             const pastRepair = live.narrative_diagnostics?.anchor_repair;
             diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
                 summary_block: null, summary_batch_changed: null, anchor_parse: parsed.anchor_section,
+                summary_target_tokens: opts.summaryTokens, summary_ceiling_tokens: opts.summaryCeiling,
+                summary_over_target: overTarget ? { at: Date.now(), target: opts.summaryTokens,
+                    ceiling: opts.summaryCeiling, accepted_tokens: estimateTokens(parsed.summary) } : null,
                 anchor_ops: anchorOps,
                 anchor_repair: repair || (pastRepair ? { ...pastRepair, recovered: true, recovered_at: Date.now() } : null),
                 anchor_op_errors: live.narrative_diagnostics?.anchor_op_errors
@@ -523,7 +540,7 @@ export function updateNarrative(ctx, services) {
                 // supplies the missing operations. This is what stops a repair that answers "无" from erasing
                 // content the first answer already validated.
                 try {
-                    commitMerged(commitError.parsed, combined.changes, repair.response, repair);
+                    commitMerged(commitError.parsed, combined.changes, repair.response, repair, commitError.overTarget === true);
                 } catch (mergeError) {
                     if (mergeError && typeof mergeError === 'object') {
                         mergeError.repair = repair;
@@ -533,7 +550,7 @@ export function updateNarrative(ctx, services) {
                 }
                 return;
             }
-            commitMerged(first.parsed, first.checked.changes, firstResponse, null);
+            commitMerged(first.parsed, first.checked.changes, firstResponse, null, first.overTarget === true);
         } catch (error) {
             if (services.isCurrent()) {
                 // Counted, not just recorded: one failure is noise, a run of them is the warning. This
@@ -566,6 +583,8 @@ export function updateNarrative(ctx, services) {
                         context_tokens: null, context_tokens_status: 'unknown',
                         summary_tokens: Number.isFinite(error?.summary_tokens) ? error.summary_tokens : null,
                         summary_budget_tokens: opts.summaryTokens,
+                        summary_target_tokens: opts.summaryTokens,
+                        summary_ceiling_tokens: opts.summaryCeiling,
                         response: response ? { finish_reason: response.finish_reason ?? null,
                             content_chars: response.content_chars ?? null,
                             completion_tokens: response.completion_tokens ?? null,
@@ -807,6 +826,20 @@ const committedStateRevision = (store, chunks) => validSummary(store.narrative_s
     ? stateRevisionOf(store.narrative_summary, store.narrative_anchors?.active, store.narrative_knowledge?.entries)
     : null;
 
+/**
+ * The injection budget, separated from the summary's own length. `configured` is the worst case the
+ * blocks may occupy - the summary at its ceiling plus the anchor, knowledge, evidence and setting
+ * budgets - and `hostRoom` is what the host context leaves after the visible transcript and the reply
+ * reserve. The smaller is the total. Kept pure so the "no room" path is testable without a host.
+ */
+export function budgetsOf(opts, { contextSize = null, rawTokens = 0, replyReserve = 1024 } = {}) {
+    const configured = opts.summaryCeiling + opts.anchorTokens + opts.knowledgeTokens
+        + opts.evidenceTokens + opts.settingTokens + 100;
+    const hostRoom = Number(contextSize) > 0
+        ? Math.max(0, Number(contextSize) - Number(rawTokens || 0) - Number(replyReserve || 0)) : configured;
+    return { configured, hostRoom, totalBudget: Math.min(configured, hostRoom) };
+}
+
 export async function buildNarrativeContext(ctx, services, { contextSize = null } = {}) {
     if (!services.isCurrent()) return null;
     const prepared = prepare(ctx);
@@ -841,11 +874,8 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     // extracted and do not need a second model call: a name that the summary tracks and that the last three
     // messages mention is a character who is in the scene.
     const profileNames = plan.profileNames;
-    const configured = opts.summaryTokens + opts.anchorTokens + opts.knowledgeTokens
-        + opts.evidenceTokens + opts.settingTokens + 100;
-    const hostRoom = Number(contextSize) > 0 ? Math.max(0, Number(contextSize) - estimateTokens(raw)
-        - bound(settings.context_reply_reserve_tokens, 1024, 0, 32000)) : configured;
-    const totalBudget = Math.min(configured, hostRoom);
+    const { configured, hostRoom, totalBudget } = budgetsOf(opts, { contextSize,
+        rawTokens: estimateTokens(raw), replyReserve: bound(settings.context_reply_reserve_tokens, 1024, 0, 32000) });
     // A summary cannot be dropped while its source floors remain hidden.
     if (continuity.block && estimateTokens(continuity.block) > totalBudget) {
         applyNarrativeFolds(ctx.chat, history, chunks, null, false);
@@ -1115,6 +1145,9 @@ export function readNarrativeReport(ctx) {
         folded_floors: Math.round(rows.filter(row => row?.is_system === true && isFoldedRow(row)).length / 2),
         pending_floors: pending.pending_floors,
         pending_tokens: pending.pending_tokens,
+        summary_target_tokens: options(settings).summaryTokens,
+        summary_ceiling_tokens: options(settings).summaryCeiling,
+        summary_over_target: store.narrative_diagnostics?.summary_over_target || null,
         summary_failures: failures,
         anchors_active: activeAnchors.length,
         anchors_injected: reportSelection.injected.length,
@@ -1205,7 +1238,7 @@ export function mountNarrativeSettings(getContext, createServices) {
     const root = document.createElement('div');
     root.id = 'aum-narrative-settings';
     root.innerHTML = '<h3>剧情摘要与原文检索</h3><p>摘要保障续写，检索找回原文。未完成总结的楼层继续保留。</p>'
-        + [['narrative_every','每几楼更新摘要（1 楼 = user 消息 + 角色回复）',1,100],['narrative_summary_tokens','摘要 token 预算',100,4000],
+        + [['narrative_every','每几楼更新摘要（1 楼 = user 消息 + 角色回复）',1,100],['narrative_summary_tokens','摘要 token 目标',100,4000],['narrative_summary_ceiling_tokens','摘要硬上限 token（0=按目标自动，超出才拒绝）',0,4000],
             ['narrative_evidence_tokens','原文证据 token 预算',0,8000],['narrative_setting_tokens','相关设定 token 预算',0,4000],
             ['narrative_anchor_tokens','锚点 token 预算',0,4000],
             ['narrative_input_chars','每批总结输入字符预算（必须容纳完整批次）',2000,100000],

@@ -16,10 +16,12 @@ correct, and a retrieved historical statement may have been superseded.
 
 Preserving necessary meaning takes priority over minimizing summary length.
 Equal turn counts do not imply equal information density, and unresolved earlier
-state still needs representation. The intended budget policy separates a soft
-summary-length target and an explicit upper bound from the total injection
-budget. This policy is not implemented yet: the runtime still rejects summary
-bodies above the configured acceptance cap (default 600 tokens).
+state still needs representation. The budget policy separates a soft summary
+target (`narrative_summary_tokens`, default 600) from an explicit emergency
+ceiling (`narrative_summary_ceiling_tokens`, `0` derives it from the target) and
+from the total injection budget. A body over the target but within the ceiling is
+accepted and recorded as over-target; only a body past the ceiling is refused,
+and a refusal hides nothing (ADR-0032).
 
 ### Problem
 

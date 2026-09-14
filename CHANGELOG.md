@@ -5,6 +5,14 @@ belongs in Git commits and pull requests.
 
 ## Unreleased
 
+### Changed
+
+- The summary budget is now a soft target with a separate emergency ceiling
+  (`narrative_summary_ceiling_tokens`; `0` derives it from the target). A summary body over the target
+  but within the ceiling is accepted and recorded as over-target; only a body past the ceiling is
+  refused, and a refusal still hides nothing. Dense batches therefore get more room than a fixed
+  600-token rejection allowed (ADR-0032).
+
 ### Added
 
 - `acceptance-capture.js` and `acceptance-longchat.mjs`: a versioned, reusable long-chat acceptance runner.

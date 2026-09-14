@@ -18,6 +18,7 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | node test-acceptance-capture.mjs | The capture boundary with a simulated transport: both the summary and its targeted repair record request, response and elapsed, and two consecutive turns keep separate injected blocks. No model call |
 | node test-summary-diagnostics.mjs | Failure stages and the retained record, the two state versions, injection recorded only after the prompt is set, the assembly-across-a-commit case, the five warning conditions, and the input-budget default |
 | node test-summary-contract.mjs | The batching contract: the floor horizon, committed vs injected coverage, one-entry-per-message requests, the cost of the text that is sent, and the difference between a local budget block and an interface failure |
+| node test-summary-budget.mjs | The target/ceiling split and the injection budget: the pure length verdict, the configured budget as the worst case capped by host room, a dense batch accepted over the target, a sparse one under it with equal completed turns, and an over-ceiling body refused with nothing hidden |
 | node recall-baseline.mjs | Original-text retrieval and packing measurement |
 | node recall-embed.mjs | Build the optional embedding cache for the ruler |
 

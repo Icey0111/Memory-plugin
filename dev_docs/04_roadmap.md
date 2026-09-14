@@ -5,9 +5,10 @@
 Follow the [AIRP product contract](00_project.md#product-contract): preserve necessary continuity
 and recover precise original evidence, then assess whether the actual prompt supports the reply.
 Minimizing summary length is subordinate to preserving that meaning.
-The intended direction separates an information-sensitive summary target, an explicit upper bound
-and the total injection budget. Runtime defaults and hard rejection behavior are unchanged; this
-is not a claim that adaptive summary budgeting has shipped.
+The summary budget separates an information-sensitive target, an explicit emergency ceiling and the
+total injection budget (ADR-0032): a body over the target but within the ceiling is accepted and
+recorded, and only a body past the ceiling is refused. The ceiling derives from the target unless the
+user sets it. The final numeric limits still have to be selected from evidence.
 
 The active execution plan is [Issue #2](https://github.com/Icey0111/Memory-plugin/issues/2).
 It starts with a trustworthy trace of one existing failure, then budget semantics and the proven
@@ -134,12 +135,12 @@ request that fits the character budget can still be refused by the provider (ADR
 
 ## Open question: the 600-token summary budget
 
-The 600-token default is the current acceptance cap, not a universal measure of sufficient memory.
-The soft-target policy in [ADR-0031](decisions/ADR-0031-airp-memory-responsibilities.md) is the intended
-direction, with implementation and validation tracked in Issue #2. A length-only rejection and
-semantic information loss are different observations; removing the former does not prove the
-latter is fixed. The historical runs below explain the existing evidence, not a requirement to
-preserve this exact cap indefinitely.
+The 600-token default is the soft target, not a universal measure of sufficient memory. The
+target/ceiling split is [ADR-0032](decisions/ADR-0032-a-soft-summary-target-and-an-emergency-ceiling.md);
+the ceiling derives from the target unless the user sets it. A length-only rejection and semantic
+information loss are different observations; accepting a 610-token body does not prove that semantic
+information is preserved. The historical runs below explain the existing evidence, not a requirement
+to preserve the old hard cap indefinitely.
 
 Two live runs recorded three single summary failures across four batch commits, each followed by a
 successful retry. The cause is unproven: the summaries landed at 532 of 600 tokens, which is close enough
