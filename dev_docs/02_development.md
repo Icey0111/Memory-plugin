@@ -189,6 +189,28 @@ lexically and is `entry_cap`, so it was ranked out and not unrankable - the live
 candidates from the dense, situation and character channels. Selection and packing are different outcomes in
 one record now (ADR-0039).
 
+### Live run after the window change (2026-09-14)
+
+A rebuilt fixture (5 of the original 11 declared facts - the rest of that file was lost, which is why ADR-0038
+exists) played 20 turns in a new Seraphina chat, both merges committed, the input budget temporarily raised to
+120,000 and restored to 40,000 afterwards. The run wrote its own `turns.fixture.json` and named it in the meta
+file with its sha256: ADR-0038 working live.
+
+It did **not** reproduce the crossing case. This run's floor-10 summary kept the place name (`place` 1/1 kept
+at the last merge), so the probe never asked for it and ADR-0037's window rule was not exercised end to end.
+What the run does measure is where the two refusals went, and the ADR-0039 record answers it with no debugging
+session:
+
+- `茉莉` ranked 7th of 40 candidates and lost to the entry cap (`entry_cap`, 5 slots). The reply answered the
+  tea question with 艾草茶 - another tea that also exists in this run's story. Selection loss, not packing.
+- `月牙` was quoted, but from a shortened window `[0, 231]` that ends eight characters before the word at 239.
+  The reply said 弯月似的: the same shape in other words, which the needle cannot match.
+- The turn's outcomes: 5 `included`, 14 `entry_cap`, no `budget` and no `too_long`.
+
+So on this chat the packer is limited by the number of slots, not by trimming - and the residual limit written
+into ADR-0037 (a head window that already covers the question's words is never moved) is what left the scar
+just outside its own quote. Both are records; neither was changed by this run.
+
 Each run that plays a turns file now writes `<out>/turns.fixture.json` before its first model call: the
 input it actually used, together with the source path, byte count and sha256. Replay it with the ordinary
 command and `--turns <out>/turns.fixture.json`. The recorded chat can always be replayed, but only the frozen
