@@ -338,6 +338,16 @@ const adjudicate = graded => {
   const text = formatFactSurvival(summary);
   assert.ok(text.includes('must-keep lost in a merge: 1/2'), text);
   assert.ok(text.includes('state'), text);
+  // The stage matters: the model omitting a fact and the pipeline dropping a written one are different fixes.
+  const staged = summarizeFactSurvival([
+    { id: 'k', kind: 'state', needle: ['塌了方'] }, { id: 'c', kind: 'condition', needle: ['雾散'] }], [
+    { batchTurn: 10, retained: ['k', 'c'], rawResponse: '塌了方，雾散' },
+    { batchTurn: 20, retained: [], rawResponse: '雾散' }]);
+  assert.equal(staged.facts.find(fact => fact.id === 'k').lostBy, 'model', 'the raw output for the losing batch lacks it');
+  assert.equal(staged.facts.find(fact => fact.id === 'c').lostBy, 'pipeline', 'the raw output wrote it and the bag did not keep it');
+  assert.deepEqual(staged.mustKeepLostByModel, ['k']);
+  assert.deepEqual(staged.mustKeepLostByPipeline, ['c']);
+  assert.ok(formatFactSurvival(staged).includes('lost at its first absent merge by'), formatFactSurvival(staged));
   // An incidental that still occupies the summary at the last merge is named as wasted room.
   const kept = summarizeFactSurvival([{ id: 'd-bell', kind: 'detail' }], [{ batchTurn: 20, retained: ['d-bell'] }]);
   assert.deepEqual(kept.incidentalKeptAtLastMerge, ['d-bell']);

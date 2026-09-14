@@ -22,9 +22,9 @@ positive control and a never-written negative control, and attributes each answe
 the evidence channel (N29). It also reads retention against the committed summary after **every** batch and
 groups it by the declared fact kind, which is the cross-merge question. The first live measurement
 (2026-09-14, chat FactSurvival2, 11 facts, merges at floors 10 and 20): the floor-10 summary kept 11/11 and
-the floor-20 merge kept 8/11 - it lost a still-live state and a condition while keeping three incidental
-details, so **2/7 must-keep facts were lost in a merge**. One chat and eleven facts is a located defect,
-not a rate.
+the floor-20 merge kept 9/11 - it lost the still-live state `k-state` (the west road blocked) while keeping
+three incidental details, so **1/7 must-keep facts was lost in a merge**, and the raw output for that batch
+shows the model omitted it. One chat and eleven facts is a located defect, not a rate.
 
 Keep versioned raw history, a compact continuity snapshot, original-chunk retrieval, optional reranking
 and budgeted quotations. The summary is not an embedding document. The default summary cadence remains

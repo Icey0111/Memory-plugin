@@ -239,7 +239,7 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
   const text = turns[turnNo - 1].text;
   const isBatch = batches.includes(turnNo);
   const deep = isBatch || turnNo === last;
-  const { record, post, error } = await runTurn(turnNo, text, { isBatch, deep });
+  const { record, post, newCalls, error } = await runTurn(turnNo, text, { isBatch, deep });
   const state = record.post || {};
   console.log('turn ' + turnNo + '/' + last + (error ? ' ERROR=' + error : '')
     + ' len=' + (state.chatLength != null ? state.chatLength : '?') + ' completed=' + (state.completeTurns != null ? state.completeTurns : '?')
@@ -248,8 +248,12 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
     + ' fails=' + (state.summaryFailures != null ? state.summaryFailures : '?') + ' injRev=' + (state.injected ? state.injected.state_revision : '?'));
   if (detailMode && isBatch && parsedTurns.details.length) {
     const split = splitDetailsByRetention(parsedTurns.details, continuityBag(post));
+    // The raw summary output, so a loss can be attributed to the model or to the pipeline.
+    const rawResponse = (newCalls || []).map(call => {
+      try { return call.response.choices[0].message.content || ''; } catch (error) { return ''; }
+    }).join('\n');
     factObservations.push({ batchTurn: turnNo, retained: split.retained.map(item => item.id),
-      dropped: split.dropped.map(item => item.id) });
+      dropped: split.dropped.map(item => item.id), rawResponse });
     console.log('FACT-SURVIVAL batch ' + turnNo + ': kept ' + split.retained.length + '/' + parsedTurns.details.length
       + (split.dropped.length ? ' dropped ' + split.dropped.map(item => item.id).join(',') : ''));
   }

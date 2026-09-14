@@ -429,14 +429,28 @@ export function summarizeFactSurvival(details = [], observations = []) {
     const batches = observations.map(observation => observation.batchTurn);
     const facts = (details || []).map(detail => {
         const retainedAt = {};
+        const writtenAt = {};
         for (const observation of observations) {
             retainedAt[observation.batchTurn] = (observation.retained || []).includes(detail.id);
+            // What the model actually wrote this batch, before parsing and merging. A fact present here but
+            // absent from the committed bag was lost by the pipeline; one absent from both was omitted by
+            // the model itself. The two stages need different fixes.
+            writtenAt[observation.batchTurn] = observation.rawResponse
+                ? matchNeedle(observation.rawResponse, detail.needle).matched : null;
         }
         let lostAt = null;
         for (const turn of batches) if (retainedAt[turn] !== true) { lostAt = turn; break; }
         const everRetained = batches.some(turn => retainedAt[turn] === true);
-        return { id: detail.id, kind: detail.kind || DEFAULT_FACT_KIND, retainedAt, lostAt, everRetained,
-            lostInMerge: lostAt !== null && everRetained };
+        const everWritten = batches.some(turn => writtenAt[turn] === true);
+        const writtenNotRetained = batches.some(turn => writtenAt[turn] === true && retainedAt[turn] !== true);
+        // Which stage lost it: the model did not write it in the batch that dropped it, or it wrote it and
+        // the pipeline failed to carry it. 'unknown' means no raw response was captured for that batch.
+        const lostBy = lostAt === null ? null
+            : writtenAt[lostAt] === true ? 'pipeline'
+                : writtenAt[lostAt] === false ? 'model' : 'unknown';
+        return { id: detail.id, kind: detail.kind || DEFAULT_FACT_KIND, retainedAt, writtenAt, lostAt, lostBy,
+            everRetained, everWritten, writtenNotRetained, lostInMerge: lostAt !== null && everRetained,
+            modelOmitted: !everWritten };
     });
     const kinds = {};
     for (const fact of facts) {
@@ -453,6 +467,11 @@ export function summarizeFactSurvival(details = [], observations = []) {
     return { batches, facts, kinds,
         mustKeepTotal: mustKeep.length,
         mustKeepLostInAMerge: mustKeep.filter(fact => fact.lostInMerge).map(fact => fact.id),
+        mustKeepWrittenButDropped: mustKeep.filter(fact => fact.writtenNotRetained).map(fact => fact.id),
+        mustKeepNotWritten: mustKeep.filter(fact => fact.modelOmitted).map(fact => fact.id),
+        mustKeepLostByModel: mustKeep.filter(fact => fact.lostBy === 'model').map(fact => fact.id),
+        mustKeepLostByPipeline: mustKeep.filter(fact => fact.lostBy === 'pipeline').map(fact => fact.id),
+        mustKeepLostByUnknown: mustKeep.filter(fact => fact.lostBy === 'unknown').map(fact => fact.id),
         mustKeepLostAtLastMerge: lastTurn === null ? []
             : mustKeep.filter(fact => fact.retainedAt[lastTurn] !== true).map(fact => fact.id),
         incidentalKeptAtLastMerge: lastTurn === null ? []
@@ -471,6 +490,16 @@ export function formatFactSurvival(summary) {
         + (summary.mustKeepLostInAMerge.length ? ' (' + summary.mustKeepLostInAMerge.join(', ') + ')' : ''));
     lines.push('  must-keep absent at the last merge: ' + summary.mustKeepLostAtLastMerge.length
         + (summary.mustKeepLostAtLastMerge.length ? ' (' + summary.mustKeepLostAtLastMerge.join(', ') + ')' : ''));
+    if ((summary.mustKeepWrittenButDropped || []).length) {
+        lines.push('  written by the model but dropped by the pipeline: ' + summary.mustKeepWrittenButDropped.join(', '));
+    }
+    if ((summary.mustKeepNotWritten || []).length) {
+        lines.push('  never written by the model: ' + summary.mustKeepNotWritten.join(', '));
+    }
+    const listOf = ids => (ids && ids.length ? ids.join(', ') : 'none');
+    lines.push('  lost at its first absent merge by - model: ' + listOf(summary.mustKeepLostByModel)
+        + ' | pipeline: ' + listOf(summary.mustKeepLostByPipeline)
+        + ' | unknown: ' + listOf(summary.mustKeepLostByUnknown));
     if (summary.incidentalKeptAtLastMerge.length) {
         lines.push('  incidental still occupying the summary: ' + summary.incidentalKeptAtLastMerge.join(', '));
     }

@@ -101,10 +101,17 @@ generation: a two-character run would refuse a legitimate question like "什么�
 ### First fact-survival measurement (2026-09-14)
 
 Chat FactSurvival2, 11 declared facts, merges at floors 10 and 20. The floor-10 summary kept **11/11**. The
-floor-20 merge kept **8/11**: it lost a still-live state (`k-state`, the west road blocked by a landslide)
-and a condition (`k-condition`, the boat leaves only when the fog lifts), while keeping three incidental
-details (`d-tea`, `d-cat`, `d-scar`). That is **2/7 must-keep facts lost in a merge**. It answers "what must
-the summary keep": the merge currently prunes by salience, not by kind.
+floor-20 merge kept **9/11**: it lost the still-live state `k-state` (the west road blocked by a landslide)
+and the incidental `d-bell`, while keeping three other incidental details (`d-tea`, `d-cat`, `d-scar`).
+That is **1/7 must-keep facts lost in a merge**, and the raw output for that batch does not contain it, so
+the model omitted it rather than the pipeline dropping it. It answers "what must the summary keep": the
+merge prunes by salience, not by kind.
+
+The first reading said 2/7 and named `k-condition` as the second loss. Reading the frozen raw response
+showed the model had written it as "老谈雾不开桨" - the same condition in the opposite polarity - and the
+needle ("雾散了才开", "雾散") could not reach it. A condition may be stated either way round, so its needle
+must carry both. The observation now records the batch's raw summary output beside the committed bag and
+reports which stage lost a fact (`model` or `pipeline`), which is what separated the two.
 
 The first attempt (FactSurvival1) never reached the second merge: the batch was blocked with
 `reason: input_budget`, `needed_chars 43,658` against the 40,000 default, a 40,649-character batch of ten
