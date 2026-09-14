@@ -1065,6 +1065,28 @@ export function ledgerCarriers({ anchors = [], knowledge = [], anchorInjected = 
             quoted: row.quoted, sources: row.sources })) };
 }
 
+/**
+ * Source rows that only a retired statement names.
+ *
+ * The archive keeps a row when a *message* is replaced, and a row can also stop being the current value of
+ * a fact while it stays perfectly active: an anchor operation retires the statement, not the row it was
+ * read from. Those rows are still chunked and still ranked, so evidence can quote the old version of a fact
+ * that has since been explicitly updated. Quoting it is not itself an error - the evidence header says
+ * historical states need not be current, and original history is authoritative - so this is a risk
+ * indicator, not a verdict, and only the reply can adjudicate it.
+ *
+ * A token is counted only when *no* live statement still cites it, because a row shared by the retired and
+ * the current value carries both and quoting it is ordinary. Measured on the live chat: 10 retired
+ * statements name 7 source rows that no live statement cites, and all 7 rows are still active.
+ */
+export function supersededSources(active = [], superseded = []) {
+    const live = new Set();
+    for (const item of active) for (const token of parseSourceList(item?.source)) live.add(token);
+    const out = new Set();
+    for (const item of superseded) for (const token of parseSourceList(item?.source)) if (!live.has(token)) out.add(token);
+    return out;
+}
+
 export function anchorId(item) {
     return 'anchor_' + fnv1a32(anchorKey(item)).toString(36);
 }

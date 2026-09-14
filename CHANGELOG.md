@@ -37,6 +37,13 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- The second error direction of the ledger is reported: the quoted evidence rows that only a *retired* statement
+  names (`superseded_evidence`, `superseded_evidence_sources`, `superseded_source_pool`). An anchor operation
+  retires the statement, not the row it was read from, so a row can stay active, stay ranked, and carry the old
+  version of a fact that was explicitly updated. It is labelled a risk indicator rather than a verdict, because
+  the evidence header states that historical states need not be current. Measured on the live chat: 10 retired
+  statements name 7 rows that no live statement cites, all 7 still active, and a quoted span from that pool
+  appears in both product-path turns sampled (N26).
 - Every build resolves each live ledger statement to a carrier: its own injected anchor or boundary line, a
   quoted original row, or nothing. Folding, the anchor budget and the boundary budget each answer a local
   question, and each can report success while a statement the ledger still calls live reaches no part of the

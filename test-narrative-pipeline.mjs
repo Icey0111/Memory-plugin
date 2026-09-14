@@ -957,6 +957,15 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const report = readNarrativeReport(host.ctx);
     assert.equal(report.required_none, d.required_none,
         'the read-only report resolves the same carriers from the last packed evidence');
+    // The other direction: quoted rows that only a retired statement names. No evidence here, so it is zero -
+    // the rule itself is pinned in test-anchor-budget, and this pins that the build and the report both carry
+    // it and cannot claim more stale rows than they quoted.
+    assert.equal(d.superseded_evidence, 0, 'with no quoted evidence there is no stale evidence');
+    assert.equal(d.superseded_evidence_metric, 'risk_indicator_not_a_verdict',
+        'and it is labelled as a risk indicator, not as a verdict');
+    assert.ok(d.superseded_evidence <= (d.sources || []).length, 'it can never exceed the quoted spans');
+    assert.equal(report.superseded_evidence, d.superseded_evidence,
+        'the report states the same, from the evidence the last generation packed');
 }
 
 

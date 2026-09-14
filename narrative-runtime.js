@@ -2,7 +2,7 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     summaryMessages, summaryRequest, summaryBlockState, anchorRepairRequest, stateRevisionOf,
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
     selectAnchors, selectKnowledge, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
-    SHIPPED_PACK_POLICY, shippedRetrievalConfig, ledgerCarriers,
+    SHIPPED_PACK_POLICY, shippedRetrievalConfig, ledgerCarriers, supersededSources,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
     summaryLengthVerdict } from './raw-history.js';
@@ -985,6 +985,11 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         anchorInjected: new Set(continuity.anchorsInjectedIds || []),
         knowledgeInjected: new Set(continuity.knowledgeInjectedIds || []),
         evidenceSources: new Set(evidence.sources.map(row => row.source)) });
+    // The other error direction from the carrier resolution: not a required statement that is missing, but a
+    // quoted row that only a retired statement names. The retired statement's row stays active, so it is still
+    // ranked; what stops it being current is the ledger, not the index.
+    const supersededOnly = supersededSources(continuity.anchors, live.narrative_anchors?.superseded || []);
+    const supersededEvidence = evidence.sources.filter(row => supersededOnly.has(String(row.source)));
     // The metric the hand-written probe runs had to be replaced by: of the rare terms of this situation that
     // exist only in hidden floors, how many came back with the evidence that was actually packed.
     const entityState = entityRecall(chunks, history, { query, visibleSources, packed: evidence.sources });
@@ -1065,6 +1070,12 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         required_source_detail: carriers.sourceDetail,
         // What the number above is, in one machine-readable word, because it is not a reading of the summary.
         required_metric: 'structural_lower_bound_not_meaning',
+        // The other direction: quoted rows that only a retired statement names. Reported, not alarmed - it is
+        // frequently non-zero and only the reply can say whether the old value was used as the current one.
+        superseded_evidence: supersededEvidence.length,
+        superseded_evidence_sources: supersededEvidence.map(row => String(row.source)),
+        superseded_source_pool: supersededOnly.size,
+        superseded_evidence_metric: 'risk_indicator_not_a_verdict',
         sources: evidence.sources, candidates: ranked.length,
         rerank_model: opts.rerankModel || null, rerank_used: reranked.used, rerank_error: reranked.error,
         rerank_cost: reranked.metrics || null,
@@ -1208,6 +1219,10 @@ export function readNarrativeReport(ctx) {
         anchorInjected: new Set(reportSelection.injected.map(item => item.id)),
         knowledgeInjected: new Set(reportKnowledge.injectedEntries.map(item => item.id)),
         evidenceSources: new Set((store.narrative_diagnostics?.sources || []).map(row => row.source)) });
+    // Same two directions the build reports, recomputed from the evidence the last generation packed.
+    const reportSupersededOnly = supersededSources(activeAnchors, store.narrative_anchors?.superseded || []);
+    const reportSupersededEvidence = (store.narrative_diagnostics?.sources || [])
+        .map(row => String(row.source)).filter(source => reportSupersededOnly.has(source));
     const state = { ...pending, summary_failures: failures,
         summary_error: store.narrative_diagnostics?.summary_error || null,
         summary_block: store.narrative_diagnostics?.summary_block || null,
@@ -1292,6 +1307,10 @@ export function readNarrativeReport(ctx) {
         required_uncarried: reportCarriers.uncarried,
         required_source_detail: reportCarriers.sourceDetail,
         required_metric: 'structural_lower_bound_not_meaning',
+        superseded_evidence: reportSupersededEvidence.length,
+        superseded_evidence_sources: reportSupersededEvidence,
+        superseded_source_pool: reportSupersededOnly.size,
+        superseded_evidence_metric: 'risk_indicator_not_a_verdict',
         knowledge_unconfirmed: knowledgeEntries.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
@@ -1445,6 +1464,8 @@ function renderNarrativePanel(root, ctx) {
             + (report.knowledge_parked ? '（搁置 ' + report.knowledge_parked + '）' : ''));
         if (report.required_none) parts.push('本次注入里没有任何载体的活陈述 ' + report.required_none
             + ' 条（共 ' + report.required_total + ' 条）');
+        if (report.superseded_evidence) parts.push('证据里 ' + report.superseded_evidence
+            + ' 条来自只被已取代陈述引用的原文行（历史成立、可能被当成现状用）');
         if (report.anchors_same_subject) parts.push('同一主体多活值 ' + report.anchors_same_subject + ' 组');
         if (report.anchor_op_errors?.length) parts.push((report.anchor_op_errors_recovered ? '上一次' : '最近一批')
             + '锚点变更被拒绝 ' + report.anchor_op_errors.length + ' 条'

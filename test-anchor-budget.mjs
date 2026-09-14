@@ -8,7 +8,7 @@
 //   C. the ledger keeps its history: a replacement moves an entry, it does not delete it;
 //   D. when the budget still binds, the cut is by kind round-robin and newest-first, and it is reported.
 import assert from 'node:assert/strict';
-import { orderAnchors, selectAnchors, selectKnowledge, ledgerCarriers, mergeAnchors, parseAnchors, parseAnchorChanges,
+import { orderAnchors, selectAnchors, selectKnowledge, ledgerCarriers, supersededSources, mergeAnchors, parseAnchors, parseAnchorChanges,
     formatAnchors, formatAnchorPrompt, planAnchors, anchorSubjectKey, MAX_SUPERSEDED, MAX_RESOLVED } from './raw-history.js';
 import { updateNarrative, buildNarrativeContext, readNarrativeReport,
     narrativeSettings } from './narrative-runtime.js';
@@ -294,6 +294,24 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
         'how much of a statement source list the evidence reached is kept, not flattened to a yes');
     assert.equal(out.line + out.source + out.none, out.rows, 'the three buckets partition the ledger');
     assert.deepEqual(ledgerCarriers({}).rows, 0, 'an empty ledger resolves to nothing');
+}
+
+// --- 16. a row that only a retired statement names is a stale-evidence risk -------------------------
+// An anchor operation retires the statement, not the row it was read from. The row stays active and stays
+// ranked, so evidence can quote the old version of a fact that has since been explicitly updated.
+{
+    const active = [{ id: 'a1', subject: '地点', text: '现在在西桥七号。', source: 'raw_1、raw_2' },
+        { id: 'a2', subject: '物品', text: '伞是深蓝色的。', source: 'raw_3' }];
+    const superseded = [{ id: 's1', subject: '地点', text: '现在在北街十二号。', source: 'raw_1、raw_9' },
+        { id: 's2', subject: '物品', text: '伞是红色的。', source: 'raw_7' }];
+    const stale = supersededSources(active, superseded);
+    assert.deepEqual([...stale].sort(), ['raw_7', 'raw_9'],
+        'a retired-only row counts; raw_1 is shared with a live statement and does not');
+    assert.deepEqual([...supersededSources(active, [])], [], 'nothing retired, nothing stale');
+    assert.deepEqual([...supersededSources([], superseded)].sort(), ['raw_1', 'raw_7', 'raw_9'],
+        'with no live statement every retired row is stale');
+    assert.deepEqual([...supersededSources(active, [{ id: 's3', text: '无来源。' }])], [],
+        'a retired statement with no source names no row');
 }
 
 console.log('anchor-budget: ok');
