@@ -7,6 +7,12 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- The offline dense ruler can no longer measure with vectors it cannot replay. A missing vector used to
+  remove the dense channel for that question while the run still printed a dense header, so a lexical
+  number was read as a dense one; the run now declares every input it will read, refuses to print a table
+  when one cannot be supplied, and exits non-zero. A paired comparison likewise refuses two dumps whose
+  recorded vectors differ, because a difference in the ranking rule cannot be separated from a difference
+  in the embeddings.
 - A host metadata-write failure that lands after a summary committed is recorded as a persistence problem
   (`persist_error`, stage `metadata_write`) instead of a model failure, and the original-text vector index is
   classified as `raw` rather than `memory`, so a raw query keeps its own threshold.
@@ -37,6 +43,14 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- `embedding-cassette.mjs`: the ruler's dense vectors are a transport cassette. Every entry is
+  keyed by the request that produced it - model, base, role, the provider task the plugin derives from them
+  and the exact input text - so a changed retrieval prefix, model, base or task is a miss rather than a
+  silent replay of a vector computed from something else, which the old `c:<hash>` / `q:<question>` keys
+  could not tell apart. `recall-baseline.mjs --cassette-requests <file> --model <m> --base <u>` writes the
+  inputs a run will read and `recall-embed.mjs --requests <file>` embeds exactly those, so a run and its
+  recording cannot drift; a legacy cache is read only under an explicit `--adopt-legacy`, and every report
+  and dump from one carries `provenance legacy-unverified` (N28).
 - `answer-adjudication.mjs`: a graded answer becomes a record instead of a verdict. Each row carries the
   machine verdict, whether the assembled prompt carried the fact, whether the reply conveys it, and whether
   the probe itself is broken; the classification (`fixture-defect` / `prompt-insufficient` / `model-error` /

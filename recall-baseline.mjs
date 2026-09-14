@@ -14,6 +14,9 @@
 //     node recall-baseline.mjs --limit 8 --probes 80
 //     node recall-baseline.mjs --scorer bm25 --pack submodular --paraphrases <file>
 //     node recall-baseline.mjs --span-cost --paraphrases <file>
+//     node recall-baseline.mjs <chat> --embeddings <cassette.json> --paraphrases <file>
+//     node recall-baseline.mjs <chat> --cassette-requests req.json --model <m> --base <u>   # declare inputs
+//     node recall-baseline.mjs <chat> --embeddings <legacy.json> --adopt-legacy             # unverified
 //
 // The --scorer and --pack switches exist so a retrieval change can be attributed to the rule that
 // changed rather than to the version that shipped it: idf and greedy reproduce the old behaviour.
@@ -21,13 +24,21 @@
 // instead of the fair share, which keeps the tail of an anchor that slightly overruns its share and
 // reaches fewer messages when anchors routinely overrun it. Off is what ships (raw-history.js).
 //
-// Reading is all it does. Nothing is written, and the plugin is never loaded.
+// The dense channel is replayed from a cassette recorded by recall-embed.mjs, never fetched here, and a
+// vector the cassette cannot supply is fatal: the run refuses to print a table rather than print a
+// lexical result under a dense header. --cassette-requests writes the inputs this run would need, which
+// is how the builder is told what to embed.
+//
+// It reads and measures. The only file it writes is the one named by --dump or --cassette-requests, and
+// no plugin code runs: the one module it shares with the plugin is the request builder the cassette key
+// is derived from.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, evidenceSlots,
     DENSE_FUSION_WEIGHT } from './raw-history.js';
+import { readCassette, cassetteIndex, describeCassette, CASSETTE_REQUESTS_FORMAT } from './embedding-cassette.mjs';
 import { DERIVED_KEYS } from './v55-derived-store.js';
 import { estimateTokens } from './v55-tokenizer.js';
 
@@ -45,7 +56,8 @@ const word = (name, fallback) => {
 const flagValues = new Set();
 args.forEach((value, index) => {
     if (['--limit', '--probes', '--paraphrases', '--scorer', '--pack', '--dump', '--against',
-        '--evidence', '--entries', '--embeddings', '--dense-weight', '--embed-top'].includes(value)) {
+        '--evidence', '--entries', '--embeddings', '--dense-weight', '--embed-top',
+        '--cassette-requests', '--model', '--base'].includes(value)) {
         flagValues.add(index + 1);
     }
 });
@@ -67,8 +79,33 @@ const SLOTS = flag('entries', 0) || undefined;
 const DENSE_WEIGHT = flag('dense-weight', DENSE_FUSION_WEIGHT);
 const EMBED_TOP = flag('embed-top', 24);
 const embeddingFile = word('embeddings', null);
-const EMBEDDINGS = embeddingFile && fs.existsSync(embeddingFile)
-    ? JSON.parse(fs.readFileSync(embeddingFile, 'utf8')) : null;
+const requestsFile = word('cassette-requests', null);
+const ADOPT_LEGACY = args.includes('--adopt-legacy');
+const MODEL = word('model', null);
+const BASE = word('base', null);
+
+// A requested cassette that is absent is not "dense off". Silently dropping to lexical under a dense
+// header is the failure this whole switch exists to prevent, so a missing or unreadable file is fatal.
+let CASSETTE = null;
+if (embeddingFile) {
+    if (!fs.existsSync(embeddingFile)) {
+        console.log('No cassette at ' + embeddingFile + '. Build one with recall-embed.mjs, or drop --embeddings to measure lexical only.');
+        process.exit(1);
+    }
+    try { CASSETTE = readCassette(embeddingFile); } catch (error) {
+        console.log('Unreadable cassette ' + embeddingFile + ': ' + String(error?.message || error));
+        process.exit(1);
+    }
+    for (const [name, given, recorded] of [['model', MODEL, CASSETTE.manifest.model], ['base', BASE, CASSETTE.manifest.base]]) {
+        if (given && recorded && String(given).replace(/\/+$/, '') !== String(recorded).replace(/\/+$/, '')) {
+            console.log('--' + name + ' ' + given + ' does not match the cassette, which was recorded for ' + recorded
+                + '. The entries are keyed per request, so this would just find nothing.');
+            process.exit(1);
+        }
+    }
+}
+// Weight 0 means the dense channel contributes nothing, so there is nothing to replay and nothing to miss.
+const DENSE = CASSETTE && DENSE_WEIGHT > 0 ? cassetteIndex(CASSETTE, { adoptLegacy: ADOPT_LEGACY }) : null;
 
 /**
  * The dense channel for one query, read from a vector cache built by recall-embed.mjs.
@@ -78,16 +115,68 @@ const EMBEDDINGS = embeddingFile && fs.existsSync(embeddingFile)
  * store returns. Without a cache the ruler is lexical only, which is what it was before.
  */
 function denseFor(chunks, question) {
-    if (!EMBEDDINGS) return [];
-    const query = EMBEDDINGS.vectors['q:' + question];
+    if (!DENSE) return [];
+    const query = DENSE.lookup({ role: 'query', text: question, legacyKey: 'q:' + question });
     if (!query) return [];
     const dot = (a, b) => { let sum = 0; for (let i = 0; i < a.length; i++) sum += a[i] * b[i]; return sum; };
     const norm = value => Math.sqrt(dot(value, value)) || 1;
     const queryNorm = norm(query);
     return chunks.map(chunk => {
-        const vector = EMBEDDINGS.vectors['c:' + chunk.hash];
+        // The document key names the text that was embedded, which is retrievalText and not the raw chunk.
+        const vector = DENSE.lookup({ role: 'document', text: chunk.retrievalText, legacyKey: 'c:' + chunk.hash });
         return vector ? { hash: chunk.hash, score: dot(query, vector) / (queryNorm * norm(vector)) } : null;
     }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, EMBED_TOP);
+}
+
+/**
+ * Every vector this run would read, named before it reads one.
+ *
+ * Declaring the inputs up front is what turns a cassette from a cache into a proof: the run can be told
+ * that it cannot replay its own vectors before it prints a number, and the same list is what
+ * --cassette-requests writes for recall-embed.mjs to fill.
+ */
+function collectRequests(targets) {
+    const requests = [];
+    const seen = new Set();
+    const push = (role, text, legacyKey) => {
+        const identity = role + '\u0000' + text;
+        if (seen.has(identity)) return;
+        seen.add(identity);
+        requests.push({ role, text, legacyKey });
+    };
+    for (const target of targets) {
+        for (const question of target.questions) push('query', question, 'q:' + question);
+        for (const chunk of target.chunks) push('document', chunk.retrievalText, 'c:' + chunk.hash);
+    }
+    return requests;
+}
+
+/**
+ * Refuse to measure when the cassette cannot answer for an input.
+ *
+ * The alternative is the behaviour this replaces: a missing vector quietly removed the dense channel
+ * for that question and the table printed the lexical result under a dense header. A number that was
+ * measured with fewer vectors than it claims is worse than no number.
+ */
+function preflight(requests) {
+    for (const request of requests) DENSE.lookup(request);
+    if (!DENSE.misses.length && !DENSE.dimensionMismatches.length) return;
+    console.log('');
+    console.log('cassette INVALID: this run would measure with vectors it cannot replay.');
+    console.log('  ' + describeCassette(CASSETTE, { provenance: DENSE.provenance }));
+    console.log('  declared ' + requests.length + ' inputs: ' + DENSE.misses.length + ' missing'
+        + (DENSE.dimensionMismatches.length ? ', ' + DENSE.dimensionMismatches.length + ' at the wrong dimension' : ''));
+    for (const miss of DENSE.misses.slice(0, 20)) {
+        console.log('  MISS ' + miss.role.padEnd(8) + ' ' + JSON.stringify(String(miss.text).slice(0, 70)));
+    }
+    if (DENSE.misses.length > 20) console.log('  ... and ' + (DENSE.misses.length - 20) + ' more');
+    for (const bad of DENSE.dimensionMismatches.slice(0, 10)) {
+        console.log('  DIM  ' + bad.role + ' expected ' + bad.expected + ', recorded ' + bad.dim + ' (' + bad.key + ')');
+    }
+    console.log('  Refusing to print a table: a lexical result under a dense header is read as a dense result.');
+    console.log('  Fill it with: node recall-baseline.mjs <same arguments> --cassette-requests req.json');
+    console.log('               node recall-embed.mjs --requests req.json --out ' + embeddingFile);
+    process.exit(1);
 }
 
 /**
@@ -237,7 +326,14 @@ function attribute(ranked, packed, needle, records, chunks) {
 
 const fixed = (value, digits) => value === null || value === undefined ? ' n/a' : value.toFixed(digits);
 
-function measure(chat) {
+/**
+ * Everything one chat contributes, computed before a single vector is resolved.
+ *
+ * The split from the scoring below exists so the run can name its inputs, and be told what is missing,
+ * before it prints a number. A cassette miss discovered halfway through a table is a table the reader
+ * has already believed.
+ */
+function prepare(chat) {
     const { header, messages } = load(chat.file);
     const metadata = header.chat_metadata || {};
     const store = metadata[KEY] || null;
@@ -267,6 +363,13 @@ function measure(chat) {
     // Recall over the floors a summary would have folded.
     const assistants = messages.filter(row => row.is_user !== true && String(row.mes ?? '').trim());
     const probes = probesFor(messages, probeBudget);
+    return { chat, messages, store, transcriptChars, archiveBytes, history, chunks, movedBytes, storeBytes,
+        superseded, supersededChars, visibleText, assistants, probes };
+}
+
+function measure(row) {
+    const { chat, messages, chunks, history, superseded, supersededChars, storeBytes, movedBytes, archiveBytes,
+        visibleText, assistants, probes, transcriptChars } = row;
     let found = 0;
     let candidateHit = 0;
     let tokens = 0;
@@ -304,18 +407,13 @@ function measure(chat) {
  * The paraphrase measurement. It runs the same ranking and packing as the probe set, but the question
  * is written by a person rather than cut out of the answer, which is the only way to see the lexical
  * floor for the question a player actually types.
- */
-/**
- * The paraphrase measurement. It runs the same ranking and packing as the probe set, but the question
- * is written by a person rather than cut out of the answer, which is the only way to see the lexical
- * floor for the question a player actually types.
  *
  * An entry may name the chat it was written against. The needle is then checked for uniqueness inside
  * that chat, which is the condition that actually matters - the needle exists to prove which span was
  * found there. A needle that also occurs in a different chat says nothing about this one. Chats named
  * by an entry are loaded even when the --limit cut left them out.
  */
-function measureParaphrases(chats, entries) {
+function resolveParaphrases(chats, entries) {
     const every = root.flatMap(target => collect(target)).sort((a, b) => b.size - a.size);
     const seen = new Set(chats.map(chat => chat.file));
     const wanted = [...new Set(entries.map(entry => entry.chat).filter(Boolean))];
@@ -334,7 +432,7 @@ function measureParaphrases(chats, entries) {
         return { file: path.basename(chat.file), messages, history: scratch.raw_history,
             chunks: chunkHistory(scratch.raw_history) };
     });
-    const results = [];
+    const rows = [];
     for (const entry of entries) {
         const named = entry.chat ? loaded.filter(chat => chat.file.includes(entry.chat)) : [];
         const searched = named.length ? named : loaded;
@@ -342,37 +440,49 @@ function measureParaphrases(chats, entries) {
             .filter(row => String(row.mes ?? '').includes(entry.needle)).length, 0);
         const row = { ...entry, occurrences, found: false, rank: null, slot: null, drop: null, tokens: null,
             entropy: null, margin: null, fusedEntropy: null, fusedMargin: null, lexical: null, lexicalRank: null,
-            spans: 0, spansWithNeedle: 0, found_in_candidates: false };
+            spans: 0, spansWithNeedle: 0, found_in_candidates: false, chatRef: null };
+        // Choosing the chat here rather than during scoring is what lets the run name the vectors it needs.
         if (occurrences === 1) {
             // Measure in the chat that carries the needle, not merely the first one searched.
-            const chat = searched.find(item => item.chunks.some(chunk => chunk.text.includes(entry.needle)))
+            row.chatRef = searched.find(item => item.chunks.some(chunk => chunk.text.includes(entry.needle)))
                 || searched[0];
-            const ranked = rankRawChunks(chat.chunks, entry.question, denseFor(chat.chunks, entry.question),
-                { scorer: SCORER, denseWeight: DENSE_WEIGHT });
-            const packed = packRawEvidence(ranked, chat.history, { maxTokens: EVIDENCE_TOKENS,
-                maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: entry.question, spanCost: SPAN_COST });
-            const where = attribute(ranked, packed, entry.needle, chat.history.records, chat.chunks);
-            const signals = rankingSignals(ranked);
-            row.rank = where.rank;
-            row.slot = where.slot;
-            row.found = where.found;
-            row.drop = where.drop;
-            row.lexical = where.lexical;
-            row.lexicalRank = where.lexicalRank;
-            row.entropy = signals.entropy;
-            row.margin = signals.margin;
-            row.fusedEntropy = signals.fusedEntropy;
-            row.fusedMargin = signals.fusedMargin;
-            row.tokens = packed.tokens;
-            row.found_in_candidates = where.rank >= 0;
-            // Precision proxy: of the spans that were quoted, how many carry the answer.
-            row.spans = packed.sources.length;
-            row.spansWithNeedle = packed.sources.filter(span => String(chat.history.records[span.source]?.text || '')
-                .slice(span.start, span.end).includes(entry.needle)).length;
         }
-        results.push(row);
+        rows.push(row);
     }
-    const counted = results.filter(row => row.occurrences === 1);
+    return { rows };
+}
+
+/** Score the resolved entries. Runs only after the cassette has proved it can replay every input. */
+function scoreParaphrases(resolved) {
+    const rows = resolved.rows;
+    for (const row of rows) {
+        if (row.occurrences !== 1 || !row.chatRef) continue;
+        const chat = row.chatRef;
+        const entry = row;
+        const ranked = rankRawChunks(chat.chunks, entry.question, denseFor(chat.chunks, entry.question),
+            { scorer: SCORER, denseWeight: DENSE_WEIGHT });
+        const packed = packRawEvidence(ranked, chat.history, { maxTokens: EVIDENCE_TOKENS,
+            maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: entry.question, spanCost: SPAN_COST });
+        const where = attribute(ranked, packed, entry.needle, chat.history.records, chat.chunks);
+        const signals = rankingSignals(ranked);
+        row.rank = where.rank;
+        row.slot = where.slot;
+        row.found = where.found;
+        row.drop = where.drop;
+        row.lexical = where.lexical;
+        row.lexicalRank = where.lexicalRank;
+        row.entropy = signals.entropy;
+        row.margin = signals.margin;
+        row.fusedEntropy = signals.fusedEntropy;
+        row.fusedMargin = signals.fusedMargin;
+        row.tokens = packed.tokens;
+        row.found_in_candidates = where.rank >= 0;
+        // Precision proxy: of the spans that were quoted, how many carry the answer.
+        row.spans = packed.sources.length;
+        row.spansWithNeedle = packed.sources.filter(span => String(chat.history.records[span.source]?.text || '')
+            .slice(span.start, span.end).includes(entry.needle)).length;
+    }
+    const counted = rows.filter(row => row.occurrences === 1);
     const kind = name => counted.filter(row => row.kind === name);
     const rate = rows => rows.length ? rows.filter(row => row.found).length / rows.length : null;
     const entity = kind('entity');
@@ -382,9 +492,9 @@ function measureParaphrases(chats, entries) {
     const byRule = new Map();
     for (const row of counted) byRule.set(row.drop, (byRule.get(row.drop) || 0) + 1);
     console.log('');
-    console.log('paraphrase set: ' + results.length + ' entries, ' + counted.length + ' countable (entity '
+    console.log('paraphrase set: ' + rows.length + ' entries, ' + counted.length + ' countable (entity '
         + entity.length + ', oblique ' + oblique.length + ')');
-    for (const row of results) {
+    for (const row of rows) {
         const mark = row.occurrences !== 1 ? '  --' : row.found ? 'HIT ' : 'MISS';
         const detail = row.occurrences === 0 ? 'needle not in the searched chats'
             : row.occurrences > 1 ? 'needle appears ' + row.occurrences + 'x, excluded'
@@ -409,13 +519,14 @@ function measureParaphrases(chats, entries) {
         + ' margin ' + fixed(median(hits.map(row => row.fusedMargin)), 2) + ' | misses entropy '
         + fixed(median(misses.map(row => row.fusedEntropy)), 2) + ' margin '
         + fixed(median(misses.map(row => row.fusedMargin)), 2));
-    const summary = { entries: results.length, countable: counted.length, entity: rate(entity), oblique: rate(oblique),
+    const summary = { entries: rows.length, countable: counted.length, entity: rate(entity), oblique: rate(oblique),
         all: rate(counted), precision: spans ? carrying / spans : null, tokens: median(counted.map(row => row.tokens)),
         drops: Object.fromEntries(byRule) };
     if (dumpFile) {
         fs.writeFileSync(dumpFile, JSON.stringify({ scorer: SCORER, pack: POLICY, spanCost: SPAN_COST,
             evidenceTokens: EVIDENCE_TOKENS, entries: EVIDENCE_ENTRIES, pinnedEntries: Boolean(SLOTS), summary,
-            rows: results.map(row => ({ question: row.question, kind: row.kind, chat: row.chat,
+            cassette: cassetteRecord(), dense: Boolean(DENSE), denseWeight: DENSE_WEIGHT, embedTop: EMBED_TOP,
+            rows: rows.map(row => ({ question: row.question, kind: row.kind, chat: row.chat,
                 occurrences: row.occurrences, found: row.found, rank: row.rank, slot: row.slot, drop: row.drop,
                 tokens: row.tokens, entropy: row.entropy, margin: row.margin, lexical: row.lexical,
                 lexicalRank: row.lexicalRank, spans: row.spans, spansWithNeedle: row.spansWithNeedle })) }, null, 2));
@@ -447,6 +558,22 @@ function mcnemar(both, onlyA, onlyB, neither) {
 function reportComparison(a, b) {
     const left = JSON.parse(fs.readFileSync(a, 'utf8'));
     const right = JSON.parse(fs.readFileSync(b, 'utf8'));
+    // A difference between two runs can only be attributed to the rule that changed if both ran against
+    // the same vectors. Two lexical runs have no vectors to disagree about, and a lexical run against a
+    // dense one is the experiment itself, so this refuses only the case that is actually confounded.
+    const vectorsOf = dump => dump?.cassette?.vectors_fingerprint || null;
+    const leftVectors = vectorsOf(left);
+    const rightVectors = vectorsOf(right);
+    if (leftVectors && rightVectors && leftVectors !== rightVectors) {
+        console.log('');
+        console.log('refusing the paired comparison: A and B were measured against different vector sets ('
+            + leftVectors + ' vs ' + rightVectors + '). The ranking rule cannot be separated from the embeddings.');
+        return;
+    }
+    if (Boolean(leftVectors) !== Boolean(rightVectors)) {
+        console.log('note: only one side used a dense channel (' + (leftVectors ? 'A' : 'B')
+            + '), so part of the difference is the channel being on rather than the rule that changed.');
+    }
     const key = row => row.question;
     const map = new Map(right.rows.map(row => [key(row), row]));
     const pairs = left.rows.filter(row => map.has(key(row)) && row.occurrences === 1 && map.get(key(row)).occurrences === 1)
@@ -474,6 +601,16 @@ function reportComparison(a, b) {
     line('oblique', tally('oblique'));
 }
 
+/** What the dump records about where its vectors came from, so a later comparison can refuse a confound. */
+function cassetteRecord() {
+    if (!CASSETTE) return null;
+    return { file: path.basename(CASSETTE.file), format: CASSETTE.format, model: CASSETTE.manifest.model,
+        base: CASSETTE.manifest.base, dim: CASSETTE.manifest.dim,
+        entries: Object.keys(CASSETTE.vectors).length, file_fingerprint: CASSETTE.fingerprint,
+        vectors_fingerprint: DENSE ? DENSE.vectorsFingerprint : null,
+        provenance: DENSE ? DENSE.provenance : CASSETTE.manifest.provenance };
+}
+
 const root = targets.length ? targets : [defaultRoot()].filter(Boolean);
 if (!root.length) {
     console.log('No chats found. Pass a chat file or directory: node recall-baseline.mjs <dir>');
@@ -488,20 +625,69 @@ if (!chats.length) {
 const pct = value => value === null ? '  n/a' : (value * 100).toFixed(0).padStart(4) + '%';
 console.log('scorer ' + SCORER + ' | pack ' + POLICY + ' | evidence budget ' + EVIDENCE_TOKENS
     + ' tokens in ' + EVIDENCE_ENTRIES + ' slots' + (SLOTS ? ' (pinned)' : ' (derived from the budget)')
-    + ' | dense ' + (EMBEDDINGS ? 'weight ' + DENSE_WEIGHT + ' of top ' + EMBED_TOP + ' from ' + embeddingFile : 'off')
     + ' | top ' + limit + ' chats by size');
+if (CASSETTE) {
+    console.log('cassette ' + CASSETTE.file + ' [' + CASSETTE.format + '] '
+        + describeCassette(CASSETTE, { provenance: DENSE ? DENSE.provenance : CASSETTE.manifest.provenance }));
+    console.log(DENSE ? 'dense weight ' + DENSE_WEIGHT + ' of top ' + EMBED_TOP + ', replayed from the cassette'
+        : 'dense off: a cassette was loaded, but the fusion weight is 0, so this run is lexical');
+} else {
+    console.log('dense off (lexical only: pass --embeddings <cassette> to measure the dense channel)');
+}
+
+// Resolve every input before printing anything. This is the order that makes a cassette a proof rather
+// than a cache: the run is told it cannot replay its own vectors while there is still nothing to un-read.
+const prepared = [];
+for (const chat of chats) {
+    try { prepared.push(prepare(chat)); } catch (error) {
+        console.log(path.basename(chat.file).padEnd(40) + 'ERROR ' + String(error.message).slice(0, 60));
+    }
+}
+const paraphrases = loadParaphrases(paraphraseFile);
+const resolved = paraphrases ? resolveParaphrases(chats, paraphrases) : null;
+const declaredTargets = prepared.map(row => ({ chunks: row.chunks, questions: row.probes.map(probe => probe.query) }));
+if (resolved) for (const row of resolved.rows) {
+    if (row.occurrences === 1 && row.chatRef) declaredTargets.push({ chunks: row.chatRef.chunks, questions: [row.question] });
+}
+const requests = collectRequests(declaredTargets);
+
+// The other half of the contract: the run says what it needs, so the builder can be told to embed exactly
+// that instead of being handed a chat and hoped for.
+if (requestsFile) {
+    const declaredModel = MODEL || CASSETTE?.manifest.model || null;
+    const declaredBase = BASE || CASSETTE?.manifest.base || null;
+    // The base belongs in the file because it is part of the request the key names: the builder must use
+    // this string, and defaulting it here would let the two sides key the same text differently.
+    if (!declaredModel || !declaredBase) {
+        console.log('--cassette-requests needs --model and --base (or a loaded --embeddings cassette) to name the requests.');
+        process.exit(1);
+    }
+    // legacy_key is written out because it is the only name an older cache entry has, which is what makes
+    // the legacy file readable at all; the run itself uses legacyKey.
+    fs.writeFileSync(requestsFile, JSON.stringify({ format: CASSETTE_REQUESTS_FORMAT,
+        model: declaredModel, base: declaredBase,
+        requests: requests.map(request => ({ role: request.role, text: request.text, legacy_key: request.legacyKey })) }, null, 2));
+    const documents = requests.filter(request => request.role === 'document').length;
+    console.log('wrote ' + requestsFile + ': ' + requests.length + ' inputs (' + documents + ' document, '
+        + (requests.length - documents) + ' query) for model ' + declaredModel);
+    console.log('fill it with: node recall-embed.mjs --requests ' + requestsFile + ' --out <cassette>');
+    process.exit(0);
+}
+
+if (DENSE) preflight(requests);
+
 console.log('chat'.padEnd(40) + 'fileKB  msgs  floors  storeKB  moved  archive  chunks  probes  recall  cand  rank   tok');
 const rows = [];
-for (const chat of chats) {
+for (const row of prepared) {
     try {
-        const row = measure(chat);
-        rows.push(row);
-        console.log(row.file.padEnd(40) + String(row.fileKb).padStart(6) + String(row.messages).padStart(6) + String(row.floors).padStart(8)
-            + String(row.storeKb).padStart(9) + String(row.derivedMovedKb).padStart(7) + String(row.archiveKb).padStart(8)
-            + String(row.chunks).padStart(8) + String(row.probes).padStart(8) + pct(row.recall).padStart(8)
-            + pct(row.candidateHit).padStart(6) + String(row.medianRank ?? 'n/a').padStart(6) + String(row.meanTokens ?? 'n/a').padStart(6));
+        const measured = measure(row);
+        rows.push(measured);
+        console.log(measured.file.padEnd(40) + String(measured.fileKb).padStart(6) + String(measured.messages).padStart(6) + String(measured.floors).padStart(8)
+            + String(measured.storeKb).padStart(9) + String(measured.derivedMovedKb).padStart(7) + String(measured.archiveKb).padStart(8)
+            + String(measured.chunks).padStart(8) + String(measured.probes).padStart(8) + pct(measured.recall).padStart(8)
+            + pct(measured.candidateHit).padStart(6) + String(measured.medianRank ?? 'n/a').padStart(6) + String(measured.meanTokens ?? 'n/a').padStart(6));
     } catch (error) {
-        console.log(path.basename(chat.file).padEnd(40) + 'ERROR ' + String(error.message).slice(0, 60));
+        console.log(path.basename(row.chat.file).padEnd(40) + 'ERROR ' + String(error.message).slice(0, 60));
     }
 }
 function median(values) {
@@ -529,7 +715,6 @@ if (rows.length) {
         + Math.round((median(perFloorTokens) || 0) * 500 / 1000) + 'k tokens before any summary folds it');
     console.log('Derived keys now owned by the external record: ' + DERIVED_KEYS.filter(k => ['memories', 'slots', 'hierarchical_summaries'].includes(k)).join(', '));
 }
-const paraphrases = loadParaphrases(paraphraseFile);
-if (paraphrases) measureParaphrases(chats, paraphrases);
+if (resolved) scoreParaphrases(resolved);
 if (againstFile && dumpFile) reportComparison(againstFile, dumpFile);
 if (againstFile && !dumpFile) console.log('--against needs --dump in the same run: it compares that dump against this run');

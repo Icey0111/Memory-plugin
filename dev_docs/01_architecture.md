@@ -126,7 +126,7 @@ Live path, reachable from index-v55-bootstrap.js:
 | Vector transport and space identity | v55-vector-policy.js, v55-private-vector-transport.js, v55-tauri-vector-backend.js, v55-tauri-native-http-bridge.js, v55-rerank.js |
 | Setting plane | setting-schema.js, setting-store.js, setting-importer.js, setting-index.js, setting-retriever.js, source-adapters/ |
 | Baseline plane | baseline-index.js (the tokenizer and lexical floor the ranking uses) |
-| Measurement | v55-metrics.js, answer-adjudication.mjs |
+| Measurement | v55-metrics.js, answer-adjudication.mjs, recall-baseline.mjs, recall-embed.mjs, embedding-cassette.mjs |
 
 Retired (ADR-0007, ADR-0009): the v5.4 extraction pipeline, the prompt assembler, the recall path,
 the cold-snapshot cache, the length certificate, the quality metrics, the reranker, the retrieval
@@ -164,6 +164,7 @@ the chat file keeps (ADR-0004).
 | N21 | A live acceptance run starts only after the repo, the deployed disk and the loaded module agree; the loaded module is hashed, never inferred from the served file (ADR-0029) | runtime-precheck.mjs |
 | N22 | `anchors_same_subject` is a same-label record count, not a contradiction detector, and no label authorizes a replacement (ADR-0027, ADR-0029) | countAnchorCollisions, warningsFor |
 | N23 | The runtime names the packer policy it ships instead of inheriting a default, and every build reports the retrieval configuration built from the same constants the ranker and the packer use, so the experiment cannot be mistaken for the shipped path (ADR-0015, ADR-0016) | SHIPPED_PACK_POLICY, shippedRetrievalConfig |
+| N28 | A dense measurement replays a recorded transport cassette, keyed by the request that produced each vector - model, base, role, the provider task the plugin derives from them, and the exact input text - so a changed input is a miss and never a silent replay. A run that cannot replay a vector refuses to print a table and exits non-zero instead of reporting a lexical result under a dense header, and a paired comparison refuses two runs whose recorded vectors differ (ADR-0010) | embedding-cassette.mjs, recall-baseline.mjs, recall-embed.mjs |
 | N27 | A graded answer is a record, not a verdict: a row carries the machine verdict, whether the assembled prompt carried the fact, whether the reply conveys it and whether the probe is defective, and the classification and the memory credit are derived from those. A pass requires sufficient prompt evidence, so a correct answer on an empty prompt is a recorded `prompt-insufficient` row and not a success, and both directions of grader error have a name | answer-adjudication.mjs |
 | N26 | Both error directions of the ledger are reported each build: a live statement with no carrier (`required_none`, N25), and a quoted row that only a retired statement names (`superseded_evidence`). The second is a risk indicator, not a verdict - the evidence header says historical states need not be current, so only the reply can say whether the old value was used as the current one. A row shared by the retired and the current statement does not count | supersededSources, readNarrativeReport |
 | N25 | Every live ledger statement is resolved each build to one of two measured carriers - its own injected line, or a quoted original row - and the residue is reported and warned with the statement named. It is a structural lower bound and says so: the summary prose is not read, knowledge boundaries have no source rows of their own, and records are compared by id rather than by meaning, so an anchor an injected knowledge line restates still counts as uncarried | ledgerCarriers, warningsFor, readNarrativeReport |
@@ -172,7 +173,10 @@ the chat file keeps (ADR-0004).
 ### 6. What this architecture does not do yet
 
 - Dense retrieval over original text needs a configured embedding backend; without one the pipeline
-  is lexical-only and says so in its diagnostics.
+  is lexical-only and says so in its diagnostics. The offline ruler never fetches: it replays a cassette,
+  and a vector the cassette cannot supply makes the run invalid rather than making it lexical (N28). No
+  cassette is committed, so a dense number from an earlier run is reproducible only from the recording
+  that produced it - and this project's earlier dense numbers have no recording.
 - Recall is trigger-driven, not question-driven: the query is the recent messages, so the thing to measure is
   whether the earlier floors of a returning person, place or object come back with it. That happened in 3 of 6
   such moments, and 5 of 6 after the situation channel of ADR-0019; the channel's own metric counts character
