@@ -247,7 +247,13 @@ function assertCanonicalHost(host, ctx) {
   }
 }
 
-/** Rebuild the host's bounded surface after the chat array changed underneath it. */
+/**
+ * Rebuild the host's bounded surface after the chat array changed underneath it.
+ *
+ * The fold classes are re-applied last because a redisplay rebuilds the message nodes; a caller that
+ * redisplays again afterwards must re-sync them. The plugin's CHAT_LOADED and MESSAGE_RENDERED hooks do that
+ * in normal use, and a live check confirmed a generation works immediately after the reset.
+ */
 export async function resetChatSurface(ctx, { host = null, scriptUrl = HOST_SCRIPT_URL, syncFold = null,
   includeAuxiliary = true, redraw = true } = {}) {
   const api = requireHostApi(host || await loadHostModule(scriptUrl), 'The host module');

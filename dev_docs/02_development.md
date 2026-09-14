@@ -97,8 +97,14 @@ viewport plus the true tail and refuses an ambiguous projection with `ChatSurfac
 maximum is 2`. `--restore-snapshot` (through `acceptance-capture.js`'s `restoreSnapshot`) mutates the
 canonical array in place, resets the surface epoch, redisplays the chat, and only then re-applies the fold
 classes (ADR-0034). `syncFloorFoldDom` alone is a styling pass and cannot cure a stale projection. The
-restore does not write the chat file unless `--restore-persist` is given; the live confirmation of the
-reset is still to be run.
+restore does not write the chat file unless `--restore-persist` is given.
+
+A live check on 2026-09-14 (DetailSurvival1, 43 rows, `bounded: false`) restored a full snapshot with
+`{reset: true, redrawn: true, folded: 40}` and the next generation completed normally (731 characters,
+zero retries). The three-range case itself was not reproduced: this install has
+`chat_virtualization_enabled = false`, and in the unbounded controller a redisplay after the array shrank
+did not throw. The reset path is shared by both controllers, so the sequence is verified; the bounded
+reproduction remains to be run.
 
 Run at least 30 completed turns to exercise three automatic summaries. Record summary responses
 (requested output cap, finish reason, body length, reasoning usage when returned), covered sources,
