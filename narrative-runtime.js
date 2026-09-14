@@ -1333,9 +1333,16 @@ function renderNarrativePanel(root, ctx) {
     // waiting, and a reader who only sees a number cannot tell that from a pipeline that stopped.
     const state = root.querySelector('[data-state]');
     if (state) {
+        // The soft target and the emergency ceiling are different numbers, so an accepted over-target body
+        // is stated as such instead of being hidden inside a pass. A parked anchor that was folded into the
+        // retrieval query is stated apart from the parked count, because the two are different conditions.
+        const extras = [];
+        if (report.summary_over_target) extras.push('上次摘要超出软目标（目标 ' + report.summary_over_target.target
+            + ' / 硬上限 ' + report.summary_over_target.ceiling + '，实测 ' + report.summary_over_target.accepted_tokens + ' token）');
+        if (report.retrieval_parked_anchors) extras.push('已将 ' + report.retrieval_parked_anchors.anchors + ' 条停放锚点并入检索查询');
         state.textContent = '摘要状态：' + (SUMMARY_STATE_TEXT[report.summary_state] || report.summary_state || '未知')
             + '（待总结 ' + report.pending_floors + ' 个已完成 user turns / 约 ' + report.pending_tokens + ' token'
-            + (report.summary_running ? '，任务运行中' : '') + '）';
+            + (report.summary_running ? '，任务运行中' : '') + '）' + (extras.length ? '；' + extras.join('；') : '');
     }
     // A notice is not a fault: it is something about the configuration the user should know, shown apart
     // from the warnings so that a real fault is not read as one more line of advice.
@@ -1369,8 +1376,12 @@ function renderNarrativePanel(root, ctx) {
     }
     const warning = root.querySelector('[data-warning]');
     if (warning) {
-        warning.textContent = report.warnings.length ? '⚠ ' + report.warnings.join(' ') : '';
-        warning.hidden = !report.warnings.length;
+        const lines = [...report.warnings];
+        // A write that failed after the commit is not a lost summary, but it is not on disk either, so it is
+        // a warning a reader must see rather than a silent detail in the JSON below (audit F-1).
+        if (report.persist_error) lines.unshift('元数据写入失败（提交已生效，但尚未落盘）：' + report.persist_error.reason);
+        warning.textContent = lines.length ? '⚠ ' + lines.join(' ') : '';
+        warning.hidden = !lines.length;
     }
     root.querySelector('[data-status]').textContent = JSON.stringify(report, null, 2);
 }

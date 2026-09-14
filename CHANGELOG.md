@@ -13,6 +13,11 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
+- The visible settings now expose only controls with a reader: 42 retired v5.4 controls (extraction,
+  baseline, evidence, temporal-channel and recall tuning) and a self-check button with no handler are gone,
+  and the surrounding text describes the narrative pipeline instead of the retired extraction stack. The
+  narrative panel states a summary over its soft target, a metadata-write failure after a commit, and the
+  parked anchors that were folded into the retrieval query.
 - The summary budget is now a soft target with a separate emergency ceiling
   (`narrative_summary_ceiling_tokens`; `0` derives it from the target). A summary body over the target
   but within the ceiling is accepted and recorded as over-target; only a body past the ceiling is
