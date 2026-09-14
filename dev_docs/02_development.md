@@ -180,6 +180,15 @@ ranks 10th and is dropped by the entry cap, and only the live fused ranking reac
 ranks is a different defect. And a window that already covers as many question terms as any other is left
 where it is, so this repairs the case where the head answers nothing rather than re-ranking every quote.
 
+A build now records the ranking it was given as well as what it quoted: `evidence_candidates` (order,
+span, fused and per-channel scores) and `evidence_trace` (one outcome per ranked candidate, with slot, cost
+and whether an included quote was shortened), both bounded to 40 rows with counts over the whole record. Measured on the frozen FactSurvival3 chat
+that is 4.7 KB and 2.1 KB against 289 bytes for the quoted rows alone. The question it was added for is
+answerable offline: the 75-character message with all three of the probe's own words in it ranks 9 of 30
+lexically and is `entry_cap`, so it was ranked out and not unrankable - the live fused run had 77
+candidates from the dense, situation and character channels. Selection and packing are different outcomes in
+one record now (ADR-0039).
+
 Each run that plays a turns file now writes `<out>/turns.fixture.json` before its first model call: the
 input it actually used, together with the source path, byte count and sha256. Replay it with the ordinary
 command and `--turns <out>/turns.fixture.json`. The recorded chat can always be replayed, but only the frozen

@@ -35,6 +35,9 @@ const quote = (history, source, packed) => {
     const quoted = quote(history, 'raw_2', packed);
     assert.ok(quoted.text.includes('青石渡'), 'the quoted window must carry the answer; got ' + JSON.stringify(quoted.text.slice(-40)));
     assert.ok(quoted.text.includes('渡口'), 'the quoted window must carry the question\'s own word');
+    assert.equal(quoted.trimmed, true, 'a quote that had to be shortened says so in the record');
+    assert.equal(packed.trace.find(row => row.source === 'raw_2').trimmed, true,
+        'and the trace carries the same reading');
     assert.ok(packed.tokens <= 1000, 'the move must not spend more than the budget');
     assert.ok(quoted.start >= 0 && quoted.end <= history.records.raw_2.text.length, 'the window stays inside the message');
 }

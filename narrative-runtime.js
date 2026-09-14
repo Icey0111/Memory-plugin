@@ -5,7 +5,7 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     SHIPPED_PACK_POLICY, shippedRetrievalConfig, ledgerCarriers, supersededSources,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
-    summaryLengthVerdict } from './raw-history.js';
+    summaryLengthVerdict, summarizeEvidenceCandidates, summarizeEvidenceTrace } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
 import { rerankShortlist, applyRerankOrder } from './v55-rerank.js';
 import { estimateTokens } from './v55-tokenizer.js';
@@ -1077,6 +1077,13 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         superseded_source_pool: supersededOnly.size,
         superseded_evidence_metric: 'risk_indicator_not_a_verdict',
         sources: evidence.sources, candidates: ranked.length,
+        // What was quoted is not the same question as what ranked. Both are recorded, bounded, so a row the
+        // answer is in can be told apart from a row that never ranked without a live debugging session:
+        // evidence_candidates is the order and per-channel signal the packer was given, evidence_trace is
+        // what it did with each row (included / budget / too_long / entry_cap / not_selected / same-text /
+        // same-message) and whether an included quote had to be shortened to fit.
+        evidence_candidates: summarizeEvidenceCandidates(ranked),
+        evidence_trace: summarizeEvidenceTrace(evidence.trace),
         rerank_model: opts.rerankModel || null, rerank_used: reranked.used, rerank_error: reranked.error,
         rerank_cost: reranked.metrics || null,
         channels: { lexical: ranked.filter(row => row.channels.includes('lexical')).length,

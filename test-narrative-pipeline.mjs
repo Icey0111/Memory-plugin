@@ -15,7 +15,8 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     parseAnchorChanges,
     mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall,
-    profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig } from './raw-history.js';
+    profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig,
+    summarizeEvidenceCandidates, summarizeEvidenceTrace, EVIDENCE_TRACE_LIMIT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
@@ -603,6 +604,14 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     // rewritten: the failure mode this pins is a summary that grows by accretion across passes.
     const resident = bundle.diagnostics.summary_tokens + bundle.diagnostics.anchors_active * 20;
     assert.ok(resident <= 900, 'the resident block stays inside its budget after ten rewrites: ' + resident);
+    // What the packer was given, not only what it quoted (the recorded FactSurvival3 turn quoted five rows
+    // and none carried the answer, and nothing in the store said whether the row holding it had ranked).
+    assert.ok(bundle.diagnostics.evidence_candidates, 'the ranking is recorded with the build');
+    assert.ok(Array.isArray(bundle.diagnostics.evidence_candidates.rows));
+    assert.equal(bundle.diagnostics.evidence_candidates.total, bundle.diagnostics.candidates,
+        'the candidate record covers every ranked chunk');
+    assert.ok(bundle.diagnostics.evidence_trace, 'and so is what the packer did with each one');
+    assert.ok(Array.isArray(bundle.diagnostics.evidence_trace.rows));
     assert.equal(chat.filter(row => row.is_system === true).length > 0, true, 'and covered floors are still folded');
 }
 
@@ -994,6 +1003,48 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const hit = profileRecall(scene, history, { names: ['老周'], packed: [{ source: 'raw_1' }] })[0];
     assert.equal(hit.quoted, true);
     assert.equal(hit.detailed, true, 'the describing passage counts as described, not merely mentioned');
+}
+
+// --- the packer records what it was given, not only what it quoted -------------------------------
+// The recorded FactSurvival3 turn quoted five original rows and none carried the place name the probe asked
+// for, while a 75-character message holding all three of the question's own words was not quoted at all.
+// Nothing in the diagnostics could separate "ranked below the cut" from "never ranked", so the defect could
+// not be diagnosed offline. These two records are that separation, both bounded.
+{
+  const store = {};
+  const { history } = captureHistory(store, [
+    { name: 'User', is_user: true, mes: '水囊上有几块皮子补丁？' },
+    { name: 'A', is_user: false, mes: '水囊上有三块皮子补丁，针脚很密，颜色比皮面深。' }]);
+  const chunks = chunkHistory(history);
+  const query = '水囊上有几块皮子补丁？';
+  const ranked = rankRawChunks(chunks, query, [], { visibleSources: new Set() });
+  const packed = packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set(), query });
+  const candidates = summarizeEvidenceCandidates(ranked);
+  assert.equal(candidates.total, ranked.length);
+  assert.equal(candidates.rows.length, Math.min(ranked.length, EVIDENCE_TRACE_LIMIT));
+  assert.equal(candidates.rows[0].source, ranked[0].chunk.source, 'the order is the rank order');
+  assert.ok(candidates.rows.every(row => row.channels.length > 0), 'every row names the channel that produced it');
+  assert.ok(candidates.rows.every(row => Number.isFinite(row.score) && Number.isFinite(row.lexical)));
+  assert.ok(candidates.rows.every(row => row.dense === null), 'a lexical-only build reports no dense score rather than zero');
+  const trace = summarizeEvidenceTrace(packed.trace);
+  assert.equal(trace.total, packed.trace.length, 'every ranked candidate gets an outcome');
+  assert.equal(Object.values(trace.counts).reduce((sum, value) => sum + value, 0), trace.total);
+  assert.ok(trace.counts.included >= 1, 'the quoted rows are in the record');
+  assert.equal(trace.rows.filter(row => row.outcome === 'included').length, packed.sources.length,
+      'and the quoted rows carry the slot they were given');
+  assert.ok(trace.rows.filter(row => row.outcome === 'included').every(row => row.trimmed === false),
+      'a message that fitted whole is recorded as not shortened');
+  // The bound is on the rows, never on the counts: "quoted 1, capped 59" stays readable when the rows stop.
+  const manyCandidates = Array.from({ length: 60 }, (_, i) => ({ chunk: { ...chunks[0], id: 'c' + i,
+      source: 'raw_' + i, index: i, start: 0, end: 10 }, score: 1, lexical: 1, channels: ['lexical'] }));
+  const manyTrace = Array.from({ length: 60 }, (_, i) => ({ source: 'raw_' + i, outcome: 'entry_cap',
+      slot: null, start: 0, end: 10, relevance: 1, cost: 5 }));
+  assert.equal(summarizeEvidenceCandidates(manyCandidates).rows.length, EVIDENCE_TRACE_LIMIT);
+  assert.equal(summarizeEvidenceCandidates(manyCandidates).total, 60);
+  assert.equal(summarizeEvidenceTrace(manyTrace).rows.length, EVIDENCE_TRACE_LIMIT);
+  assert.equal(summarizeEvidenceTrace(manyTrace).total, 60);
+  assert.deepEqual(summarizeEvidenceTrace(manyTrace).counts, { entry_cap: 60 });
+  assert.deepEqual(summarizeEvidenceTrace([]), { total: 0, counts: {}, rows: [] });
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

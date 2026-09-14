@@ -1631,7 +1631,11 @@ function fitEvidenceSpan(span, budget, terms = []) {
         }
     }
     const line = renderEvidenceLine(row, start, end);
-    return { line, tokens: estimateTokens(String.fromCharCode(10, 10) + line), start, end };
+    // A quote that was shortened to fit is a different record from one that was not: the shortened quote is
+    // exactly where ADR-0037's defect lived, and the diagnostics should not leave that to be inferred by
+    // comparing the emitted span with the candidate's.
+    return { line, tokens: estimateTokens(String.fromCharCode(10, 10) + line), start, end,
+        trimmed: start !== span.anchorStart || end !== span.anchorEnd };
 }
 
 /** How many question terms a window is scored against, and how many start positions are tried. */
@@ -1855,8 +1859,9 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             if (!fitted) { trace.push(note(span, 'too_long', null)); continue; }
             used += fitted.tokens;
             lines.push(fitted.line);
-            sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source });
-            trace.push(note(span, 'included', sources.length - 1));
+            sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source,
+                trimmed: Boolean(fitted.trimmed) });
+            trace.push({ ...note(span, 'included', sources.length - 1), trimmed: Boolean(fitted.trimmed) });
         }
         for (const [index, span] of keptUnique.entries()) {
             if (selected.has(index)) continue;
@@ -1874,12 +1879,52 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             if (!fitted) { trace.push(note(span, 'too_long', null)); continue; }
             used += fitted.tokens;
             lines.push(fitted.line);
-            sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source });
-            trace.push(note(span, 'included', sources.length - 1));
+            sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source,
+                trimmed: Boolean(fitted.trimmed) });
+            trace.push({ ...note(span, 'included', sources.length - 1), trimmed: Boolean(fitted.trimmed) });
         }
     }
     for (const span of redundant) trace.push(note(span, 'same-message', null));
     for (const span of repeated) trace.push(note(span, 'same-text', null));
     return { text: lines.length ? header + String.fromCharCode(10, 10) + lines.join(String.fromCharCode(10, 10)) : '',
         sources, tokens: lines.length ? used : 0, trace, policy: submodular ? 'submodular' : 'greedy' };
+}
+
+/** How many ranked candidates and packing outcomes a build records in its diagnostics. */
+export const EVIDENCE_TRACE_LIMIT = 40;
+
+/**
+ * What the ranking proposed, bounded.
+ *
+ * The diagnostics used to record only what was *quoted*, so a row that carried the answer and was never
+ * quoted could not be told apart from a row that never ranked at all. Both are visible here: the rank, the
+ * per-channel signals that produced it, and - in the companion below - what the packer did with it. Named
+ * need: the recorded FactSurvival3 turn quoted five rows and none held the place name the probe asked for,
+ * while a 75-character original containing all three of the question's own words was nowhere in the block,
+ * and nothing in the store could say whether it had ranked 6th or not at all.
+ */
+export function summarizeEvidenceCandidates(ranked, { limit = EVIDENCE_TRACE_LIMIT } = {}) {
+    const round = value => Math.round((Number(value) || 0) * 10000) / 10000;
+    return { total: ranked.length,
+        rows: ranked.slice(0, limit).map(row => ({ source: row.chunk.source, chunk: row.chunk.id,
+            index: row.chunk.index, start: row.chunk.start, end: row.chunk.end,
+            score: round(row.score), lexical: round(row.lexical),
+            dense: row.vector ? round(row.vector.score) : null,
+            entity: row.entity ? round(row.entity.score) : null,
+            channels: [...(row.channels || [])] })) };
+}
+
+/**
+ * What the packer did with each candidate, bounded, with every outcome counted.
+ *
+ * The rows are in rank order and trimmed to the limit; the counts are over the whole trace, so "quoted 5,
+ * capped 12, cut to fit 3" is readable even when the interesting candidate is past the forty-row bound.
+ */
+export function summarizeEvidenceTrace(trace, { limit = EVIDENCE_TRACE_LIMIT } = {}) {
+    const counts = {};
+    for (const row of trace) counts[row.outcome] = (counts[row.outcome] || 0) + 1;
+    return { total: trace.length, counts,
+        rows: trace.slice(0, limit).map(row => ({ source: row.source, outcome: row.outcome,
+            slot: row.slot == null ? null : row.slot, start: row.start, end: row.end,
+            relevance: row.relevance, cost: row.cost, trimmed: row.trimmed === true })) };
 }
