@@ -120,6 +120,13 @@ no hidden floor - and the measurement was taken with `narrative_input_chars` rai
 afterwards. The default input budget is a measured limit for long-reply stories, not only for the context
 window.
 
+A second measurement (FactSurvival3, same 11 facts, both merges committed with the budget raised) followed
+the retention change in ADR-0036. The floor-10 summary kept 8/11 and the floor-20 merge 7/11, but **every
+must-keep fact survived the merge** - `state` 1/1 and `condition` 1/1, where the first measurement lost the
+state - and incidental occupation fell from three facts to one (`d-cat`). The place name `k-place` was
+absent, but it was already absent from the floor-10 summary and the raw output never wrote it: an initial
+omission, not a merge loss.
+
 A restored chat needs the host's own reset path. Replacing `ctx.chat` and re-applying the plugin's fold
 classes leaves the previous message roots mounted; the host's bounded ChatSurface allows one contiguous
 viewport plus the true tail and refuses an ambiguous projection with `ChatSurface projection has 3 ranges;

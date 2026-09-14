@@ -324,7 +324,7 @@ if (detailMode) {
       adjudication.rows.map(row => JSON.stringify(row)).join('\n') + '\n');
     console.log(formatDetailReport(survival));
     for (const outcome of survival.outcomes) {
-      console.log('  probe ' + outcome.id + ' kind=' + outcome.kind + ' channel=' + outcome.channel
+      console.log('  probe ' + outcome.id + ' kind=' + outcome.kind + ' fact=' + outcome.factKind + ' channel=' + outcome.channel
         + ' conveys=' + outcome.conveys + ' -> ' + outcome.outcome
         + (outcome.fixtureDefect ? ' [fixture-defect]' : ''));
     }

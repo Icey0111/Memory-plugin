@@ -265,12 +265,12 @@ export function choosePositive(retained) {
 export function buildProbeItems({ dropped = [], positive = null, negatives = [] } = {}) {
     const items = [];
     for (const detail of dropped) {
-        items.push({ id: detail.id, kind: 'detail', needle: detail.needle, question: detail.question,
-            expect: detail.expect, turn: detail.turn });
+        items.push({ id: detail.id, kind: 'detail', factKind: detail.kind || DEFAULT_FACT_KIND,
+            needle: detail.needle, question: detail.question, expect: detail.expect, turn: detail.turn });
     }
     if (positive) {
-        items.push({ id: positive.id, kind: 'positive', needle: positive.needle, question: positive.question,
-            expect: positive.expect, turn: positive.turn });
+        items.push({ id: positive.id, kind: 'positive', factKind: positive.kind || DEFAULT_FACT_KIND,
+            needle: positive.needle, question: positive.question, expect: positive.expect, turn: positive.turn });
     }
     for (const negative of negatives) {
         items.push({ id: negative.id, kind: 'negative', needle: negative.needle, question: negative.question,
@@ -401,8 +401,8 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
         if (outcome === 'summary-kept') summaryKept += 1;
         if (outcome === 'refused') refused += 1;
         if (outcome === 'fabricated') fabricated += 1;
-        outcomes.push({ id: item.id, kind: item.kind, channel, conveys, outcome,
-            fixtureDefect: defect });
+        outcomes.push({ id: item.id, kind: item.kind, factKind: item.factKind || item.kind,
+            channel, conveys, outcome, fixtureDefect: defect });
     }
     return {
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,

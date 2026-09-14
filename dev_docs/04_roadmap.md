@@ -24,7 +24,11 @@ groups it by the declared fact kind, which is the cross-merge question. The firs
 (2026-09-14, chat FactSurvival2, 11 facts, merges at floors 10 and 20): the floor-10 summary kept 11/11 and
 the floor-20 merge kept 9/11 - it lost the still-live state `k-state` (the west road blocked) while keeping
 three incidental details, so **1/7 must-keep facts was lost in a merge**, and the raw output for that batch
-shows the model omitted it. One chat and eleven facts is a located defect, not a rate.
+shows the model omitted it. One chat and eleven facts is a located defect, not a rate. The retention
+rule was then tightened (ADR-0036) and the same fixture re-run on FactSurvival3: every must-keep fact
+survived the floor-20 merge (state 1/1, condition 1/1; must-keep merge losses 1/7 to 0/7) and incidental
+occupation fell from three facts to one. The place name was absent from both summaries and from the raw
+output - an initial omission, not a merge loss.
 
 Keep versioned raw history, a compact continuity snapshot, original-chunk retrieval, optional reranking
 and budgeted quotations. The summary is not an embedding document. The default summary cadence remains
