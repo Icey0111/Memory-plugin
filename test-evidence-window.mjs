@@ -10,7 +10,7 @@
 // whenever the message does. Whether a live model then answers from it is a paid-run question, not an
 // offline one, and this file does not claim it.
 import assert from 'node:assert/strict';
-import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence } from './raw-history.js';
+import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, queryWindowTerms } from './raw-history.js';
 
 const FILLER = '雾压在河面上，风从上游过来。'.repeat(55);
 const row = (mes, isUser = false) => ({ name: isUser ? 'User' : 'Seraphina', is_user: isUser, is_system: false, mes });
@@ -77,3 +77,31 @@ const quote = (history, source, packed) => {
     assert.ok(quote(history, 'raw_2', after).text.includes('青石渡'), 'and the question moves it onto the answer');
     assert.equal(after.sources.length, before.sources.length, 'the same number of messages is reached');
 }
+
+// --- 5. the window is moved by words first, and by n-grams underneath --------------------------------
+{
+  // The two layers fail differently: a 2-gram matches prose that shares two characters, which is how the
+  // head window of the live tea answer scored as well as the window holding the answer while containing no
+  // question word at all. Words are the host's own segmentation and are compared first.
+  const terms = queryWindowTerms('灶边那只旧铁罐里装的是什么茶？');
+  assert.ok(terms.words.length > 0, 'the question has words');
+  assert.ok(terms.words.every(word => word.length >= 2), 'single characters are dropped from the word layer');
+  assert.ok(terms.grams.includes('边那'),
+    'and the n-gram layer still carries a cross-word fragment - the reason words are compared first');
+  assert.ok(terms.grams.every(gram => gram.length >= 2));
+  // The live shape at the packer: the head matches only a fragment, the answer sits in the tail behind a word.
+  const filler = '河边那棵树很老，雾气压着水面。'.repeat(40);
+  const body = filler + '灶边那只旧铁罐里是茉莉茶。';
+  const { history } = captureHistory({}, [{ name: 'A', is_user: false, mes: body }]);
+  const chunks = chunkHistory(history);
+  const ranked = rankRawChunks(chunks, '灶边那只旧铁罐里装的是什么茶？', [], { visibleSources: new Set() });
+  const packed = packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set(),
+    query: '灶边那只旧铁罐里装的是什么茶？' });
+  const quoted = packed.sources.find(source => source.source === 'raw_1');
+  const window = history.records.raw_1.text.slice(quoted.start, quoted.end);
+  assert.ok(window.includes('茉莉'), 'the window moves onto the answer: ' + JSON.stringify(window.slice(-30)));
+  assert.ok(!history.records.raw_1.text.slice(0, quoted.end - quoted.start).includes('茉莉'),
+    'which the head-anchored window of the same length does not');
+  assert.equal(quoted.trimmed, true, 'and the quote is recorded as shortened');
+}
+

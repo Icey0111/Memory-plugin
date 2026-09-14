@@ -1,7 +1,7 @@
 // Original text is authoritative. Chunks, ranks and summaries are disposable projections.
 import { fnv1a32, isDialogueRow, FOLD_EXTRA_KEY } from './memory-core.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
-import { estimateTokens } from './v55-tokenizer.js';
+import { estimateTokens, segmentWords } from './v55-tokenizer.js';
 import { isContinuation } from './retrieval-query.js';
 
 export const RAW_CHUNK_SIZE = 700;
@@ -1601,7 +1601,7 @@ function selectSubmodular(ordered, { query, budget, maxEntries, weights }) {
  * four messages instead of five. Half of that chat's anchors are over the 200-token share (median 201, p90
  * 391, max 444), so charging each its own cost drops spans where trimming them kept them. Decided: off.
  */
-function fitEvidenceSpan(span, budget, terms = []) {
+function fitEvidenceSpan(span, budget, terms = { words: [], grams: [] }) {
     const row = span.row;
     let start = span.anchorStart;
     let end = span.anchorEnd;
@@ -1643,19 +1643,19 @@ export const QUERY_WINDOW_TERM_LIMIT = 256;
 export const QUERY_WINDOW_CANDIDATE_LIMIT = 400;
 
 /**
- * The words of the question, long enough to be a place to look.
+ * The words of the question, and the n-grams under them, as places to look.
  *
- * The ranker's own tokenizer, so a window is moved by exactly the terms that made the message rank, and
- * longer terms first, because a 3-gram names a thing where a 2-gram only occurs. One-character terms are
- * dropped: they occur several times per sentence and would drag a window anywhere.
+ * Two layers, because they fail differently. The n-grams are the ranker's own tokenizer, so a window is
+ * moved by exactly the terms that made the message rank - and they are a recall floor: a 2-gram matches
+ * filler prose that shares two characters. Measured on the frozen probe turn, the message holding the tea
+ * answer had **no** question word in its head window and two junk n-grams, so nothing moved and the answer
+ * stayed outside the quote. Words are the host's own segmentation (v55-tokenizer), the precision layer the
+ * lexical channel already uses, and the window prefers them. One-character terms are dropped from both.
  */
-function queryWindowTerms(query) {
-    const wanted = [];
-    for (const term of tokenizeBaselineText(query)) {
-        if (term.length < 2 || term.length > 12) continue;
-        wanted.push(term);
-    }
-    return wanted.sort((a, b) => b.length - a.length).slice(0, QUERY_WINDOW_TERM_LIMIT);
+export function queryWindowTerms(query) {
+    const keep = list => list.filter(term => term.length >= 2 && term.length <= 12)
+        .sort((a, b) => b.length - a.length).slice(0, QUERY_WINDOW_TERM_LIMIT);
+    return { words: keep([...new Set(segmentWords(query))]), grams: keep(tokenizeBaselineText(query)) };
 }
 
 /**
@@ -1671,28 +1671,38 @@ function queryWindowTerms(query) {
  * one displaces it, so a message with nothing to choose between its windows is quoted exactly as before.
  */
 function slideWindowToQuery(text, start, length, from, to, terms) {
-    if (!terms.length || length <= 0 || to - from < length) return null;
-    const spots = [];
-    for (const term of terms) {
-        const list = [];
-        for (let at = text.indexOf(term, from); at >= 0 && at + term.length <= to; at = text.indexOf(term, at + 1)) list.push(at);
-        if (list.length) spots.push({ span: term.length, list });
-    }
-    if (!spots.length) return null;
+    const words = terms.words || [];
+    const grams = terms.grams || [];
+    if ((!words.length && !grams.length) || length <= 0 || to - from < length) return null;
+    const spotsFor = list => {
+        const out = [];
+        for (const term of list) {
+            const found = [];
+            for (let at = text.indexOf(term, from); at >= 0 && at + term.length <= to; at = text.indexOf(term, at + 1)) found.push(at);
+            if (found.length) out.push({ span: term.length, list: found });
+        }
+        return out;
+    };
+    const wordSpots = spotsFor(words);
+    const gramSpots = spotsFor(grams);
+    if (!wordSpots.length && !gramSpots.length) return null;
     const clamp = value => Math.max(from, Math.min(to - length, value));
     const starts = new Set([start]);
-    for (const spot of spots) {
-        for (const at of spot.list) {
-            starts.add(clamp(at));
-            starts.add(clamp(at + spot.span - length));
-            if (starts.size >= QUERY_WINDOW_CANDIDATE_LIMIT) break;
+    const collect = spots => {
+        for (const spot of spots) {
+            for (const at of spot.list) {
+                starts.add(clamp(at));
+                starts.add(clamp(at + spot.span - length));
+                if (starts.size >= QUERY_WINDOW_CANDIDATE_LIMIT) return;
+            }
         }
-        if (starts.size >= QUERY_WINDOW_CANDIDATE_LIMIT) break;
-    }
-    // Distinct question words covered. Candidates are generated longest question word first and each one
-    // starts on its occurrence, so a tie is settled toward the most specific word and the text that
+    };
+    collect(wordSpots);
+    if (starts.size < QUERY_WINDOW_CANDIDATE_LIMIT) collect(gramSpots);
+    // How many distinct terms of one layer the window covers. Candidates are generated longest term first and
+    // each one starts on its occurrence, so a tie is settled toward the most specific term and the text that
     // follows it; the head-anchored window is the incumbent and only a strictly better window moves it.
-    const cover = candidate => {
+    const coverOf = spots => candidate => {
         const edge = candidate + length;
         let hits = 0;
         for (const spot of spots) {
@@ -1705,12 +1715,20 @@ function slideWindowToQuery(text, start, length, from, to, terms) {
         }
         return hits;
     };
-    let best = cover(start);
+    const coverWords = coverOf(wordSpots);
+    const coverGrams = coverOf(gramSpots);
+    let bestWords = coverWords(start);
+    let bestGrams = coverGrams(start);
     let move = null;
     for (const candidate of starts) {
         if (candidate === start) continue;
-        const hits = cover(candidate);
-        if (hits > best) { best = hits; move = candidate; }
+        const wordHits = coverWords(candidate);
+        const gramHits = coverGrams(candidate);
+        if (wordHits > bestWords || (wordHits === bestWords && gramHits > bestGrams)) {
+            bestWords = wordHits;
+            bestGrams = gramHits;
+            move = candidate;
+        }
     }
     return move;
 }

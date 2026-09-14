@@ -197,6 +197,13 @@ missed were quoted and then cut by the trim, not left unranked.
 restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
 an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
 
+The evidence window (ADR-0037) is now moved by the question's **words** first and its n-grams second
+(ADR-0041). The n-grams alone had matched fragments that straddle two question words, so on the frozen probe
+turn the head window of the tea answer covered two fragments and no question word and nothing moved. With the
+word layer first, that row moves from `[0, 199]` to `[290, 489]` and holds `茉莉`, and the scar row moves to
+`[103, 334]` and holds `月牙`. The labelled A/B on the same chat is unchanged (4/6, 4 of 30 spans), and the
+per-turn probes replay unchanged, so the gain is on mixed questions and the cost is about 0.1 ms per pack.
+
 A rule can be measured and still not run. `packRawEvidence`'s window rule (ADR-0037) was inert in the
 shipped prompt from the day it was written: the runtime called the packer without `query`, so the term list was
 empty and the rule returned immediately, while the labelled A/B (`recall-baseline.mjs`) and
