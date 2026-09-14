@@ -45,6 +45,9 @@ turn's reference text is overwritten before it is archived. The runner is versio
 with `acceptance-capture.js`) and its record path is proved offline by `test-acceptance-capture.mjs`; the turns
 file, the output directory and credentials stay outside the repository. A field that was not captured is
 reported as unknown; a finish reason is never inferred from a token count; reasoning text is not stored.
+Every started request carries an id and a running/succeeded/failed status: an in-flight record is not a
+failure, and a call that settles between two snapshots is collected by id on a later turn instead of being
+dropped. A request that never settled is reported as an incomplete capture, never as a success.
 
 A batch refused for its anchor section is retried once by the host with a targeted repair that shows the model
 its own answer and the rejected lines. The repair is a second call with its own recorded cost; a failed repair
