@@ -9,9 +9,11 @@
 
 The detail-survival probe asked every selected item in one turn. That composition is not a per-item
 measurement: the packer has five evidence slots, so four to six questions compete for the same budget. The
-live run on 2026-09-14 quoted five rows and answered one of four items, and the trace showed why - the jasmine
-row ranked 7th of 40 and lost to the entry cap while the window spent its slots elsewhere. One reply from that
-composition is one sample of a contended budget, not four samples of retrieval.
+recorded run on 2026-09-14 quoted five rows and answered one of four items. Re-read from the probe turn's own
+block, the two rows holding the answers it missed were quoted and then cut by the trim (`trimmed: true`), not
+left unranked - the first reading of that run was taken from the previous build's block and is corrected in
+02_development.md. One reply from that composition is one sample of a contended budget, not four samples of
+retrieval.
 
 `perTurn` already existed in the schema, but the driver's own notice said later turns see the earlier replies
 and may contaminate each other, so it was not a usable alternative: without a restore, question two is a

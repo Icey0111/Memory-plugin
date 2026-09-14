@@ -315,8 +315,9 @@ export function buildProbeItems({ dropped = [], positive = null, negatives = [] 
 }
 
 /**
- * One probe turn. Every item's question is asked in the same turn, because question turns contaminate each
- * other: a later turn sees the earlier replies and the model restates what it just said. `leaks` names any
+ * One probe turn. In `single` mode every item's question is asked in the same turn, which is one sample of a
+ * budget the questions contend for; `perTurn` asks one per turn and restores the phase-1 state between them
+ * (ADR-0040), because a later turn that is not restored sees the earlier replies and restates them. `leaks` names any
  * item whose needle the question itself contains - a question must name the subject, never the value, or the
  * probe could pass on the prompt alone.
  */
@@ -566,8 +567,8 @@ export function formatDetailReport(survival) {
  * Whether the probe answers are independent samples of one state, and say so in the record.
  *
  * `single` asks every question in one turn: one composition, one retrieval budget, one answer to read, and the
- * questions compete for the same evidence slots - which is how a six-item probe came back with one item quoted
- * and five ranked out. `perTurn` asks one per turn, and it is only N samples if the phase-1 state is restored
+ * questions compete for the same evidence slots - the recorded single run quoted five rows and answered one of
+ * four items, and the two rows holding the answers it missed were quoted and then cut by the trim. `perTurn` asks one per turn, and it is only N samples if the phase-1 state is restored
  * before each later question; without that restore the second question reads the first reply, which is
  * contamination and not a second sample. The record states which of the two it holds, because the same reply
  * count means different things in each.

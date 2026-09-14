@@ -46,8 +46,10 @@ ten complete user turns (normally twenty message rows); its frozen input and suc
   fields and invalid references reject atomically, while label punctuation and length do not.
 - Statements are stored in full. The 600-token injection budget parks whole entries rather than truncating
   their conditions. Selection stays round-robin by kind, newest-first within each kind.
-- Input/summary/anchor defaults remain 40000/600/600. The instruction block is 1018 characters, including
-  the clarification that restating an unchanged state is not an update.
+- Input/summary/anchor defaults are now 60000/600/600 (ADR-0043 raised the input default after a verbose
+ten-turn batch needed 43,658 characters). The instruction block is 1,110 characters, including the stated
+hard ceiling and its consequence (ADR-0042) and the clarification that restating an unchanged state is not an
+update.
 - The saved 17:45 run finished with 40 completed turns but only 30 covered/folded turns, zero active anchors
   and an unrecovered 619/600 summary-budget failure. Four requests were not four successful commits.
 - The old ledger's lexical 7/6/21 clause groups are review candidates, not measured semantic loss or an
@@ -118,9 +120,9 @@ are injected; and three floors were still pending at floor 40.
 
 ## Completed summary-diagnostics work
 
-- Classify a failed summary (transport, empty body, truncated, over the accept budget, format) and keep a
-  bounded record of the last one with its input cost and response status; a success marks it recovered
-  instead of clearing it (ADR-0025).
+- Classify a failed summary (transport, empty_body, truncated, over_budget, format, input_budget,
+  anchor_ops) and keep a bounded record of the last one with its input cost and response status; a success
+  marks it recovered instead of clearing it (ADR-0025).
 - Separate the source version from the content version of the committed state, compare `injected_stale` by
   version, and record "injected" only after the host has received the block (ADR-0025).
 - Re-read the committed state after the last await of prompt assembly and again synchronously before the
@@ -170,7 +172,8 @@ are injected; and three floors were still pending at floor 40.
 Rebuilt from the chat that failed the first batching acceptance (41 rows, 43,352 characters of character
 text, 22 recorded failures): the ten-turn batch is 53 retrieval chunks and 21 original messages, and the
 request parts are instructions 556 + carried summary 1 + anchors 1 + knowledge 1 + batch 23,148 =
-23,742 characters. The old per-chunk accounting demanded 30,300 for the same batch (1.28x), so the
+23,742 characters. That figure belongs to the ADR-0024-era instruction block: the block is 1,110 characters
+now, and the largest recorded request was 27,846 characters, with the only block needing 43,658 (ADR-0043). The old per-chunk accounting demanded 30,300 for the same batch (1.28x), so the
 18,000 default could never hold it. At 18,000 the batch is one block with `checks: 20`, zero model
 calls, zero failures and zero hidden rows; at 40,000 the same frozen batch commits ten floors and hides
 twenty rows. The numbers are for this one character, model and reply length, not a general rule: a

@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-09-14
 - Supersedes: -
-- Superseded by: -
+- Superseded by: ADR-0041 (the term rule only; the trim branch and the incumbent rule still stand)
 
 ## Context
 
@@ -52,7 +52,9 @@ Replaying the frozen probe turn that prompted this ADR, with its own emitted row
 | `raw_9` (holds 茉莉) | `[0, 199]` - outside | `[0, 199]` - still outside |
 
 So one of the two live losses is a wiring defect now fixed; the other is a real limit of a rule driven by the
-question's own words, because that answer sits where no question word does.
+question's own words, because that answer sits where no question word does. **ADR-0041 then changed which words
+those are** (the question's segmented words before the ranker's n-grams), and with that layer `raw_9` moves to
+`[290, 489]` and holds 茉莉; the general limit above still stands.
 
 ## Consequences
 

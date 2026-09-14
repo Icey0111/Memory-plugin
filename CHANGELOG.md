@@ -7,6 +7,15 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- The evidence window rule (ADR-0037) was inert in every shipped prompt: the runtime called `packRawEvidence`
+  without `query`, so the term list was empty and the rule returned immediately, while both harnesses that
+  accepted the change passed the query themselves. The runtime passes it now and a runtime-level test through
+  `buildNarrativeContext` fails if it stops (ADR-0037 correction, N38). The first live reading of that run was
+  corrected too: it had been taken from the previous build's diagnostics instead of the probe turn's own
+  `injections.thisTurn`.
+- A batch that never committed is no longer read as a merge (`committed`), and a probe run whose floors were
+  never folded is marked unattributable (`attribution`) instead of counting every answer as fabricated - a
+  forced run had printed five fabrications that were nothing of the kind.
 - The offline dense ruler can no longer measure with vectors it cannot replay. A missing vector used to
   remove the dense channel for that question while the run still printed a dense header, so a lexical
   number was read as a dense one; the run now declares every input it will read, refuses to print a table
@@ -30,6 +39,15 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
+- A summary body refused for `format` or `over_budget` earns one targeted repair, recorded as `body_repair`
+  with its own cost, checked against the input budget before sending, and re-evaluated against the same checks
+  as the first answer; the request now also states the hard ceiling and its consequence, which it never did.
+  `input_budget` stays an unrepaired local block (ADR-0042).
+- A new install starts at a 60,000-character summary input budget instead of 40,000: the only recorded block
+  needed 43,658 characters for a ten-turn batch whose replies averaged 3,953 (ADR-0043).
+- A trimmed evidence quote follows the question's **words** first and the ranker's n-grams second, so a head
+  window that matches only fragments of the question no longer keeps the answer outside its own quote
+  (ADR-0041).
 - The visible settings now expose only controls with a reader: 42 retired v5.4 controls (extraction,
   baseline, evidence, temporal-channel and recall tuning) and a self-check button with no handler are gone,
   and the surrounding text describes the narrative pipeline instead of the retired extraction stack. The
@@ -43,6 +61,17 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- `--detail-survival`: a repeatable acceptance mode that reports which of the two channels carried each
+  declared detail - with a paraphrase-tolerant needle matcher, an answer-adjudication row per item, one probe
+  per turn with the phase-1 state restored between them (`perTurn`) and an `independence` reading, and a
+  frozen `<out>/turns.fixture.json` written before the first model call so any run can be re-run as the same
+  fixture (ADR-0033, ADR-0035, ADR-0038, ADR-0040).
+- Every build records the ranking it was given (`evidence_candidates`) and what the packer did with each
+  candidate (`evidence_trace`, including whether an included quote had to be shortened), bounded to 40 rows
+  with counts over the whole record (ADR-0039).
+- `acceptance-capture.js` restores a saved chat through the host's own reset path - reset the surface epoch,
+  redisplay the canonical chat, re-apply the fold classes - because replacing the array leaves stale message
+  roots mounted (ADR-0034).
 - `embedding-cassette.mjs`: the ruler's dense vectors are a transport cassette. Every entry is
   keyed by the request that produced it - model, base, role, the provider task the plugin derives from them
   and the exact input text - so a changed retrieval prefix, model, base or task is a miss rather than a

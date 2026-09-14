@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-09-14
-- Supersedes: -
+- Supersedes: ADR-0037 (its term rule; the incumbent and budget parts still stand)
 - Superseded by: -
 
 ## Context
@@ -28,6 +28,11 @@ head-anchored window is still the incumbent and only a strictly better window mo
 - Both frozen losses are recovered by the replay of that probe turn with its own emitted rows as the candidate
   list: `raw_9` moves from `[0, 199]` to `[290, 489]` and now holds `茉莉`; `raw_19` moves from
   `[0, 231]` to `[103, 334]` and holds `月牙`.
+- **Live confirmation on the shipped path.** A fixture authored for exactly this (a long user turn whose answer
+  sits at the end of its first over-share chunk) ran with `probeMode: perTurn`. The probe turn quoted that row as
+  `raw_10[287,484]` with `trimmed: true`, the window carried `两道被磨平`, and the reply conveyed it - the offline
+  pre-check had predicted the same `[287,484]` window on the authored row. This is the first live turn that needed
+  a trim, so the rule is now measured where it runs, not only in a replay.
 - No regression where the change should not matter. The labelled A/B on the same frozen chat (six single-topic
   questions, lexical, identical candidates on both sides) is 4/6 before and 4/6 after, with the same 4 of 30
   quoted spans carrying their answer and the same token totals within noise. Replaying the per-turn probes, each

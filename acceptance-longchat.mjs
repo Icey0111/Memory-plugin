@@ -18,7 +18,9 @@
 // actually dropped, plus one retained positive control and every declared negative control, all in one
 // probe turn. It reports the channel each needle was found in, read from the probe turn's own
 // injections.thisTurn, and hands every item to answer-adjudication.mjs. The needles are data in the turns
-// file; nothing is picked by hand at scoring time. See detail-survival.mjs for the schema.
+// file; nothing is picked by hand at scoring time. `single` asks every item in one turn (one sample of a budget
+// they contend for); `perTurn` asks one per turn with the phase-1 state restored between them (ADR-0040). See
+// detail-survival.mjs for the schema.
 //
 // Every run that plays a turns file freezes the input it actually used into <out>/turns.fixture.json before
 // the first model call, with the source path, byte count and sha256. The recorded chat can always be

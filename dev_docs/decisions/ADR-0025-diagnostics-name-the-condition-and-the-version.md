@@ -10,7 +10,8 @@ The batching was correct and the reporting was not. Four rules, each one a gap a
 exposed.
 
 1. **A failed summary is classified, and the classification is kept.** "The summary failed" was covering
-   five different problems: a transport or provider error, an empty body, a truncated body, a summary that
+   five different problems then (`FAILURE_STAGES` has two more now: `input_budget` and `anchor_ops`, added by
+   ADR-0024 and ADR-0029): a transport or provider error, an empty body, a truncated body, a summary that
    exceeded its own accept budget, and a reply that carried anchors but no prose. The stage is attached
    where the evidence still exists and recorded in a bounded `summary_last_error`: time, stage and its
    label, a 300-character reason, the batch identity, the input cost, the accept budget, the actual summary
@@ -73,7 +74,7 @@ injected, so the report says stale rather than pairing a new state with an old i
 
 ## Validation
 
-`test-summary-diagnostics.mjs` (new) covers the five failure stages through the real request path where
+`test-summary-diagnostics.mjs` (new) covers the failure stages through the real request path where
 possible, the recovered-and-retained record, the attempt counter, the same-coverage-different-content
 staleness, build-without-inject, the assembly-across-a-commit case, the five warning conditions, and the
 new default with the legacy notice. `test-narrative-pipeline.mjs`, `test-summary-contract.mjs` and

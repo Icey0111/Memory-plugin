@@ -23,7 +23,10 @@ export const NARRATIVE_PROMPTS = ['aetheria_unified_memory_v5_4_reference', 'aet
 // silent overwrite would be a config change nobody asked for - and is told about the discrepancy instead.
 const defaults = { narrative_every: 10, narrative_summary_tokens: 600, narrative_summary_ceiling_tokens: 0,
     narrative_evidence_tokens: 1000,
-    narrative_setting_tokens: 400, narrative_input_chars: 40000, narrative_fold: true,
+    // 60,000, not 40,000: the only recorded input-budget block needed 43,658 characters (a ten-turn batch
+    // whose replies averaged 3,953), and every other recorded run was explicitly raised to the 100,000 cap.
+    // 40,000 was set from a 23,742-character batch and failed on the first verbose corpus it met (ADR-0043).
+    narrative_setting_tokens: 400, narrative_input_chars: 60000, narrative_fold: true,
     // Guards. The pipeline can fail quietly in exactly two ways, and both are worse than an error,
     // because the story keeps working while the memory behind it stops: the summary job keeps failing
     // while the unsummarized tail grows into the prompt, or the tail simply outgrows what anyone

@@ -251,7 +251,8 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
 // --- 7. the input budget default is set for new installs and never silently overwritten -----------
 {
     const fresh = { extensionSettings: { [KEY]: { enabled: true } } };
-    assert.equal(narrativeSettings(fresh).narrative_input_chars, 40000, 'a new install gets the measured default');
+    assert.equal(narrativeSettings(fresh).narrative_input_chars, 60000,
+        'a new install gets the measured default: 40,000 blocked the only recorded long-reply batch (43,658 needed)');
 
     const h = host({ settings: { narrative_input_chars: 18000 } });
     fill(h, 10);

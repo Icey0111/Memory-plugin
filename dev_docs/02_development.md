@@ -9,13 +9,13 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | node test-summary-lifecycle.mjs | Cadence, concurrent reads, joint invalidation and summary transport |
 | node test-anchor-budget.mjs | The never-inject-a-retired-statement rule, even round-robin selection, parked-value reporting, a slash label that keeps its content, a legacy ledger migrated as it stands, and the legacy anchor-budget notice |
 | node test-anchor-changes.mjs | Numbered operations, atomic refusal, missing/empty/explicit-none sections, inline and unbulleted operations, multi-source 来源 lists with per-token validation, inferred-heading recovery and its prose counterexample, malformed fields, long labels, full conditions beyond 240 characters, frozen references, batch diagnostics, the duplicate-target refusal when an update and an end name the same number |
-| node test-anchor-repair.mjs | The one targeted repair after a refused anchor section: validated operations, summary and boundaries preserved when the repair answers "无", replacement-only repair merged and re-validated as one batch, exactly one extra call, a failed repair that still refuses and keeps both attempts, the pre-send budget block, and a repair transport failure that keeps the attempt beside the original refusal, a redundant '结束 A1 旧状态' line repaired away while the legal update still commits, and a repair returning a conflicting end refused as duplicate_target |
+| node test-anchor-repair.mjs | The one targeted repair after a refused anchor section, and the one body repair after a `format` or `over_budget` refusal (a missing body and an over-ceiling body each commit from one repair, and a repair that is still wrong leaves the batch refused): validated operations, summary and boundaries preserved when the repair answers "无", replacement-only repair merged and re-validated as one batch, exactly one extra call, a failed repair that still refuses and keeps both attempts, the pre-send budget block, and a repair transport failure that keeps the attempt beside the original refusal, a redundant '结束 A1 旧状态' line repaired away while the legal update still commits, and a repair returning a conflicting end refused as duplicate_target |
 | node test-runtime-precheck.mjs | The disk-vs-loaded comparison, including the stale `bad_subject` signature this acceptance run recorded |
 | node runtime-precheck.mjs | Live preflight: repo vs deployed disk vs the function sources actually loaded in the page. Exit 0 only when all three agree, 1 when stale, 2 when unknown |
 | node replay-anchor-evidence.mjs | Replay of the 421757c acceptance requests and responses through the current parser with no model call. Exits 0 with a note when the local evidence directory is absent |
 | node eval-anchor-protocol.mjs --out report.json | Opt-in five-call model probe through an open host's summary connection and local CDP endpoint; saves synthetic inputs, raw responses, parsed operations and ledgers without writing chat state. Structural passes require manual semantic review |
 | node acceptance-longchat.mjs --turns <file> --out <dir> | Reusable long-chat acceptance driver. Requires `node runtime-precheck.mjs` to exit 0 first; imports the versioned capture module from the page and refuses an `--out` inside the repository, so chat text and raw responses stay out of it |
-| node acceptance-longchat.mjs --turns <file> --out <dir> --detail-survival | Detail-survival mode. Phase 1 plays a detailed turns file (every detail declares a needle and the question that tests it); the committed summary then decides what phase 2 asks. It asks only the details the summary actually dropped, plus one retained positive control and every declared negative control, all in one probe turn, and prints the four counts - summary-kept / retrieval-recovered / refused / fabricated - with the adjudicated rows written next to the run |
+| node acceptance-longchat.mjs --turns <file> --out <dir> --detail-survival | Detail-survival mode. Phase 1 plays a detailed turns file (every detail declares a needle and the question that tests it); the committed summary then decides what phase 2 asks. It asks only the details the summary actually dropped, plus one retained positive control and every declared negative control - all in one probe turn in `single` mode, or one question per turn with the phase-1 state restored between them in `perTurn` mode - and prints the four counts - summary-kept / retrieval-recovered / refused / fabricated - with the adjudicated rows written next to the run |
 | node test-detail-survival.mjs | The mode's decision logic against captured text: the adaptive retention split over summary prose, active anchors and knowledge; channel attribution from the probe turn's own `injections.thisTurn`; the question-leak refusal; the four counts; and a Chinese-only needle against an English reply recorded as a fixture defect rather than a model miss. No model call |
 | node acceptance-longchat.mjs --out <dir> --restore-snapshot <snap.json> [--restore-persist] | The harness restore. Puts a full snapshot's transcript and derived state back, resets the host's bounded ChatSurface, redisplays the canonical chat and re-applies the fold classes in that order (ADR-0034); a class-only pass cannot cure a stale projection. Needs no turns file and no model call, and does not save the chat unless `--restore-persist` is given |
 | node test-acceptance-capture.mjs | The capture boundary with a simulated transport: both the summary and its targeted repair record request, response and elapsed, two consecutive turns keep separate injected blocks, and the block a turn actually saw is read from `injections.thisTurn` rather than the stale `before`. Also the restore sequence - mutate in place, reset the surface epoch, redisplay, re-apply the fold classes - against a fake host, including a partial host, a second host instance and a snapshot without rows. No model call |
@@ -58,7 +58,8 @@ failure, and a call that settles between two snapshots is collected by id on a l
 dropped. A request that never settled is reported as an incomplete capture, never as a success.
 
 A batch refused for its anchor section is retried once by the host with a targeted repair that shows the model
-its own answer and the rejected lines. The repair is a second call with its own recorded cost; a failed repair
+its own answer and the rejected lines. A body refused for `format` or `over_budget` earns the same single
+repair, recorded as `body_repair`: the request again, a correction and the refused text to cut (ADR-0042). The repair is a second call with its own recorded cost; a failed repair
 still refuses the batch and keeps the original refusal. Replaying a prior run's frozen responses
 (`node replay-anchor-evidence.mjs`) is the cheap way to check a protocol change before paying for story
 generation again.
@@ -68,8 +69,8 @@ obey the same threshold. Freeze the request before dispatch; append/edit outside
 extend its coverage. The request is assembled from the batch's original messages - one entry per message,
 whole text - and the text that is measured is the text that is sent. An over-budget batch is a recorded
 block: no model call, no hidden floor, one record per frozen batch and budget, and no increment of the
-model-failure counter (ADR-0024). A failed call records its stage - transport, empty body, truncated body,
-summary over its accept budget, format - with the input cost and the response status, and a later success
+model-failure counter (ADR-0024). A failed call records its stage - transport, empty_body, truncated, over_budget, format, input_budget,
+anchor_ops - with the input cost and the response status, and a later success
 marks it recovered rather than erasing it (ADR-0025). "Injected" means the host was given the block, and
 the state version, not the floor count, decides staleness. Run test-summary-contract.mjs and
 test-summary-diagnostics.mjs before deploying a summary change.
@@ -115,7 +116,8 @@ reports which stage lost a fact (`model` or `pipeline`), which is what separated
 
 The first attempt (FactSurvival1) never reached the second merge: the batch was blocked with
 `reason: input_budget`, `needed_chars 43,658` against the 40,000 default, a 40,649-character batch of ten
-turns whose replies averaged about 1,800 characters. Per ADR-0024 that is a recorded block - no model call,
+turns whose replies averaged **3,953** characters in this run (max 5,464) - the "about 1,800" written here
+  first was wrong, and a new install now starts at 60,000 (ADR-0043). Per ADR-0024 that is a recorded block - no model call,
 no hidden floor - and the measurement was taken with `narrative_input_chars` raised to 120,000 and restored
 afterwards. The default input budget is a measured limit for long-reply stories, not only for the context
 window.
@@ -168,7 +170,8 @@ whatever the question asked about. Replaying the frozen chat through `packRawEvi
 packer defect rather than a recording error.
 
 ADR-0037 makes the trimmed window the one that covers the most of the question's own terms, keeping the
-head-anchored window as the incumbent and the length, budget and slot count unchanged. Measured on that frozen
+head-anchored window as the incumbent and the length, budget and slot count unchanged; ADR-0041 then put the
+question's **words** above the ranker's n-grams in that comparison. Measured on that frozen
 chat with six authored questions and the same candidate list on both sides (lexical only,
 `recall-baseline.mjs --paraphrases`): answer-in-evidence 3/6 -> 4/6, quoted spans carrying their own answer
 3/30 -> 4/30, 790 -> 783 tokens per query. The recovered question ("灯座内侧有什么痕迹？", needle 两道被磨平)
@@ -227,8 +230,15 @@ empty and the rule returned immediately, while the labelled A/B (`recall-baselin
 `test-narrative-pipeline.mjs` proves it through `buildNarrativeContext` - a long hidden message whose answer
 sits at the end of its first over-share chunk must be quoted with the answer inside, and the test fails if the
 option is removed. Replaying that frozen probe turn: `raw_19` moves from `[0, 231]` to `[103, 334]` and now
-holds 月牙; `raw_9` is unchanged, because no window of that message covers more of the question's words than its
-head does.
+holds 月牙. `raw_9` was still unchanged at that point, which is why ADR-0041 put the question's **words** above
+its n-grams: with that layer it moves to `[290, 489]` and holds 茉莉.
+
+A fixture authored for the missing case closed it: a long **user** turn (the only row a fixture can place
+deterministically) whose answer sits at the end of its first over-share chunk, with the question naming the
+subject next to it. Run with `probeMode: perTurn`, the probe turn quoted that row as `raw_10[287,484]` with
+`trimmed: true`, the window carried `两道被磨平`, and the reply conveyed it - and the offline pre-check on the
+authored row had predicted the same `[287,484]`. That is the first live turn that needed a trim, so ADR-0041 is
+now measured on the shipped path (`ds-trim1`).
 
 ### Live run after the window change (2026-09-14)
 
