@@ -188,7 +188,26 @@ function parseEmbeddingPayload(payload, expectedCount) {
     return vectors;
 }
 
+// One embedding request may not carry every input a caller has. The DashScope-compatible qwen3
+// Embedding route answers a 40-input request with "batch size is invalid, it should not be larger
+// than 20", which made the whole raw-chunk index rebuild throw, deleted narrative_vector, and left
+// dense recall off with nothing but a diagnostics reason to show for it. The transport owns the
+// limit because it is the layer that builds the request; callers only know how many chunks they want
+// indexed. The cap is conservative on purpose: a provider that allows more only pays extra requests,
+// while a provider that allows less cannot be discovered except by failing.
+export const EMBEDDING_REQUEST_BATCH = 20;
+
 async function requestEmbeddings(config,texts,role,fetchImpl) {
+    const all = Array.from(texts || []);
+    if (all.length <= EMBEDDING_REQUEST_BATCH) return await requestEmbeddingBatch(config, all, role, fetchImpl);
+    const vectors = [];
+    for (let i = 0; i < all.length; i += EMBEDDING_REQUEST_BATCH) {
+        vectors.push(...await requestEmbeddingBatch(config, all.slice(i, i + EMBEDDING_REQUEST_BATCH), role, fetchImpl));
+    }
+    return vectors;
+}
+
+async function requestEmbeddingBatch(config,texts,role,fetchImpl) {
     if (isNativeTauriTavern()) await ensureTauriVectorApiKeyLoaded();
     const apiKey=getTauriVectorApiKey(); if(!apiKey) throw new Error('Aetheria Embedding API Key 未配置。请在插件向量 API 区域重新输入并保存；不会读取或修改酒馆自己的 API Key。');
     const baseUrl=resolveOpenAiCompatibleBaseUrl(config.apiUrl), body=buildDirectEmbeddingBody({model:config.model,texts,apiUrl:baseUrl,role}), endpoint=`${baseUrl}/embeddings`;

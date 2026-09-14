@@ -10,6 +10,10 @@ belongs in Git commits and pull requests.
 - A host metadata-write failure that lands after a summary committed is recorded as a persistence problem
   (`persist_error`, stage `metadata_write`) instead of a model failure, and the original-text vector index is
   classified as `raw` rather than `memory`, so a raw query keeps its own threshold.
+- The Tauri Embedding transport splits one insert into provider requests of at most 20 inputs. A
+  DashScope-compatible qwen3 Embedding route rejects a larger batch, and the caller's 40-chunk insert made the
+  whole original-text index rebuild throw: the index record was deleted and dense recall stayed off with only a
+  diagnostics reason to account for it (ADR-0010).
 
 ### Changed
 
