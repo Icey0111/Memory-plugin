@@ -34,8 +34,9 @@ head-anchored window is still the incumbent and only a strictly better window mo
   one still quotes the row that carries its needle and the negative control still quotes nothing.
 - The gain is on mixed questions, which is where the loss was: the six labelled questions name one subject each,
   and both layers already found those answers.
-- Cost: about 1.06 ms per pack with the query against 0.80 ms with none, where the n-gram-only layer measured
-  about 0.97 ms, so the word layer is roughly 0.1 ms.
+- Cost, measured as a pair on the same frozen candidate list (300 packs each): 0.99 ms with the word layer and
+  0.90 ms with n-grams only, so about 0.09 ms per pack. Against 0.80 ms with no query at all, the whole window
+  rule costs roughly 0.2 ms.
 - The limit ADR-0037 recorded still stands: a window moved by the question's own words cannot find an answer
   whose sentence shares no question word at all. The per-turn probe composition is what covers that case, not a
   better window.
