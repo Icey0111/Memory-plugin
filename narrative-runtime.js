@@ -396,6 +396,7 @@ export function updateNarrative(ctx, services) {
             const pastFailure = live.narrative_diagnostics?.summary_last_error;
             const pastRepair = live.narrative_diagnostics?.anchor_repair;
             diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
+                persist_error: null,
                 summary_block: null, summary_batch_changed: null, anchor_parse: parsed.anchor_section,
                 summary_target_tokens: opts.summaryTokens, summary_ceiling_tokens: opts.summaryCeiling,
                 summary_over_target: overTarget ? { at: Date.now(), target: opts.summaryTokens,
@@ -408,8 +409,16 @@ export function updateNarrative(ctx, services) {
                 summary_last_error: pastFailure ? { ...pastFailure, recovered: true, recovered_at: Date.now(),
                     recovered_by: { source_revision: sourceRevision,
                         state_revision: live.narrative_summary.state_revision } } : null });
-            prepare(ctx);
-            persist(ctx);
+            // The state is already on the store, so a metadata-write failure here is a persistence problem,
+            // not a model failure: it must not increment summary_failures or claim stage 'transport' (audit
+            // F-1). A write that fails before the commit still rejects and hides nothing, as it should.
+            try {
+                prepare(ctx);
+                persist(ctx);
+            } catch (error) {
+                diagnose(ctx, { persist_error: { at: Date.now(), stage: 'metadata_write',
+                    reason: bounded(String(error?.message || error)) } });
+            }
         };
         // One check, used after every model call on both paths, so the first answer and the repair can never
         // commit under different conditions. "Current" covers the open chat, the enabled switch, the frozen
@@ -1153,6 +1162,7 @@ export function readNarrativeReport(ctx) {
         summary_state: summarizeState({ ...state, failureWarn: options(settings).failureWarn }),
         summary_block: state.summary_block,
         summary_last_error: store.narrative_diagnostics?.summary_last_error || null,
+        persist_error: store.narrative_diagnostics?.persist_error || null,
         notices: noticesFor(settings),
         // The unit is the floor as a reader of the chat counts it: one user message and the character's
         // reply. The setting has always been in that unit, and every second field that repeated it under a

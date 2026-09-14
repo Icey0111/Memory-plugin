@@ -5,6 +5,12 @@ belongs in Git commits and pull requests.
 
 ## Unreleased
 
+### Fixed
+
+- A host metadata-write failure that lands after a summary committed is recorded as a persistence problem
+  (`persist_error`, stage `metadata_write`) instead of a model failure, and the original-text vector index is
+  classified as `raw` rather than `memory`, so a raw query keeps its own threshold.
+
 ### Changed
 
 - The summary budget is now a soft target with a separate emergency ceiling

@@ -85,6 +85,11 @@ are injected; and three floors were still pending at floor 40.
   4,000-token threshold no longer raises a fault on its own - a stalled, oversized full batch does.
 - `narrative_input_chars` defaults to 40000 for new installs; an existing 18000 is kept and reported as a
   notice rather than overwritten.
+- A host metadata-write failure that lands after the committed state is on the store is recorded as
+  `persist_error` (stage `metadata_write`) and is not counted as a model failure; a write that fails before the
+  commit still rejects and hides nothing (audit F-1). The original-text vector collection is classified as
+  `raw` rather than `memory`, so a raw query keeps its requested threshold and is not judged against the memory
+  index's embedding space (audit F-8).
 
 ## Completed summary-batching work
 

@@ -19,6 +19,8 @@ const calibrated = normalizeEmbeddingProfile({ model: 'm', score_policy: { memor
 assert.equal(resolveCalibratedThreshold(calibrated, 'memory', 0.22), 0.31);
 assert.equal(classifyAetheriaCollection('aetheria_v54_baseline_x'), 'baseline');
 assert.equal(classifyAetheriaCollection('aetheria_v55_setting_x'), 'setting');
+assert.equal(classifyAetheriaCollection('aetheria_v54_raw_deadbeef'), 'raw', 'the original-text index is not memory');
+assert.equal(resolveCalibratedThreshold(calibrated, 'raw', 0.22), 0.22, 'a raw query keeps its requested threshold');
 const views = buildTransportQueryViews('[LAST USER]\nfoo\n\n[CURRENT SCENE ENTITIES]\nA / B\n\n[ACTIVE LOCATION]\nold town');
 assert.ok(views.some(v => v.name === 'focus'));
 assert.ok(views.some(v => v.name === 'entity_scene'));
