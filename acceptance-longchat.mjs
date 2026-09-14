@@ -3,6 +3,14 @@
 //   node acceptance-longchat.mjs --turns <turns.json> --out <directory> [--cdp <url>] [--start 1]
 //        [--batches 10,20,30,40] [--summary-timeout 420000] [--max N]
 //   node acceptance-longchat.mjs --turns <turns.json> --out <directory> --detail-survival
+//   node acceptance-longchat.mjs --out <directory> --restore-snapshot <full-snapshot.json> [--restore-persist]
+//        # put a saved transcript back and rebuild the host surface; no turns file, no model call
+//
+// --restore-snapshot is the harness step a restored chat needs. Replacing ctx.chat without rebuilding the
+// host's bounded ChatSurface leaves the old message roots mounted, and the next reconcile refuses the
+// surviving set ("ChatSurface projection has 3 ranges; maximum is 2"). The restore resets the surface epoch,
+// re-renders the canonical chat through the host, and only then re-applies the plugin's fold classes; a
+// class-only pass such as syncFloorFoldDom cannot do it. It never saves unless --restore-persist is given.
 //
 // --detail-survival is the reproducible form of the detail-survival baseline. Phase 1 plays a turns file
 // whose details each declare a needle and the question to ask about it. After the phase-1 batches commit,
@@ -28,8 +36,12 @@ import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudica
 const args = process.argv.slice(2);
 const valueOf = (name, fallback = null) => { const at = args.indexOf(name); return at >= 0 ? args[at + 1] : fallback; };
 const detailMode = args.includes('--detail-survival');
+const restoreFile = valueOf('--restore-snapshot', null);
+const restorePersist = args.includes('--restore-persist');
 if (!args.includes('--out')) throw new Error('Explicit --out required; acceptance evidence must not be written into the repository.');
-if (!args.includes('--turns')) throw new Error('Explicit --turns required; chat text is not committed.');
+if (!args.includes('--turns') && !restoreFile) {
+  throw new Error('Explicit --turns required (or --restore-snapshot); chat text is not committed.');
+}
 const outDir = valueOf('--out');
 const turnsPath = valueOf('--turns');
 const cdpBase = valueOf('--cdp', 'http://127.0.0.1:9222');
@@ -44,13 +56,28 @@ if (resolvedOut === HERE || resolvedOut.startsWith(HERE + path.sep)) {
   throw new Error('--out must stay outside the repository: ' + resolvedOut);
 }
 
-const rawTurns = JSON.parse(fs.readFileSync(turnsPath, 'utf8'));
-const parsedTurns = parseTurnsFile(rawTurns);
-if (parsedTurns.errors.length) throw new Error('turns file: ' + parsedTurns.errors.join('; '));
-if (detailMode && parsedTurns.legacy) {
-  throw new Error('--detail-survival needs a detailed turns file: a bare array of turn strings carries no needles. See detail-survival.mjs for the schema.');
+// A restore point is read instead of a turns file: --restore-snapshot only puts a saved transcript back.
+let parsedTurns = { legacy: false, cadence: 10, phase1Turns: null, probeMode: 'single',
+  turns: [], details: [], negatives: [], errors: [] };
+let turns = [];
+let restorePoint = null;
+if (restoreFile) {
+  if (!fs.existsSync(restoreFile)) throw new Error('--restore-snapshot file not found: ' + restoreFile);
+  if (detailMode) throw new Error('--restore-snapshot and --detail-survival are separate actions; run them as separate processes');
+  // Parse and validate before the CDP connection: a bad restore point must not patch a live host.
+  restorePoint = JSON.parse(fs.readFileSync(restoreFile, 'utf8'));
+  if (!Array.isArray(restorePoint.chat)) {
+    throw new Error('--restore-snapshot needs a full snapshot with a chat array (deepSnapshot(ctx, true)): ' + restoreFile);
+  }
+} else {
+  const rawTurns = JSON.parse(fs.readFileSync(turnsPath, 'utf8'));
+  parsedTurns = parseTurnsFile(rawTurns);
+  if (parsedTurns.errors.length) throw new Error('turns file: ' + parsedTurns.errors.join('; '));
+  if (detailMode && parsedTurns.legacy) {
+    throw new Error('--detail-survival needs a detailed turns file: a bare array of turn strings carries no needles. See detail-survival.mjs for the schema.');
+  }
+  turns = parsedTurns.turns;
 }
-const turns = parsedTurns.turns;
 fs.mkdirSync(outDir, { recursive: true });
 const jsonlPath = path.join(outDir, 'longchat.turns.jsonl');
 const metaPath = path.join(outDir, 'longchat.meta.json');
@@ -84,13 +111,33 @@ const evaluate = async (expression, timeout = 900000) => {
 // JSON.stringify(promise) is the string '{}', which is how a live run silently recorded empty turn results.
 const asJson = async (expression, timeout) => JSON.parse(await evaluate(awaitJson(expression), timeout));
 
+// A restore does not spend a model call, so it does not patch the host's transport: importing the module
+// is enough. The long-chat runner installs the capture boundary.
 const installExpression = "(async () => {"
   + " const module = await import('/scripts/extensions/third-party/Memory-plugin/acceptance-capture.js');"
+  + " if (" + JSON.stringify(Boolean(restoreFile)) + ") { window.__acceptance = { module: module };"
+  + " return JSON.stringify({ installed: true, capture: false }); }"
   + " const ctx = SillyTavern.getContext();"
   + " window.__acceptance = { module: module, boundary: module.installCapture(ctx) };"
-  + " return JSON.stringify({ installed: true, modelCalls: window.__acceptance.boundary.modelCalls().length });"
+  + " return JSON.stringify({ installed: true, capture: true, modelCalls: window.__acceptance.boundary.modelCalls().length });"
   + " })()";
 console.log('capture installed: ' + (await evaluate(installExpression)));
+
+// The restore action: put a full snapshot's transcript and derived state back, then rebuild the host's
+// bounded surface through its own reset entry points (see acceptance-capture.js). Everything below this
+// branch is the long-chat runner, which a restore does not use.
+if (restorePoint) {
+  const restored = await asJson("(async () => { const result = await window.__acceptance.module.restoreSnapshot("
+    + "SillyTavern.getContext(), " + JSON.stringify(restorePoint) + ", " + JSON.stringify({ save: restorePersist }) + ");"
+    + " return JSON.stringify(result); })()");
+  const restorePath = path.join(outDir, 'restore.json');
+  fs.writeFileSync(restorePath, JSON.stringify({ at: nowIso(), snapshot: restoreFile,
+    rows: restorePoint.chat.length, persisted: restorePersist, result: restored }, null, 2));
+  console.log('restored ' + restorePoint.chat.length + ' rows (persisted=' + restorePersist + '): '
+    + JSON.stringify(restored) + ' -> ' + restorePath);
+  socket.close();
+  process.exit(0);
+}
 
 const snapshot = full => asJson('window.__acceptance.module.deepSnapshot(SillyTavern.getContext(), ' + (full ? 'true' : 'false') + ')');
 const modelCalls = () => asJson('window.__acceptance.boundary.modelCalls()');

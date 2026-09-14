@@ -11,6 +11,7 @@ import path from 'node:path';
 import {
   META_KEY, classifyModelCall, createCaptureBoundary, collectSettled, awaitJson, installCapture, redact,
   stripReasoning, buildTurnRecord, buildBatchEvidence, deepSnapshot, summarizeCall, splitRequest, promptsOf,
+  captureChatRows, resetChatSurface, restoreSnapshot, HOST_SCRIPT_URL,
 } from './acceptance-capture.js';
 
 const request = content => ({ messages: [{ role: 'system', content }], max_tokens: 8192 });
@@ -195,6 +196,71 @@ const reply = content => ({ choices: [{ message: { content }, finish_reason: 'st
   release(reply('late'));
   await pending;
   assert.equal(collectSettled(slow.modelCalls(), collected).length, 1, 'its completion is not lost between snapshots');
+}
+
+// --- 12. the restore path: reset the host's bounded surface before re-applying fold styling ----------
+// The bug this exists for: a harness replaced ctx.chat without rebuilding the bounded ChatSurface, so the
+// old message roots stayed in the DOM and the next reconcile threw "ChatSurface projection has 3 ranges;
+// maximum is 2". syncFloorFoldDom only toggles a class, so it can neither cause nor cure that; the host has
+// to reset its surface epoch and redisplay the canonical array first.
+{
+  const log = [];
+  const makeHost = (sink = log) => ({
+    resetChatSurfaceView: options => { sink.push('reset:' + JSON.stringify(options)); },
+    redisplayChat: async () => { sink.push('redisplay'); },
+    updateViewMessageIds: () => { sink.push('updateView'); },
+    withChatSurfaceStructureMutation: async callback => { sink.push('mutate:start'); await callback(); sink.push('mutate:end'); },
+  });
+  const chat = [{ is_user: true, mes: 'old-a' }, { is_user: false, mes: 'old-b' }];
+  const chatMetadata = {};
+  const ctx = { chat, chatMetadata, saveChat: async () => { log.push('save'); } };
+  const host = makeHost();
+  host.chat = chat;
+  const syncFold = target => { log.push('fold'); return 3; };
+  const snapshot = { chat: [{ is_user: true, mes: 'new-a', extra: { aetheria_v55_folded: true } }, { is_user: false, mes: 'new-b' }],
+    summary: { text: 's' }, anchors: { active: [] }, knowledge: null, diagnostics: { stage: 'x' } };
+
+  const result = await restoreSnapshot(ctx, snapshot, { host, syncFold, save: true });
+  assert.equal(ctx.chat, chat, 'the canonical chat array identity is preserved for the host redisplay');
+  assert.deepEqual(ctx.chat.map(row => row.mes), ['new-a', 'new-b']);
+  assert.equal(ctx.chat[0].extra.aetheria_v55_folded, true);
+  assert.deepEqual(log, ['mutate:start', 'mutate:end', 'save', 'reset:{"includeAuxiliary":true}', 'redisplay', 'fold'],
+    'mutate, persist, reset the epoch, redisplay, then re-apply the fold classes');
+  assert.equal(chatMetadata[META_KEY].narrative_summary.text, 's');
+  assert.equal(chatMetadata[META_KEY].narrative_diagnostics.stage, 'x');
+  assert.equal('narrative_knowledge' in chatMetadata[META_KEY], false, 'a null derived key is removed, not stored as null');
+  assert.deepEqual(result, { reset: true, redrawn: true, folded: 3 });
+
+  // Persistence is opt-in: a restore must not overwrite a chat that is not the test one.
+  const log3 = [];
+  const host3 = makeHost(log3); host3.chat = chat;
+  const ctx3 = { chat, chatMetadata: {}, saveChat: async () => { log3.push('save'); } };
+  await restoreSnapshot(ctx3, snapshot, { host: host3, syncFold: () => 0 });
+  assert.equal(log3.includes('save'), false, 'a restore does not save unless asked');
+
+  // redraw:false reconciles the mounted set instead of a full redisplay.
+  const log2 = [];
+  const host2 = makeHost(log2); host2.chat = chat;
+  const second = await resetChatSurface(ctx, { host: host2, redraw: false,
+    syncFold: () => { log2.push('fold'); return 0; } });
+  assert.deepEqual(log2, ['reset:{"includeAuxiliary":true}', 'updateView', 'fold']);
+  assert.equal(second.redrawn, true);
+
+  // Fail closed: a partial host, a second host instance, and a snapshot without rows are all refused.
+  await assert.rejects(() => restoreSnapshot(ctx, snapshot, { host: { resetChatSurfaceView: () => {}, chat }, syncFold }),
+    /does not expose redisplayChat/);
+  await assert.rejects(() => restoreSnapshot(ctx, snapshot, { host: Object.assign(makeHost(), { chat: [{ mes: 'other' }] }), syncFold }),
+    /not the loaded one/);
+  await assert.rejects(() => restoreSnapshot(ctx, { summary: {} }, { host, syncFold }), /needs snapshot.chat/);
+  assert.equal(HOST_SCRIPT_URL, '/script.js');
+
+  // A full snapshot is a restore point; a reading is not.
+  const full = deepSnapshot(ctx, true);
+  assert.equal(full.chat.length, ctx.chat.length, 'a full snapshot carries the rows');
+  assert.equal(deepSnapshot(ctx, false).chat, null);
+  const weird = captureChatRows({ chat: [{ is_user: true, mes: 'z', run() { return 1; } }] });
+  assert.equal(typeof weird[0].run, 'undefined', 'a non-serialisable row field is dropped, not fatal');
+  assert.equal(weird[0].mes, 'z');
 }
 
 console.log('PASS acceptance capture: both call kinds record raw bodies and elapsed, and consecutive turns keep separate injected blocks');

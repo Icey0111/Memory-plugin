@@ -170,6 +170,24 @@ export function injectionOf(state) {
   };
 }
 
+/**
+ * A JSON-safe copy of the chat rows, for a restore point.
+ *
+ * The full snapshot carries this so a harness can put the transcript back: the host's redisplay refuses
+ * anything but the canonical array, so the rows are needed, not a summary of them. A row that cannot be
+ * serialised degrades to the fields a transcript needs instead of failing the whole snapshot.
+ */
+export function captureChatRows(ctx) {
+  const rows = Array.isArray(ctx && ctx.chat) ? ctx.chat : [];
+  return rows.map(row => {
+    try { return JSON.parse(JSON.stringify(row)); }
+    catch (error) {
+      return { name: row && row.name, is_user: row && row.is_user, is_system: row && row.is_system,
+        mes: String((row && row.mes) || ''), extra: {} };
+    }
+  });
+}
+
 /** A plain-data snapshot of one turn, including both prompt channels. */
 export function deepSnapshot(ctx, full = false) {
   const store = (ctx && ctx.chatMetadata && ctx.chatMetadata[META_KEY]) || {};
@@ -183,12 +201,105 @@ export function deepSnapshot(ctx, full = false) {
   }
   return {
     at: Date.now(), chatId: ctx.chatId, name2: ctx.name2, chatLength: rows.length,
+    // The rows themselves, so a full snapshot is a restore point rather than only a reading.
+    chat: full ? captureChatRows(ctx) : null,
     completeTurns: completeTurnsOf(rows), folded: rows.filter(row => row && row.is_system === true).length,
     anchors: store.narrative_anchors || null, summary: store.narrative_summary || null,
     knowledge: store.narrative_knowledge || null, diagnostics: store.narrative_diagnostics || null,
     rawHistory: { active: history.active || [], recordIds: Object.keys(records).sort(), recordCount: Object.keys(records).length, records: recordOut },
     prompts: promptsOf(ctx),
   };
+}
+
+/**
+ * The host keeps its bounded ChatSurface - one contiguous viewport union the canonical true tail, at most
+ * two index ranges - behind a module that is neither on `ctx` nor on `window`. Replacing chat state
+ * without rebuilding that surface leaves the old message roots in the DOM, and the next reconcile refuses
+ * the surviving set with "ChatSurface projection has 3 ranges; maximum is 2". A class-only pass such as
+ * syncFloorFoldDom cannot fix it: that toggles styling on existing nodes and never touches the projection.
+ *
+ * This is the missing step. It imports the already-loaded host module by URL (an ESM registry returns the
+ * same instance; a URL that differs would re-execute the host, so a caller must pass the URL the page
+ * actually used), resets the surface epoch, re-renders the canonical chat, and only then re-applies the
+ * plugin's fold classes.
+ */
+export const HOST_SCRIPT_URL = '/script.js';
+const HOST_SURFACE_API = ['resetChatSurfaceView', 'redisplayChat'];
+
+/** The host module, or a hard failure: a partial host must never be used to touch the surface. */
+function requireHostApi(module, label) {
+  for (const name of HOST_SURFACE_API) {
+    if (typeof (module && module[name]) !== 'function') {
+      throw new Error(label + ' does not expose ' + name + '; refusing to reset the chat surface');
+    }
+  }
+  return module;
+}
+
+export async function loadHostModule(url = HOST_SCRIPT_URL) {
+  return requireHostApi(await import(url), 'The host module at ' + url);
+}
+
+/** A second host instance has its own canonical chat array: refuse to operate on it. */
+function assertCanonicalHost(host, ctx) {
+  if (host && host.chat && ctx && ctx.chat && host.chat !== ctx.chat) {
+    throw new Error('The host module is not the loaded one (its chat array differs); refusing to touch the surface');
+  }
+}
+
+/** Rebuild the host's bounded surface after the chat array changed underneath it. */
+export async function resetChatSurface(ctx, { host = null, scriptUrl = HOST_SCRIPT_URL, syncFold = null,
+  includeAuxiliary = true, redraw = true } = {}) {
+  const api = requireHostApi(host || await loadHostModule(scriptUrl), 'The host module');
+  assertCanonicalHost(api, ctx);
+  const result = { reset: false, redrawn: false, folded: 0 };
+  api.resetChatSurfaceView({ includeAuxiliary });
+  result.reset = true;
+  if (redraw) {
+    await api.redisplayChat();
+    result.redrawn = true;
+  } else if (typeof api.updateViewMessageIds === 'function') {
+    api.updateViewMessageIds();
+    result.redrawn = true;
+  }
+  const fold = syncFold || (await import('./v55-floor-fold.js')).syncFloorFoldDom;
+  result.folded = fold(ctx);
+  return result;
+}
+
+const RESTORE_STORE_KEYS = [
+  ['summary', 'narrative_summary'], ['anchors', 'narrative_anchors'],
+  ['knowledge', 'narrative_knowledge'], ['diagnostics', 'narrative_diagnostics'],
+];
+
+/**
+ * Put a saved transcript and its derived state back, then rebuild the surface through the host's own path.
+ *
+ * The chat array is spliced in place: the host's redisplay refuses any array but the canonical one, so a
+ * harness that assigns `ctx.chat = rows` is rejected instead of being served a stale surface. The archive
+ * is not restored - the runtime recaptures it from the transcript on the next generation.
+ */
+export async function restoreSnapshot(ctx, snapshot, { host = null, scriptUrl = HOST_SCRIPT_URL,
+  syncFold = null, save = false } = {}) {
+  if (!ctx || !Array.isArray(ctx.chat)) throw new Error('restoreSnapshot needs a host context with a chat array');
+  if (!snapshot || !Array.isArray(snapshot.chat)) {
+    throw new Error('restoreSnapshot needs snapshot.chat; take a full snapshot with deepSnapshot(ctx, true)');
+  }
+  const api = requireHostApi(host || await loadHostModule(scriptUrl), 'The host module');
+  assertCanonicalHost(api, ctx);
+  const apply = () => {
+    ctx.chat.splice(0, ctx.chat.length, ...snapshot.chat.map(row => JSON.parse(JSON.stringify(row))));
+    if (ctx.chatMetadata) {
+      const store = ctx.chatMetadata[META_KEY] || (ctx.chatMetadata[META_KEY] = {});
+      for (const [from, to] of RESTORE_STORE_KEYS) {
+        if (snapshot[from] == null) delete store[to]; else store[to] = snapshot[from];
+      }
+    }
+  };
+  if (typeof api.withChatSurfaceStructureMutation === 'function') await api.withChatSurfaceStructureMutation(apply);
+  else apply();
+  if (save && typeof ctx.saveChat === 'function') await ctx.saveChat();
+  return resetChatSurface(ctx, { host: api, syncFold, includeAuxiliary: true, redraw: true });
 }
 
 /** Add one user turn, generate one normal reply, and retry a blank reply at most twice. */
