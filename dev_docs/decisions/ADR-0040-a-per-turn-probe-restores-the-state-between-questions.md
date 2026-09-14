@@ -31,6 +31,12 @@ shared budget; it is now labelled as one sample instead of being read as a per-i
 
 ## Consequences
 
+- Measured live on 2026-09-14, same fixture, one run per mode: `single` asked four items in one turn and
+  recovered none of the three answerable ones - the tea and the scar were quoted and then cut by the trim, and
+  the bell was conveyed - while `perTurn` asked one item per turn and recovered all three dropped details
+  through the evidence channel, refused the negative control, and quoted each of its rows whole. One run per
+  mode is not a rate and the two runs have different replies; what it establishes is that a mixed question was
+  what made the evidence unreachable in the single-turn composition.
 - A `perTurn` run of N questions costs N generations and N-1 restores. The restore is the same tested path the
   `--restore-snapshot` action uses, and it does not persist.
 - `probeIndependence` is pure and covered offline: `single` reports one sample and the number of competing

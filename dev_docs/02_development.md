@@ -191,7 +191,8 @@ one record now (ADR-0039).
 
 The detail-survival probe now records what its answers are evidence of. `single` (default) asks every
 selected item in one turn, so one reply is one sample of a budget that four to six questions compete for - the
-live run quoted five rows and answered one of four items, with the jasmine row at rank 7 and `entry_cap`.
+live single-turn run quoted five rows and answered one of four items, and the two rows holding the answers it
+missed were quoted and then cut by the trim, not left unranked.
 `perTurn` asks one question per turn and restores the phase-1 snapshot before each later one (the ADR-0034
 restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
 an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
@@ -203,20 +204,30 @@ exists) played 20 turns in a new Seraphina chat, both merges committed, the inpu
 120,000 and restored to 40,000 afterwards. The run wrote its own `turns.fixture.json` and named it in the meta
 file with its sha256: ADR-0038 working live.
 
-It did **not** reproduce the crossing case. This run's floor-10 summary kept the place name (`place` 1/1 kept
-at the last merge), so the probe never asked for it and ADR-0037's window rule was not exercised end to end.
-What the run does measure is where the two refusals went, and the ADR-0039 record answers it with no debugging
-session:
+It did **not** reproduce the crossing case: this run's floor-10 summary kept the place name (`place` 1/1 at
+the last merge), so the probe never asked for it and ADR-0037's window rule was not exercised against a dropped
+fact. What it did measure is where the four asked items went - read from the probe turn's **own** block
+(`injections.thisTurn`, the block the turn's generation set) and not the previous turn's. That is the trap this
+mode was built around, and an analysis script in this session fell into it: the first reading of these numbers
+was taken from the previous build's diagnostics and has been corrected here.
 
-- `茉莉` ranked 7th of 40 candidates and lost to the entry cap (`entry_cap`, 5 slots). The reply answered the
-  tea question with 艾草茶 - another tea that also exists in this run's story. Selection loss, not packing.
-- `月牙` was quoted, but from a shortened window `[0, 231]` that ends eight characters before the word at 239.
-  The reply said 弯月似的: the same shape in other words, which the needle cannot match.
-- The turn's outcomes: 5 `included`, 14 `entry_cap`, no `budget` and no `too_long`.
+- All five quoted rows were shortened (`trimmed: true`). `raw_19` ranked 2nd and holds `月牙`; `raw_9`
+  ranked 5th and holds `茉莉`. In both, the emitted window stopped before the word: the probe turn's block
+  carried `缺角` but neither `月牙` nor `茉莉`.
+- So the two refusals were **packing** losses - quoted and then cut - not selection losses. The turn's
+  outcomes were 5 `included`, 30 `entry_cap`, no `budget` and no `too_long`.
+- The tea reply said 艾草茶, another tea that also exists in this run's story.
 
-So on this chat the packer is limited by the number of slots, not by trimming - and the residual limit written
-into ADR-0037 (a head window that already covers the question's words is never moved) is what left the scar
-just outside its own quote. Both are records; neither was changed by this run.
+A second run of the same fixture with `probeMode: 'perTurn'` - one question per turn, the phase-1 state
+restored between them, four restores confirmed, `independent: true, samples: 5` - recovered **3 of 3 dropped
+details** through the evidence channel and the retained place name through continuity, with the negative control
+still refused. Its quoted rows were short and were quoted whole (`trimmed: false`). That run's floor-20 merge
+failed `over_budget` and did not commit, so its retention reading covers one merge only; the `committed` flag
+added earlier kept that out of the merge count.
+
+One run per mode is not a rate, and the two runs have different generated replies, so the difference is not the
+probe composition alone. What it establishes is narrower and worth having: the same three details that were
+quoted and cut under one mixed question came back whole under three focused ones.
 
 Each run that plays a turns file now writes `<out>/turns.fixture.json` before its first model call: the
 input it actually used, together with the source path, byte count and sha256. Replay it with the ordinary
