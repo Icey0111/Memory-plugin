@@ -2,6 +2,13 @@
 
 Read this file before changing dev_docs. These documents describe the current system.
 
+Start with the AIRP memory product contract at the top of [../AGENTS.md](../AGENTS.md),
+then read [00_project.md](00_project.md) and [01_architecture.md](01_architecture.md).
+After context compaction, restore those responsibilities before choosing new work:
+structured continuity and precise original evidence must cooperate in the actual prompt.
+The implementation plan lives in [Issue #2](https://github.com/Icey0111/Memory-plugin/issues/2);
+planned budget changes must not be described as already implemented.
+
 - Edit current facts in place. Do not append full versions or create local history copies.
 - Git stores historical content; pull requests store implementation discussion and validation.
 - CHANGELOG.md records user-visible release changes. Do not add per-task change_log files.

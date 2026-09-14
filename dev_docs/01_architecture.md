@@ -6,14 +6,21 @@ replaced them is [decisions/ADR-0001](decisions/ADR-0001-narrative-memory-archit
 
 ### 1. The shape of it
 
-Two products come out of the original text, and they are produced for different jobs:
+Two products serve the [product contract](00_project.md#product-contract).
+Original history is authoritative; the following table describes the current implementation,
+not the proposed soft-target budget policy:
 
 | Product | Job | Budget | Rebuilt from |
 | --- | --- | --- | --- |
-| Narrative summary | Let the story continue: where we are, why, who wants what, what is unresolved | narrative_summary_tokens (default 600) | the original text, every N floors |
+| Narrative summary | Let the story continue: where we are, why, who wants what, what is unresolved | narrative_summary_tokens (default 600; currently a hard acceptance cap) | previous summary, active anchors and knowledge boundaries, plus the next N completed turns' original messages |
 | Original-text evidence | Answer a question that needs the exact wording, number or negation | narrative_evidence_tokens (default 1000) | indexed original-text chunks, per generation |
 
 The original text is never thrown away to save space. It is chunked, indexed and quoted.
+The summary does not reread all earlier originals each pass. Saved state, selected state,
+actual prompt injection and correct model use are separate boundaries; source-version validity
+and complete recorded coverage do not prove semantic completeness. Active anchors that do not
+fit their budget remain stored but are parked, without a guarantee that retrieval will recover
+them for a continuation.
 
 ```mermaid
 flowchart TD
@@ -21,7 +28,7 @@ flowchart TD
         R[chat messages] --> C[captureHistory: version each message, keep its id lineage]
         C --> K[chunkHistory: ~700 chars, 100 char overlap]
         K --> B[nextSummaryBatch: completed floors, every N, input budget]
-        B -->|earliest N turns, frozen| M[assemble the request from original messages and measure it]
+        B -->|earliest N turns, frozen| M[assemble original batch plus carried summary, anchors and boundaries; measure the request]
         M -->|over the character budget| BL[block: no call, no hiding, one record]
         M -->|within budget| S[background model: one compact continuity summary]
         S --> V{within the summary token budget?}
@@ -55,7 +62,8 @@ flowchart TD
    collapsed styling is re-applied.
 5. After the generation, the host's events schedule the background pass: at most one summary job per
    chat store at a time, using exactly the earliest N unsummarized completed turns. The request is frozen
-   before dispatch, assembled from the original messages of those turns, and the string that is measured
+   before dispatch, assembled from the original messages of those turns plus the previous summary,
+   active anchors and knowledge boundaries, and the string that is measured
    is the string that is sent. A backlog does not enlarge the batch and a character budget does not split
    it: a batch the budget cannot hold is a block, not a call (ADR-0024).
 

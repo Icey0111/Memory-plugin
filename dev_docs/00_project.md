@@ -1,5 +1,26 @@
 # Project
 
+### Product contract
+
+The user's original statement is preserved in [../AGENTS.md](../AGENTS.md).
+For AI roleplay (AIRP), structured summaries maintain the logic that lets the
+story continue, while retrieval recovers precise original evidence for details
+and factual verification. These are cooperating responsibilities of one memory
+system; neither alone establishes narrative reliability.
+
+Continuity includes necessary causes, current goals and state, unresolved
+commitments, conditions, negations and knowledge boundaries. Original history
+remains authoritative. Summary text and structured state are derived
+interpretations; a source reference does not establish that an interpretation is
+correct, and a retrieved historical statement may have been superseded.
+
+Preserving necessary meaning takes priority over minimizing summary length.
+Equal turn counts do not imply equal information density, and unresolved earlier
+state still needs representation. The intended budget policy separates a soft
+summary-length target and an explicit upper bound from the total injection
+budget. This policy is not implemented yet: the runtime still rejects summary
+bodies above the configured acceptance cap (default 600 tokens).
+
 ### Problem
 
 A SillyTavern roleplay outgrows the model's context window long before the story ends. Every simple
@@ -17,13 +38,15 @@ one can tell afterwards what the model was actually shown.
 
 ### Goals
 
-1. **Continuity at a small, fixed cost.** The prompt carries a compact summary of where the story
-   stands, bounded by an explicit token budget, not by how long the chat is.
+1. **Continuity under explicit resource limits.** The prompt must retain the logic needed for
+   continuation. Summary space should reflect necessary information, with storage, generation
+   limits and injection budgets accounted for separately; an always-small fixed cost is not
+   evidence of preserved meaning.
 2. **Detail on demand.** Original wording stays recoverable: retrieval quotes the original text for
    material the prompt no longer carries, with a source id, a floor and a speaker.
-3. **Nothing hidden without a stand-in.** A floor leaves the prompt only while an accepted summary
-   covers every chunk of it. A summary that fails, overruns its budget, or stops matching the
-   history restores the original floors.
+3. **Nothing hidden without a stand-in.** A floor leaves the prompt only while its accepted
+   representation can be injected and its recorded source coverage is valid. Source coverage is
+   a structural condition, not proof that every necessary fact survived compression.
 4. **Version correctness.** Edits, swipes, deletions and branch changes must not leave a summary or
    an evidence quote pointing at text that no longer exists.
 5. **Traceability.** Every compressed claim can be traced back to the messages it came from, and the
@@ -35,8 +58,10 @@ one can tell afterwards what the model was actually shown.
 - One generation entry: a single interceptor that assembles and injects one reference block and one
   current-state block, and clears both when the host is generating something that is not the story.
 - The original text of the chat, versioned, kept in the chat's own metadata.
-- One narrative continuity summary, regenerated from the original text by a background model call
-  every N floors.
+- One narrative continuity summary, updated by a background model call every N completed turns.
+  The current request combines the previous summary, active anchors and knowledge boundaries
+  with the new batch's original messages. Earlier originals are not reread on every pass, so
+  an earlier omission is not automatically recovered by later summary updates.
 - A mixed index over original-text chunks (lexical now, dense when an embedding backend is
   configured) used to quote evidence back.
 - A plugin-owned world-info ("setting") plane with its own import, index and retrieval lifecycle.
@@ -47,8 +72,10 @@ one can tell afterwards what the model was actually shown.
   to be extracted before the original text can be found again.
 - No model training, fine-tuning, or learned memory readout.
 - No external memory service: the extension works with nothing but the chat client.
-- No second source of truth for generated text: the summary is built from original turns, never from
-  another summary.
+- No second authoritative history: original turns remain the source of truth even though the
+  current summary update carries forward a previous derived summary.
+- No promise that retrieval relevance equals narrative necessity, that all stored active state is
+  injected, or that a structurally valid memory makes the model semantically infallible.
 - No per-actor knowledge enforcement: what a character may know is carried in the summary text, not
   filtered per line. See ADR-0002 for what that gave up.
 
@@ -61,5 +88,7 @@ The solo maintainer, plus SillyTavern users running long multi-hundred-floor cha
 - [01_architecture.md](01_architecture.md) - the pipeline, the modules, and the invariants
 - [03_data_model.md](03_data_model.md) - what is stored, where, and what may be deleted
 - [04_roadmap.md](04_roadmap.md) - what is next and what is explicitly not planned
+- [Issue #2](https://github.com/Icey0111/Memory-plugin/issues/2) - sequenced implementation tasks,
+  evidence requirements, real-call ceilings and stopping conditions
 - [decisions/](decisions/) - the decisions that shaped this, including the retired stack
 - [../README.md](../README.md) - user-facing behaviour
