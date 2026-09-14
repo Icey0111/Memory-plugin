@@ -200,6 +200,22 @@ missed were quoted and then cut by the trim, not left unranked.
 restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
 an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
 
+The character-description channel was rewritten (ADR-0044) after a real chat asked what a character looked like
+and the reply invented it. The channel scored *descriptor words within +/-60 characters of a mention of the
+name*, so a 700-character action beat where the character is physically present (eleven body/weapon words near
+four mentions) beat the paragraph that introduces her (five words, because Chinese names the person after
+describing them). It also reported `detailed: true` for that character while the quoted row never said what she
+looked like. The score is now the densest 140-character descriptor window of the chunk, the lexicon gained the
+clothing and face words it was missing, and the "was she described" reading needs a cluster. On that chat the
+target row moves from score 21 (8th) to 39 (1st) and the evidence quotes a window of the introduction;
+`profileTargets` costs 0.53 ms before and 0.68 ms after (68 chunks, 4 names, min of 9x200), and the labelled
+A/B is unchanged.
+
+A labelled probe set built from that same chat (10 questions, every needle unique) also measured what the
+channel is *not* responsible for: with the profile channel off, only 2 of 10 needles were quoted, and three of
+the misses have the right row quoted with the needle **outside the emitted window** - the residual limit of a
+window driven by the question's own words (ADR-0037/ADR-0041). Ranking and window are separate defects.
+
 A summary body refused for `format` or `over_budget` now earns one repair (ADR-0042): the same request
 again, a correction, and the refused text (bounded to 1,600 characters) to cut rather than rewrite. It is
 recorded as `body_repair` with its own cost, checked against the input budget before sending, run through the

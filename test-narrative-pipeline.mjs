@@ -15,7 +15,7 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     parseAnchorChanges,
     mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall,
-    profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig,
+    profileTargets, profileRecall, describingWindow, SHIPPED_PACK_POLICY, shippedRetrievalConfig,
     summarizeEvidenceCandidates, summarizeEvidenceTrace, EVIDENCE_TRACE_LIMIT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
@@ -1003,6 +1003,65 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const hit = profileRecall(scene, history, { names: ['老周'], packed: [{ source: 'raw_1' }] })[0];
     assert.equal(hit.quoted, true);
     assert.equal(hit.detailed, true, 'the describing passage counts as described, not merely mentioned');
+}
+
+// --- an action scene is not a description, however often the name appears -----------------------
+// A real chat exposed this: a row where the character is physically present for seven hundred
+// characters collected eleven body words near four mentions of her name, and it beat the paragraph that
+// actually introduces her - because that paragraph describes her *before* naming her (ADR-0044).
+{
+    const makeChunk = (id, source, index, text) => ({ id, source, start: 0, end: text.length, index,
+        role: 'assistant', name: 'A', text, hash: id, retrievalText: 'speaker: A (assistant)\n' + text });
+    const intro = '门口站着一个身影，肩上落着松针。她比旁人矮半个头，站得笔直。黑发剪得很短，'
+        + '灰绿色的眼睛扫过屋子，左颧骨上一道细白的疤痕。她穿深绿色的皮甲，外面罩着藤条编成的短斗篷，'
+        + '腰间短刃的刀鞘上刻着图腾。她叫薇斯珀，是林子里的巡林人。';
+    const action = '薇斯珀把斗篷上的灰拍掉，手按在刀柄上，肩背没动，眼睛盯着黑里。'.repeat(4);
+    const scene = [makeChunk('c1', 'raw_1', 1, action), makeChunk('c2', 'raw_2', 3, intro)];
+    const targets = profileTargets(scene, ['薇斯珀'], { visibleSources: new Set() });
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].chunk.source, 'raw_2',
+        'the introduction wins over the action scene: ' + JSON.stringify({ row: targets[0].chunk.source, score: targets[0].score, descriptors: targets[0].descriptors }));
+    assert.ok(targets[0].descriptors >= 8, 'and it wins because the description is a cluster, not a mention count');
+    // The reading that lied: an action row quoted on its own used to report detailed: true for a character
+    // whose looks it never mentioned.
+    const history = { records: { raw_1: { id: 'raw_1', text: action }, raw_2: { id: 'raw_2', text: intro } } };
+    const quotedAction = profileRecall(scene, history, { names: ['薇斯珀'], packed: [{ source: 'raw_1' }] })[0];
+    assert.equal(quotedAction.quoted, true, 'the action row does mention her');
+    assert.equal(quotedAction.detailed, false, 'but quoting it is not describing her');
+    const quotedIntro = profileRecall(scene, history, { names: ['薇斯珀'], packed: [{ source: 'raw_2' }] })[0];
+    assert.equal(quotedIntro.detailed, true, 'the introduction is a description');
+    const window = describingWindow(intro);
+    assert.ok(window.hits.length >= 8, 'the cluster is what the score reads: ' + JSON.stringify(window.hits));
+    assert.ok(window.from < intro.indexOf('薇斯珀'), 'and it is found before the name, where the description lives');
+}
+
+// --- the describing row reaches the prompt through the shipped path ------------------------------
+// The unit test above proves the choice; this proves the choice is what the built prompt carries. The name
+// has to come from the knowledge ledger, because that is where profileNames comes from at runtime.
+{
+    const INTRO = '门口站着一个身影，肩上落着松针。她比旁人矮半个头，站得笔直。黑发剪得很短，'
+        + '灰绿色的眼睛扫过屋子，左颧骨上一道细白的疤痕。她穿深绿色的皮甲，外面罩着藤条编成的短斗篷，'
+        + '腰间短刃的刀鞘上刻着图腾。她叫薇斯珀，是林子里的巡林人。';
+    const ACTION = '薇斯珀把斗篷上的灰拍掉，手按在刀柄上，肩背没动，眼睛盯着黑里。'.repeat(4);
+    const host = makeHost(12, { settings: { narrative_every: 1, narrative_evidence_tokens: 1000 },
+        summarize: async () => '摘要：两人在门口说话。\n【锚点变更】\n无' });
+    const { ctx, chat, services } = host;
+    chat[3].mes = ACTION;
+    chat[5].mes = INTRO;
+    chat.push({ is_user: true, mes: '薇斯珀的外貌是什么？' });
+    for (let pass = 0; pass < 6; pass += 1) await updateNarrative(ctx, services, { force: true });
+    // Seeded after the summary passes, because a pass rewrites the boundary ledger.
+    ctx.chatMetadata[KEY].narrative_knowledge = { version: 1, entries: [
+        { kind: '薇斯珀/知道', text: '薇斯珀/知道：她见过这一幕。', sources: [], unconfirmed: 0 }], updated_at: Date.now() };
+    const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
+    assert.ok(bundle.diagnostics.profile_names.includes('薇斯珀'),
+        'she is a profile target: ' + JSON.stringify({ names: bundle.diagnostics.profile_names, entries: bundle.diagnostics.knowledge_entries }));
+    assert.match(bundle.referenceBlock, /图腾/, 'the prompt quotes the introduction paragraph');
+    const picked = bundle.diagnostics.profile_terms.find(row => row.name === '薇斯珀');
+    assert.ok(picked.descriptors >= 8, 'the channel reads the introduction as a description: ' + JSON.stringify(picked));
+    assert.equal(picked.detailed, true, 'and says she was described');
+    assert.ok((bundle.diagnostics.sources || []).some(source => source.source === 'raw_6'),
+        'the introduction is the quoted row: ' + JSON.stringify((bundle.diagnostics.sources || []).map(s => s.source)));
 }
 
 // --- the packer records what it was given, not only what it quoted -------------------------------
