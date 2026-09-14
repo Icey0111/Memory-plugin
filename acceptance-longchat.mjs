@@ -20,6 +20,12 @@
 // injections.thisTurn, and hands every item to answer-adjudication.mjs. The needles are data in the turns
 // file; nothing is picked by hand at scoring time. See detail-survival.mjs for the schema.
 //
+// Every run that plays a turns file freezes the input it actually used into <out>/turns.fixture.json before
+// the first model call, with the source path, byte count and sha256. The recorded chat can always be
+// replayed, but only the frozen fixture can be re-run as the same fixture - and the file the run was given is
+// not committed and may be gone by the time a later change wants to be compared against it. Replay with the
+// ordinary command, --turns <out>/turns.fixture.json; the meta file names the fixture and its source hash.
+//
 // Both --turns and --out are required, and --out must stay outside the repository: the turns file and the
 // evidence hold real chat text and raw model responses, which are not committed. The capture module is
 // versioned; the data it records is not, and there is no repository-local vault for it. Run
@@ -27,11 +33,12 @@
 // the deployed acceptance-capture.js from the page, so a stale page would record with stale logic.
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest } from './acceptance-capture.js';
 import { parseTurnsFile, continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems,
   buildProbeQuestion, gradeProbeItem, summarizeDetailSurvival, formatDetailReport, buildDetailEvidence,
-  summarizeFactSurvival, formatFactSurvival } from './detail-survival.mjs';
+  summarizeFactSurvival, formatFactSurvival, freezeTurnsFixture } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
 const args = process.argv.slice(2);
@@ -61,6 +68,7 @@ if (resolvedOut === HERE || resolvedOut.startsWith(HERE + path.sep)) {
 let parsedTurns = { legacy: false, cadence: 10, phase1Turns: null, probeMode: 'single',
   turns: [], details: [], negatives: [], errors: [] };
 let turns = [];
+let turnsBytes = null;
 let restorePoint = null;
 if (restoreFile) {
   if (!fs.existsSync(restoreFile)) throw new Error('--restore-snapshot file not found: ' + restoreFile);
@@ -71,7 +79,8 @@ if (restoreFile) {
     throw new Error('--restore-snapshot needs a full snapshot with a chat array (deepSnapshot(ctx, true)): ' + restoreFile);
   }
 } else {
-  const rawTurns = JSON.parse(fs.readFileSync(turnsPath, 'utf8'));
+  turnsBytes = fs.readFileSync(turnsPath);
+  const rawTurns = JSON.parse(turnsBytes.toString('utf8'));
   parsedTurns = parseTurnsFile(rawTurns);
   if (parsedTurns.errors.length) throw new Error('turns file: ' + parsedTurns.errors.join('; '));
   if (detailMode && parsedTurns.legacy) {
@@ -91,6 +100,22 @@ if (detailMode && !restoreFile) {
   }
 }
 fs.mkdirSync(outDir, { recursive: true });
+// Freeze the input before a single model call is spent. The recorded chat can always be replayed, but only
+// a frozen fixture can be *re-run* as the same fixture, and the file this run was given may be gone by
+// then (it is not committed). The frozen file is a turns file itself, so the replay is the ordinary
+// command with --turns pointing at it; the sha256 records which original it came from.
+let turnsFixture = null;
+if (!restoreFile) {
+  const fixturePath = path.join(outDir, 'turns.fixture.json');
+  const frozen = freezeTurnsFixture(parsedTurns, {
+    sourcePath: path.resolve(turnsPath), sha256: createHash('sha256').update(turnsBytes).digest('hex'),
+    bytes: turnsBytes.length, startAt, playedTurns: turns.length, batches });
+  fs.writeFileSync(fixturePath, JSON.stringify(frozen, null, 2));
+  turnsFixture = { file: fixturePath, source: frozen.source, playedTurns: frozen.run.playedTurns,
+    declaredDetails: parsedTurns.details.length, negativeControls: parsedTurns.negatives.length };
+  console.log('frozen fixture: ' + fixturePath + ' sha256=' + frozen.source.sha256.slice(0, 16)
+    + ' turns=' + frozen.run.playedTurns + ' details=' + parsedTurns.details.length);
+}
 const jsonlPath = path.join(outDir, 'longchat.turns.jsonl');
 const metaPath = path.join(outDir, 'longchat.meta.json');
 const evidencePath = path.join(outDir, 'longchat.summary-evidence.json');
@@ -163,6 +188,7 @@ const startSnap = await snapshot(true);
 const meta = {
   startedAt: nowIso(), target: { url: target.url, id: target.id }, turnsPath, outDir, startAt, batches,
   detailMode, legacyTurns: parsedTurns.legacy, probeMode: parsedTurns.probeMode, cadence: parsedTurns.cadence,
+  turnsFixture,
   declaredDetails: parsedTurns.details.length, negativeControls: parsedTurns.negatives.length,
   startSnapshot: { chatId: startSnap.chatId, name2: startSnap.name2, chatLength: startSnap.chatLength,
     completeTurns: startSnap.completeTurns, anchorsActive: startSnap.anchors && startSnap.anchors.active ? startSnap.anchors.active.length : 0 },

@@ -216,6 +216,41 @@ export function parseTurnsFile(raw) {
     return out;
 }
 
+export const TURNS_FIXTURE_SCHEMA_VERSION = 1;
+
+/**
+ * Freeze the turns file a run actually used, so the run can be replayed after the original is gone.
+ *
+ * Why this exists: the fixture behind the first fact-survival runs lived outside the repository and no
+ * longer exists, so those runs can be replayed from the recorded chat but cannot be re-run as the same
+ * fixture - which is exactly what compares a change against them. The frozen file is a turns file in the
+ * schema the loader already accepts, so `parseTurnsFile` reads it back to the same details, kinds,
+ * expectations and controls; it also records the source path, byte count and sha256, because the copy says
+ * what was played while the hash says which file it came from. It copies the decisions, not the source
+ * formatting: the needles it carries are the normalized forms the run matched with.
+ *
+ * Pure and file-free by design - the caller reads the bytes and computes the hash - so the round trip is
+ * testable offline. A run passes this to `freezeTurnsFixture` before it spends a model call.
+ */
+export function freezeTurnsFixture(parsed, { sourcePath = null, sha256 = null, bytes = null,
+    startAt = 1, playedTurns = null, batches = [] } = {}) {
+    const detailRow = item => ({ id: item.id, needle: [...item.needle], question: item.question,
+        kind: item.kind, expect: item.expect });
+    return {
+        schemaVersion: TURNS_FIXTURE_SCHEMA_VERSION,
+        source: { path: sourcePath, sha256, bytes },
+        run: { startAt: Number(startAt) || 1, batches: [...batches],
+            playedTurns: playedTurns == null ? parsed.turns.length : Number(playedTurns) },
+        legacy: Boolean(parsed.legacy),
+        cadence: parsed.cadence,
+        phase1Turns: parsed.phase1Turns,
+        probeMode: parsed.probeMode,
+        turns: parsed.turns.map(turn => ({ text: turn.text, details: (turn.details || []).map(detailRow) })),
+        negativeControls: parsed.negatives.map(item => ({ id: item.id, needle: [...item.needle],
+            question: item.question })),
+    };
+}
+
 /**
  * The text the continuity channel is built from: the committed summary body, the active anchors and the
  * knowledge boundaries. Selection uses the committed store, so a detail the summary dropped is found in

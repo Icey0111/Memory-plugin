@@ -180,6 +180,13 @@ ranks 10th and is dropped by the entry cap, and only the live fused ranking reac
 ranks is a different defect. And a window that already covers as many question terms as any other is left
 where it is, so this repairs the case where the head answers nothing rather than re-ranking every quote.
 
+Each run that plays a turns file now writes `<out>/turns.fixture.json` before its first model call: the
+input it actually used, together with the source path, byte count and sha256. Replay it with the ordinary
+command and `--turns <out>/turns.fixture.json`. The recorded chat can always be replayed, but only the frozen
+fixture can be re-run as the same fixture, and the file a run was given is not committed - the fact-survival
+fixture was lost that way, which is why those runs cannot be compared against a later change under the same
+input. See ADR-0038.
+
 Run at least 30 completed turns to exercise three automatic summaries. Record summary responses
 (requested output cap, finish reason, body length, reasoning usage when returned), covered sources,
 folded rows, quoted evidence, query, and actual character replies. Keep original text authoritative.

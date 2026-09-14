@@ -16,7 +16,7 @@ import {
   continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems, buildProbeQuestion,
   attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival,
   formatDetailReport, buildDetailEvidence, matchNeedle, FACT_KINDS, DEFAULT_FACT_KIND, isMustKeep,
-  summarizeFactSurvival, formatFactSurvival, leaksNeedle,
+  summarizeFactSurvival, formatFactSurvival, leaksNeedle, freezeTurnsFixture, TURNS_FIXTURE_SCHEMA_VERSION,
 } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
@@ -268,6 +268,9 @@ const adjudicate = graded => {
   assert.ok(source.includes('record.injections.thisTurn'), 'grading reads the block this turn saw');
   assert.ok(!source.includes('injections.before'), 'the probe phase never reads the previous turn');
   assert.ok(source.includes('question.leaks'), 'a question that contains its own answer is refused');
+  assert.ok(source.includes('turns.fixture.json'), 'the run freezes the input it actually used');
+  assert.ok(source.includes('freezeTurnsFixture'), 'the frozen file is written by the versioned module');
+  assert.ok(source.includes("createHash('sha256')"), 'the source file is identified by its hash');
 }
 
 // --- 11. paraphrase tolerance: the reading follows the fact, not the author's wording ----------------
@@ -361,6 +364,49 @@ const adjudicate = graded => {
   const kept = summarizeFactSurvival([{ id: 'd-bell', kind: 'detail' }], [{ batchTurn: 20, retained: ['d-bell'] }]);
   assert.deepEqual(kept.incidentalKeptAtLastMerge, ['d-bell']);
   assert.ok(formatFactSurvival(kept).includes('incidental still occupying the summary: d-bell'));
+}
+
+// --- 13. a run freezes the turns file it used, and the frozen file replays as the same fixture ---------
+{
+  // The fixture behind the first fact-survival runs was outside the repository and is gone: those runs can
+  // be replayed from the recorded chat but cannot be re-run as the same fixture. The freeze is what makes a
+  // later change comparable, so the round trip is the property that matters - not that a file was written.
+  const raw = {
+    cadence: 10, phase1Turns: 2, probeMode: 'single',
+    turns: [
+      { text: '第一回合', details: [
+        { id: 'k-place', needle: ['青石渡'], question: '这个渡口叫什么名字？', kind: 'place', expect: 'summary' },
+        { id: 'd-bell', needle: '缺了一角', question: '那只铜铃有什么缺损？', kind: 'detail', expect: 'dropped' }] },
+      { text: '第二回合' },
+    ],
+    negativeControls: [{ id: 'n-color', needle: ['深绿', 'dark green'], question: '借来的灯笼是什么颜色？' }],
+  };
+  const parsed = parseTurnsFile(raw);
+  assert.deepEqual(parsed.errors, []);
+  const frozen = freezeTurnsFixture(parsed, { sourcePath: 'D:/elsewhere/d-fact.json', sha256: 'a'.repeat(64),
+    bytes: 1234, startAt: 1, playedTurns: 2, batches: [10, 20] });
+  assert.equal(frozen.schemaVersion, TURNS_FIXTURE_SCHEMA_VERSION);
+  assert.equal(frozen.source.sha256, 'a'.repeat(64));
+  assert.equal(frozen.source.path, 'D:/elsewhere/d-fact.json');
+  assert.deepEqual(frozen.run, { startAt: 1, batches: [10, 20], playedTurns: 2 });
+  const replayed = parseTurnsFile(JSON.parse(JSON.stringify(frozen)));
+  assert.deepEqual(replayed.errors, []);
+  assert.equal(replayed.cadence, parsed.cadence);
+  assert.equal(replayed.phase1Turns, parsed.phase1Turns);
+  assert.equal(replayed.probeMode, parsed.probeMode);
+  assert.deepEqual(replayed.turns, parsed.turns, 'the frozen file reloads to the same turns and details');
+  assert.deepEqual(replayed.details, parsed.details, 'including each needle, kind and expectation');
+  assert.deepEqual(replayed.negatives, parsed.negatives);
+  // A bare array of turn strings freezes into the detailed schema with no declared details, because that is
+  // the schema the loader validates; the text is what the run played and it survives unchanged.
+  const frozenLegacy = freezeTurnsFixture(parseTurnsFile(['只有文本']), { playedTurns: 1, batches: [] });
+  const back = parseTurnsFile(frozenLegacy);
+  assert.equal(frozenLegacy.legacy, true);
+  assert.deepEqual(back.errors, []);
+  assert.deepEqual(back.turns.map(turn => turn.text), ['只有文本']);
+  assert.deepEqual(back.details, []);
+  assert.deepEqual(back.negatives, []);
+  assert.equal(back.cadence, 10);
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');

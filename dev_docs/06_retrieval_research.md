@@ -104,6 +104,8 @@ Use the durable decisions for earlier measurements:
 - [ADR-0022](decisions/ADR-0022-the-packer-never-quotes-the-same-text-twice.md): quotation deduplication.
 - [ADR-0037](decisions/ADR-0037-a-trimmed-quote-follows-the-question.md): where inside an over-share span the
   quote starts, measured as a labelled A/B on a frozen chat (3/6 -> 4/6 answers in evidence, no regression).
+- [ADR-0038](decisions/ADR-0038-a-run-freezes-the-turns-file-it-played.md): a run freezes the turns file it
+  played, so a later change can be compared against it under the same input.
 
 Further ranking changes need fixed query classes and independent answer labels. More summaries or
 more retrieval channels do not by themselves demonstrate improvement.
