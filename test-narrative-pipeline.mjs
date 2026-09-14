@@ -754,6 +754,16 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const pinned = packRawEvidence(ranked, history, { maxTokens: 1000, maxEntries: 4, visibleSources: new Set() });
     assert.equal(pinned.sources.length, 4, 'an explicit slot count still overrides the derivation');
 
+    // The switch that trades that reach for the tail of a long anchor, and the fixture where the other side of
+    // the trade shows. These rows are 300 characters of CJK, about 310 tokens, against a 200-token share, so
+    // charging each span its own cost reaches four messages instead of five - where a real English chat's
+    // 700-character chunk is about 190 tokens and fits the share either way. Shipped default: off.
+    const charged = packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set(), spanCost: true });
+    assert.equal(charged.sources.length, 4, 'charging a span its own cost reaches one fewer message here');
+    assert.ok(charged.tokens <= 1000, 'and the budget still holds: ' + charged.tokens);
+    assert.equal(packRawEvidence(ranked, history, { maxTokens: 1000, visibleSources: new Set() }).sources.length, 5,
+        'the shipped default still reaches five, because the reach is what this switch spends');
+
     // A policy nobody implements falls back to the one the runtime uses, not to nothing.
     const unknown = packRawEvidence(ranked, history, { maxTokens: 600, maxEntries: 2,
         visibleSources: new Set(), policy: 'magic', query: ask });

@@ -13,9 +13,13 @@
 //     node recall-baseline.mjs <dir-or-file> [...]    # explicit chat files or directories
 //     node recall-baseline.mjs --limit 8 --probes 80
 //     node recall-baseline.mjs --scorer bm25 --pack submodular --paraphrases <file>
+//     node recall-baseline.mjs --span-cost --paraphrases <file>
 //
 // The --scorer and --pack switches exist so a retrieval change can be attributed to the rule that
 // changed rather than to the version that shipped it: idf and greedy reproduce the old behaviour.
+// --span-cost is the same kind of switch for the evidence budget: it charges a span its own cost
+// instead of the fair share, which keeps the tail of an anchor that slightly overruns its share and
+// reaches fewer messages when anchors routinely overrun it. Off is what ships (raw-history.js).
 //
 // Reading is all it does. Nothing is written, and the plugin is never loaded.
 
@@ -54,6 +58,7 @@ const againstFile = word('against', null);
 const SCORER = word('scorer', 'bm25') === 'idf' ? 'idf' : 'bm25';
 const PACK = word('pack', 'greedy');
 const POLICY = ['submodular', 'relevance'].includes(PACK) ? PACK : 'greedy';
+const SPAN_COST = args.includes('--span-cost');
 const EVIDENCE_TOKENS = flag('evidence', 1000);
 // Zero means the slot count the budget pays for, which is what the plugin uses when nobody overrides it.
 const EVIDENCE_ENTRIES = flag('entries', 0) || evidenceSlots(EVIDENCE_TOKENS);
@@ -272,7 +277,7 @@ function measure(chat) {
         const ranked = rankRawChunks(chunks, probe.query, denseFor(chunks, probe.query),
             { scorer: SCORER, denseWeight: DENSE_WEIGHT });
         const packed = packRawEvidence(ranked, history, { maxTokens: EVIDENCE_TOKENS,
-            maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: probe.query });
+            maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: probe.query, spanCost: SPAN_COST });
         if (packed.text.includes(probe.needle)) found += 1;
         const rank = ranked.findIndex(entry => entry.chunk.text.includes(probe.needle));
         if (rank >= 0) { candidateHit += 1; ranks.push(rank); }
@@ -345,7 +350,7 @@ function measureParaphrases(chats, entries) {
             const ranked = rankRawChunks(chat.chunks, entry.question, denseFor(chat.chunks, entry.question),
                 { scorer: SCORER, denseWeight: DENSE_WEIGHT });
             const packed = packRawEvidence(ranked, chat.history, { maxTokens: EVIDENCE_TOKENS,
-                maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: entry.question });
+                maxEntries: SLOTS, visibleSources: new Set(), policy: POLICY, query: entry.question, spanCost: SPAN_COST });
             const where = attribute(ranked, packed, entry.needle, chat.history.records, chat.chunks);
             const signals = rankingSignals(ranked);
             row.rank = where.rank;
@@ -408,7 +413,7 @@ function measureParaphrases(chats, entries) {
         all: rate(counted), precision: spans ? carrying / spans : null, tokens: median(counted.map(row => row.tokens)),
         drops: Object.fromEntries(byRule) };
     if (dumpFile) {
-        fs.writeFileSync(dumpFile, JSON.stringify({ scorer: SCORER, pack: POLICY,
+        fs.writeFileSync(dumpFile, JSON.stringify({ scorer: SCORER, pack: POLICY, spanCost: SPAN_COST,
             evidenceTokens: EVIDENCE_TOKENS, entries: EVIDENCE_ENTRIES, pinnedEntries: Boolean(SLOTS), summary,
             rows: results.map(row => ({ question: row.question, kind: row.kind, chat: row.chat,
                 occurrences: row.occurrences, found: row.found, rank: row.rank, slot: row.slot, drop: row.drop,
