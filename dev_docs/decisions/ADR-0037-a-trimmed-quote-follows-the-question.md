@@ -25,9 +25,11 @@ the same budget to answer nothing.
 The trim branch of `fitEvidenceSpan` chooses *where* the window sits, not only how long it is. Candidate
 starts are the occurrence positions of the question's own terms in the matched text, each positioned at the
 window's start and at its end; the head-anchored window is the incumbent, and only a window covering strictly
-more distinct question terms displaces it. Terms come from the ranker's own tokenizer, so a window moves by
+more distinct question terms displaces it. Terms came from the ranker's own tokenizer, so a window moves by
 exactly the terms that made the message rank, and one-character terms are dropped because they occur several
-times per sentence. Terms are capped at 256 (longest first) and candidate starts at 400, which is what bounds
+times per sentence. **ADR-0041 replaces this term rule**: the question's segmented words are compared first and
+the n-grams underneath them second, because n-grams alone match prose that shares two characters (see the
+Correction below). Terms are capped at 256 (longest first) and candidate starts at 400, which is what bounds
 the cost. The growth branch, the per-slot share, the entry count and the total budget are untouched: the window
 keeps its length, so the number of messages reached and the tokens spent do not change.
 

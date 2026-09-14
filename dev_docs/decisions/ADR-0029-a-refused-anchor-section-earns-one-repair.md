@@ -102,7 +102,8 @@ operations preserved when the repair answers '无' (including the review defect 
 the repair's own summary being ignored, kept-plus-replacement merged and re-validated as one batch, an atomic
 refusal when the replacement is still invalid, the pre-send input-budget block, a repair transport failure that
 keeps the attempt beside the original refusal with usage marked unknown, disabling the plugin, editing a covered
-row and switching chat during the repair, and the non-format failure that is not repaired. It also pins the
+row and switching chat during the repair. (The non-format failure it used to pin - a missing summary body - is
+now repaired by ADR-0042's body repair, and the test covers that path instead.) It also pins the
 update/end conflict: a repair that returns a valid '结束 A1' naming a record the same batch updated is refused
 as a duplicate target.
 'test-runtime-precheck.mjs' pins the comparison with the stale signature this run recorded.
