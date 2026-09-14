@@ -15,7 +15,7 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     parseAnchorChanges,
     mergeKnowledge, formatAnchors,
     RAW_CHUNK_SIZE, evidenceSlots, DENSE_FUSION_WEIGHT, entityTargets, entityRecall,
-    profileTargets, profileRecall } from './raw-history.js';
+    profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
@@ -890,6 +890,39 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const visible = entityRecall(scene, sceneHistory, { query: '老周问起那盏铜灯',
         visibleSources: new Set(['raw_1', 'raw_2', 'raw_3']), packed: [] });
     assert.equal(visible.length, 0, 'a term the transcript still shows is not something to recall');
+}
+
+// --- 16. the trace states which retrieval algorithm ran -------------------------------------------
+// "Dense was on" is not a fact about strength: the shipped dense vote is 0.1, and the packer's policy was not
+// reported at all - the offline submodular packer lives in the same module as the shipped one. The
+// configuration is built from the constants the ranker and packer default to, so the report cannot drift
+// from what runs, and the runtime names the policy instead of inheriting it.
+{
+    const rowOf = (id, text, index) => ({ id, index, role: 'assistant', name: 'A', text });
+    const chunkOf = (source, start, end, index) => ({ id: source + ':' + start + ':' + end, source, start, end,
+        index, role: 'assistant', name: 'A', text: '', hash: 1, retrievalText: '' });
+    const historyOf = records => ({ version: 1, sequence: Object.keys(records).length,
+        active: Object.keys(records), records });
+    const shipped = shippedRetrievalConfig();
+    assert.deepEqual(shipped, { scorer: 'bm25', rrf_k: 60, lexical_weight: 1, dense_weight: 0.1,
+        entity_weight: 0.5, profile_weight: 0.6, pack_policy: 'greedy' },
+    'the shipped configuration is the measured one, and it is stated in one place');
+    assert.equal(SHIPPED_PACK_POLICY, 'greedy', 'the runtime ships the greedy packer');
+    const plain = packRawEvidence([{ chunk: chunkOf('raw_1', 0, 12, 1) }],
+        historyOf({ raw_1: rowOf('raw_1', '管家点了点头，钥匙仍在。', 1) }), { maxTokens: 400 });
+    assert.equal(plain.policy, SHIPPED_PACK_POLICY,
+        'the packer default is the shipped policy, so a runtime call that omits it still ships greedy');
+    const experiment = packRawEvidence([{ chunk: chunkOf('raw_1', 0, 12, 1) }],
+        historyOf({ raw_1: rowOf('raw_1', '管家点了点头，钥匙仍在。', 1) }),
+        { maxTokens: 400, policy: 'submodular', query: '钥匙' });
+    assert.equal(experiment.policy, 'submodular', 'the experiment is reachable only by asking for it by name');
+    const host = makeHost(6);
+    await updateNarrative(host.ctx, host.services, { force: true });
+    const bundle = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });
+    assert.deepEqual(bundle.diagnostics.retrieval_config, shipped,
+        'and every build reports exactly what it ran');
+    assert.deepEqual(readNarrativeReport(host.ctx).retrieval_config, shipped,
+        'the read-only report states the same, so the panel can show it without running a generation');
 }
 
 

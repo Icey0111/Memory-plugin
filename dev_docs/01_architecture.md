@@ -49,6 +49,25 @@ flowchart TD
     end
 ```
 
+**The shipped retrieval path**, once, because those layers are not equally load-bearing and one of them is
+an offline experiment that lives in the same module as the shipped packer:
+
+| Layer | Ships? | Rule or weight | Decision |
+| --- | --- | --- | --- |
+| Query planning | yes | focused for a request, legacy for a continuation; parked anchors are appended | retrieval-query.js |
+| Lexical | yes | BM25, weight 1 | baseline-index.js |
+| Dense | yes, when configured | weight 0.1 (sweep: 0 → 63%, 0.1 → 65%, 0.2 → 62%, 0.35 → 58%, 1.0 → 58%) | ADR-0015 |
+| Situation terms | yes | weight 0.5, at most 8 rare terms of the current scene | ADR-0019, ADR-0022 |
+| Character description | yes | weight 0.6, at most 4 named characters in the scene | ADR-0020 |
+| Fusion | yes | reciprocal rank fusion, k = 60, one vote per channel | ADR-0015 |
+| Cross-encoder rerank | optional; off in the acceptance install | reorders the shortlist only, and is the only extra model round-trip per turn | ADR-0016 |
+| Packer | one of two | `greedy` ships (rank order, one span per message, no repeated text, under the token budget); `submodular`/`relevance` is a ruler-only experiment | ADR-0014, ADR-0022 |
+
+`shippedRetrievalConfig()` builds that list from the constants the ranker and the packer default to, and every
+build reports it as `retrieval_config`, so "which layers ran, and how strong was each" is answerable from a
+trace rather than by reading the module. Listing the channels without their weights cannot tell a weak channel
+from a decisive one: "dense was on" reads the same at 0.1 and at 1.0.
+
 ### 2. Life of one generation
 
 1. The host calls the single interceptor (aetheriaUnifiedMemoryV54Interceptor).
@@ -143,6 +162,8 @@ the chat file keeps (ADR-0004).
 | N20 | A batch refused for its anchor section keeps the operations, summary and boundaries the first answer already validated; one targeted repair supplies only replacements for the rejected lines, and kept plus replacement lines are re-parsed as one batch. The repair is budget-checked before it is sent, costed apart, and both paths share one final current-state check (ADR-0029) | anchorRepairRequest, evaluateAnswer, commitMerged, stillFrozen |
 | N21 | A live acceptance run starts only after the repo, the deployed disk and the loaded module agree; the loaded module is hashed, never inferred from the served file (ADR-0029) | runtime-precheck.mjs |
 | N22 | `anchors_same_subject` is a same-label record count, not a contradiction detector, and no label authorizes a replacement (ADR-0027, ADR-0029) | countAnchorCollisions, warningsFor |
+| N23 | The runtime names the packer policy it ships instead of inheriting a default, and every build reports the retrieval configuration built from the same constants the ranker and the packer use, so the experiment cannot be mistaken for the shipped path (ADR-0015, ADR-0016) | SHIPPED_PACK_POLICY, shippedRetrievalConfig |
+| N24 | The knowledge-boundary block reports what it injected and what the budget left out, the way the anchor block does; an accepted entry that does not fit is named instead of silently omitted | selectKnowledge, warningsFor, readNarrativeReport |
 
 ### 6. What this architecture does not do yet
 

@@ -2,6 +2,7 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     summaryMessages, summaryRequest, summaryBlockState, anchorRepairRequest, stateRevisionOf,
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
     selectAnchors, selectKnowledge, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
+    SHIPPED_PACK_POLICY, shippedRetrievalConfig,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
     summaryLengthVerdict } from './raw-history.js';
@@ -956,7 +957,11 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         }
     }
     const ranked = reranked.ranked;
-    const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources });
+    // The policy is named here rather than left to the packer's default, so the runtime module states which
+    // packer it ships and a future edit cannot switch a live prompt to the offline submodular experiment by
+    // changing a default somewhere else.
+    const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources,
+        policy: SHIPPED_PACK_POLICY });
     // The metric the hand-written probe runs had to be replaced by: of the rare terms of this situation that
     // exist only in hidden floors, how many came back with the evidence that was actually packed.
     const entityState = entityRecall(chunks, history, { query, visibleSources, packed: evidence.sources });
@@ -1033,6 +1038,9 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         rerank_cost: reranked.metrics || null,
         channels: { lexical: ranked.filter(row => row.channels.includes('lexical')).length,
             vector: ranked.filter(row => row.channels.includes('vector')).length },
+        // What the retrieval layers are, not only how many candidates each returned. "Dense was on" reads the
+        // same at a 0.1 vote and at a 1.0 vote, and the packer's policy was not stated anywhere in the trace.
+        retrieval_config: shippedRetrievalConfig(),
         vector_available: Boolean(index?.available && !vectorError),
         vector_error: vectorError || live.narrative_diagnostics?.vector_reason || null,
         summary_error: live.narrative_diagnostics?.summary_error || null,
@@ -1241,6 +1249,7 @@ export function readNarrativeReport(ctx) {
         entity_candidates: store.narrative_diagnostics?.entity_candidates || 0,
         entity_metric: 'query_term_coverage_only_not_quality',
         query_strategy: store.narrative_diagnostics?.query_strategy || null,
+        retrieval_config: shippedRetrievalConfig(),
         retrieval_parked_anchors: store.narrative_diagnostics?.retrieval_parked_anchors || null,
         retrieval_mode: store.narrative_diagnostics?.retrieval_mode || null,
         asked_status: store.narrative_diagnostics?.asked_status || 'not_measured',

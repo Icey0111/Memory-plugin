@@ -37,6 +37,11 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- The shipped retrieval path is written down once (dev_docs/01_architecture.md) and reported per generation as
+  `retrieval_config`: scorer, fusion `k`, each channel's weight and the packer policy. "Dense was on" reads the
+  same at the shipped 0.1 vote and at 1.0, and the packer's policy was not stated in the trace at all. The
+  submodular packer is named as the ruler-only experiment it is, and the runtime passes `SHIPPED_PACK_POLICY`
+  explicitly instead of inheriting a default, so a change to the experiment cannot change a live prompt (N23).
 - `acceptance-capture.js` and `acceptance-longchat.mjs`: a versioned, reusable long-chat acceptance runner.
   The capture boundary records the raw request, response and elapsed time of the summary call *and* of its
   targeted repair - the repair prompt does not carry the summary marker, which is how the 421757c run lost it -
