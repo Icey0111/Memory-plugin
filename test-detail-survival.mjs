@@ -17,7 +17,7 @@ import {
   attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival,
   formatDetailReport, buildDetailEvidence, matchNeedle, FACT_KINDS, DEFAULT_FACT_KIND, isMustKeep,
   summarizeFactSurvival, formatFactSurvival, leaksNeedle, freezeTurnsFixture, TURNS_FIXTURE_SCHEMA_VERSION,
-  probeIndependence,
+  probeIndependence, channelAttribution,
 } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
@@ -444,6 +444,14 @@ const adjudicate = graded => {
   assert.deepEqual(evidence.probes.map(probe => probe.items), [['a'], ['b']]);
   assert.equal(buildDetailEvidence({ at: 'now' }).probeMode, 'single');
   assert.equal(buildDetailEvidence({ at: 'now' }).independence.independent, false);
+  // A run whose floors were never folded reads every answer as "conveyed with no channel", which the report
+  // counts as fabricated. Measured on the forced-repair run: five fabrications that were nothing of the kind.
+  const visible = buildDetailEvidence({ at: 'now' });
+  assert.equal(visible.attribution.meaningful, false);
+  assert.ok(visible.attribution.note.includes('不能解释为编造'));
+  assert.equal(channelAttribution({ foldedRows: 20, summaryCommitted: true }).meaningful, true);
+  assert.equal(channelAttribution({ foldedRows: 0, summaryCommitted: true }).meaningful, false);
+  assert.equal(channelAttribution({ foldedRows: 20, summaryCommitted: false }).meaningful, false);
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');

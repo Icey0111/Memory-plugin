@@ -584,14 +584,31 @@ export function probeIndependence({ probeMode = 'single', probes = [] } = {}) {
             : unrestored + ' 个较晚的问题没有还原状态，读得到前面的回复' };
 }
 
+/**
+ * Whether the channel reading means anything for this run.
+ *
+ * The four outcomes are read from what the probe turn's own block carried against what the reply said. That
+ * comparison needs the floors to be hidden: with no committed summary nothing is folded, the whole transcript
+ * is in the prompt, and a model that answers from it produces "conveyed with no channel" for every item - which
+ * the report counts as fabricated. Measured on the forced-repair run, where the batch was refused and the
+ * transcript stayed visible: five fabrications that were nothing of the kind.
+ */
+export function channelAttribution({ foldedRows = 0, summaryCommitted = false } = {}) {
+    const meaningful = Boolean(summaryCommitted) && Number(foldedRows) > 0;
+    return { foldedRows: Number(foldedRows) || 0, summaryCommitted: Boolean(summaryCommitted), meaningful,
+        note: meaningful ? '折起的楼层不在提示里，通道读数有效'
+            : '没有提交的摘要或没有折起的楼层：原文仍在提示里，通道读数不能解释为编造' };
+}
+
 /** The run record written outside the repository, with the block and reply it was read from. */
 export function buildDetailEvidence({ at, probeTurns = [], phase1Last = null, retention = null, positive = null,
     items = [], probes = [], adjudicationErrors = [], adjudicationSummary = null, survival = null,
-    probeMode = 'single' } = {}) {
+    probeMode = 'single', foldedRows = 0, summaryCommitted = false } = {}) {
     return {
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,
         at, phase1Last,
         probeMode,
+        attribution: channelAttribution({ foldedRows, summaryCommitted }),
         independence: probeIndependence({ probeMode, probes }),
         probeTurns,
         positiveControl: positive ? positive.id : null,

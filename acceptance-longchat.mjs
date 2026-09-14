@@ -358,11 +358,18 @@ if (detailMode) {
     const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items });
     const detailEvidence = buildDetailEvidence({ at: nowIso(), probeTurns: probes.map(probe => probe.turn),
       phase1Last, retention, positive, items, probes, adjudicationErrors: adjudication.errors,
-      adjudicationSummary, survival, probeMode: parsedTurns.probeMode });
+      adjudicationSummary, survival, probeMode: parsedTurns.probeMode,
+      foldedRows: Array.isArray(committed.folded) ? committed.folded : Number(committed.folded) || 0,
+      summaryCommitted: Boolean(committed.summary && committed.summary.text) });
     fs.writeFileSync(path.join(outDir, 'detail-survival.json'), JSON.stringify(detailEvidence, null, 2));
     fs.writeFileSync(path.join(outDir, 'detail-survival.adjudication.jsonl'),
       adjudication.rows.map(row => JSON.stringify(row)).join('\n') + '\n');
     console.log('DETAIL-SURVIVAL samples: ' + JSON.stringify(detailEvidence.independence));
+    if (!detailEvidence.attribution.meaningful) {
+      console.log('DETAIL-SURVIVAL notice: ' + detailEvidence.attribution.note + '（folded='
+        + detailEvidence.attribution.foldedRows + ', summary=' + detailEvidence.attribution.summaryCommitted
+        + '）；本轮的 channel/编造 读数不作结论。');
+    }
     console.log(formatDetailReport(survival));
     for (const outcome of survival.outcomes) {
       console.log('  probe ' + outcome.id + ' kind=' + outcome.kind + ' fact=' + outcome.factKind + ' channel=' + outcome.channel

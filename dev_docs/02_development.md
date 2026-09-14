@@ -207,6 +207,12 @@ repaired answer 172 tokens against the ceiling, batch still refused with `recove
 cost recorded. A first forcing attempt at a 300-token ceiling needed no repair - the model obeyed the stated
 ceiling - which is one run, not a rate. `input_budget` stays an unrepaired local block (ADR-0024).
 
+The detail-survival record now also carries an `attribution` reading, because the forced-repair run showed what
+a refused batch does to the numbers: with no committed summary nothing is folded, the whole transcript stays in
+the prompt, and every item reads as "conveyed with no channel", which the report counts as fabricated. That run
+printed five fabrications that were nothing of the kind. `channelAttribution` marks such a run
+(`meaningful: false`) and the driver prints the notice instead of letting the counts be read as conclusions.
+
 The evidence window (ADR-0037) is now moved by the question's **words** first and its n-grams second
 (ADR-0041). The n-grams alone had matched fragments that straddle two question words, so on the frozen probe
 turn the head window of the tea answer covered two fragments and no question word and nothing moved. With the
