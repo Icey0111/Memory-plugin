@@ -105,6 +105,10 @@ const reply = content => ({ choices: [{ message: { content }, finish_reason: 'st
   assert.equal(lines[0].injections.after.current_state, 'BLOCK-ONE', 'the first turn keeps its block');
   assert.equal(lines[1].injections.after.current_state, 'BLOCK-TWO', 'the second turn keeps its block');
   assert.equal(lines[0].injections.before.current_state, 'BLOCK-ONE');
+  // The block a turn saw is the one its own generation set. `before` is the previous turn's block, and
+  // reading it as this turn's is what made a live probe look like retrieval answered the wrong question.
+  assert.equal(lines[1].injections.thisTurn.current_state, 'BLOCK-TWO', 'thisTurn is the block this turn saw');
+  assert.equal(lines[1].injections.before.current_state, 'BLOCK-ONE', 'before is the previous turn, not this one');
   assert.equal(lines[0].injectionAfterTurn.state_revision, 1);
   fs.rmSync(file, { force: true });
 }

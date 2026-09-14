@@ -329,9 +329,15 @@ export function buildTurnRecord({ turn, userText, at, isBatch, error = null, tur
       reply: turnRes.reply ? String(turnRes.reply.mes || '') : null,
     } : null,
     pre: summarizeState(pre), post: summarizeState(post), wait: wait || null,
+    // `before` is the block that was in place when this turn started, which the previous turn's
+    // generation set; `after` is the block set during this generation, so it is the one this turn
+    // actually saw, and `thisTurn` names that reading instead of leaving it to be inferred. Grading a
+    // turn against `before` reads the prompt one turn stale: on the live probe it made retrieval look
+    // like it answered the previous question, because the previous question's rows were quoted there.
     injections: {
       before: pre ? (pre.prompts || null) : null,
       after: post ? (post.prompts || null) : null,
+      thisTurn: post ? (post.prompts || null) : null,
     },
     injectionAfterTurn: post ? injectionOf(post) : null,
     newCallCount: newCalls.length,
