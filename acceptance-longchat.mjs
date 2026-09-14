@@ -3,9 +3,9 @@
 //   node acceptance-longchat.mjs --turns <turns.json> --out <directory> [--cdp <url>] [--start 1]
 //        [--batches 10,20,30,40] [--summary-timeout 420000] [--max N]
 //
-// Both --turns and --out are required, and --out must stay outside the repository (or under the ignored
-// remove/ directory): the turns file and the evidence hold real chat text and raw model responses, which are
-// not committed. The capture module is versioned; the data it records is not. Run
+// Both --turns and --out are required, and --out must stay outside the repository: the turns file and the
+// evidence hold real chat text and raw model responses, which are not committed. The capture module is
+// versioned; the data it records is not, and there is no repository-local vault for it. Run
 // 'node runtime-precheck.mjs' first so the page and the repository are the same code - this driver imports
 // the deployed acceptance-capture.js from the page, so a stale page would record with stale logic.
 import fs from 'node:fs';
@@ -27,9 +27,8 @@ const maxTurn = Number(valueOf('--max', '0')) || null;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const resolvedOut = path.resolve(outDir);
-const removeDir = path.join(HERE, 'remove');
-if ((resolvedOut === HERE || resolvedOut.startsWith(HERE + path.sep)) && resolvedOut !== removeDir && !resolvedOut.startsWith(removeDir + path.sep)) {
-  throw new Error('--out must stay outside the repository, or under the ignored remove/ directory: ' + resolvedOut);
+if (resolvedOut === HERE || resolvedOut.startsWith(HERE + path.sep)) {
+  throw new Error('--out must stay outside the repository: ' + resolvedOut);
 }
 
 const turns = JSON.parse(fs.readFileSync(turnsPath, 'utf8'));

@@ -58,6 +58,34 @@ turns did not persist their injected text. The record chain is now versioned and
 `acceptance-capture.js` and `acceptance-longchat.mjs`, with `test-acceptance-capture.mjs`; the chat text and
 raw responses they produce stay outside the repository.
 
+### Live acceptance, continuation-only (30 turns, 2026-09-14)
+
+One 30-user-turn run on the current branch (`67577c4`, deployed and preflight-verified 32/32) on a fresh test
+chat, with the user turn a bare continuation command in every turn and the record kept outside the repository.
+Three batches (turns 10, 20, 30) committed with zero summary failures and zero repairs, and every generation
+resolved to a reply; the driver retried two blank replies automatically and both succeeded. Replies averaged
+about 2.5k characters (1.2k-3.8k), mean wall time was 13.7 s per turn (max 68.3 s), and the three summary
+calls took 8.9-9.3 s. The final injected blocks were 1,927 characters of state and 3,830 characters of quoted
+original evidence.
+
+Because the user turn carried no content, this is the continuation case: the state block and retrieval had to
+carry the story without an explicit question. The committed summary tracked the invented plot (the west-road
+departure, the lake-shore footprints, the bare tracks from the water, the test mud board and the next-day
+plan), and the anchor ledger held 15 live anchors; at a 600-token anchor budget the parked ones are the case
+the parked-anchor query handoff covers.
+
+An earlier 30-turn run on the same code used scripted user turns that narrated the character; it is recorded
+here only to note that it is superseded, because a user turn must carry the player's own action rather than
+putting words in the character's mouth.
+
+This is one chat and case-level evidence, not a quality score, and it does not measure generated-answer
+correctness. Two provider limits were observed. The OpenAI-compatible endpoint serves `/embeddings` but
+returns HTTP 404 for `/rerank`, so reranking is disabled and the fused order is used; the failure was recorded
+with its estimated cost and the fallback kept runs working. In this run the dense channel contributed no
+candidate (`channels: {lexical: 149, vector: 0}`) with `vector_available: true` and no error recorded, while
+an earlier chat on the same embedding model returned 24 dense candidates; the cause is not established and is
+recorded as open.
+
 The body-level negation-scope probe is the follow-up: three materials x two prefixes x three runs, frozen
 before the first call. The B4 compression was observed **once**, and three frozen replays of the identical
 request afterwards did not reproduce it; neither the cause nor the rate is known, and the original failure was

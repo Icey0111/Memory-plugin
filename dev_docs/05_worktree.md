@@ -33,8 +33,9 @@ not retained modules.
 | dev_docs/decisions/ | Durable choices; supersede explicitly rather than rewriting accepted decisions |
 | CHANGELOG.md | Release-level user-visible changes |
 | Git and pull requests | Implementation history and verification |
-| Ignored local measurement outputs | Private chats and provider results; never dependencies of production code |
+| Local measurement outputs outside the repository | Private chats, provider results and acceptance records; never dependencies of production code and never a repository-local vault |
 
-There is no append-only change_log workflow and no requirement to make local history copies.
-Existing ignored remove/ content belongs to prior work and local experiments; preserve it, but do not
-treat it as current design documentation. Use Git to recover retired tracked files.
+There is no append-only change_log workflow, no repository-local measurement vault and no requirement
+to make local history copies. Acceptance evidence lives in the pull request and outside the repository,
+for example in a temporary directory; the ignored `remove/` path holds prior work only and must not grow.
+Use Git to recover retired tracked files.

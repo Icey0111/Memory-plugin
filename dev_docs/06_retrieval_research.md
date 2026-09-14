@@ -80,7 +80,7 @@ elapsed time/input estimates/provider usage in diagnostics. This sample does not
 on or replacing the original-text retrieval architecture.
 
 Local evidence: retrieval-gold.json, retrieval-final-candidates.json, retrieval-final-result.json and
-the service caches under ignored remove/. Label spec SHA-256:
+the service caches, all outside the repository. Label spec SHA-256:
 609ede1395a89f84ba9ad7b7466751db419459785859cddc67d9a21a53608f3e.
 The scripts are committed; private source text and full responses are not.
 
