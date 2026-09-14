@@ -1554,10 +1554,18 @@ function selectSubmodular(ordered, { query, budget, maxEntries, weights }) {
 /**
  * Shrink a span to its budget instead of dropping it for being long.
  *
- * The span starts at the candidate that ranked best and grows outward toward the merged envelope,
- * so the part that matched the query is always what survives the trim. Measured: dropping an
- * over-budget span whole cost the in-words probe set 40 points of recall, because a two-chunk message
- * merged into one span that no longer fitted and was skipped.
+ * Measured: dropping an over-budget span whole cost the in-words probe set 40 points of recall, because a
+ * two-chunk message merged into one span that no longer fitted and was skipped.
+ *
+ * It does not follow that "the part that matched the query always survives", which this comment used to claim.
+ * A chunk is a little larger than a per-slot share, so this branch runs on most spans, and when it runs it cuts
+ * the tail whatever the question was about. Measured on a 15-question labelled set with unique needles: two
+ * answers that had ranked first and third were quoted and cut out of their own quote. Charging the span its own
+ * cost instead - which the submodular branch above already does - recovered one of the two and regressed
+ * nothing on that set, but it also reaches one fewer message at a 1000-token budget, and that reach is the
+ * property EVIDENCE_TOKENS_PER_SLOT is derived from and the one ADR-0014 measured situation-term recall
+ * against. It is a trade between reaching more messages and keeping the tail of a long one; recorded here
+ * rather than decided, because fifteen questions on one chat cannot settle it.
  */
 function fitEvidenceSpan(span, budget) {
     const row = span.row;
