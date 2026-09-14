@@ -2,6 +2,15 @@
 //
 //   node acceptance-longchat.mjs --turns <turns.json> --out <directory> [--cdp <url>] [--start 1]
 //        [--batches 10,20,30,40] [--summary-timeout 420000] [--max N]
+//   node acceptance-longchat.mjs --turns <turns.json> --out <directory> --detail-survival
+//
+// --detail-survival is the reproducible form of the detail-survival baseline. Phase 1 plays a turns file
+// whose details each declare a needle and the question to ask about it. After the phase-1 batches commit,
+// the mode reads the committed summary - prose, active anchors and knowledge - and asks only the details it
+// actually dropped, plus one retained positive control and every declared negative control, all in one
+// probe turn. It reports the channel each needle was found in, read from the probe turn's own
+// injections.thisTurn, and hands every item to answer-adjudication.mjs. The needles are data in the turns
+// file; nothing is picked by hand at scoring time. See detail-survival.mjs for the schema.
 //
 // Both --turns and --out are required, and --out must stay outside the repository: the turns file and the
 // evidence hold real chat text and raw model responses, which are not committed. The capture module is
@@ -12,9 +21,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest } from './acceptance-capture.js';
+import { parseTurnsFile, continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems,
+  buildProbeQuestion, gradeProbeItem, summarizeDetailSurvival, formatDetailReport, buildDetailEvidence } from './detail-survival.mjs';
+import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
 const args = process.argv.slice(2);
 const valueOf = (name, fallback = null) => { const at = args.indexOf(name); return at >= 0 ? args[at + 1] : fallback; };
+const detailMode = args.includes('--detail-survival');
 if (!args.includes('--out')) throw new Error('Explicit --out required; acceptance evidence must not be written into the repository.');
 if (!args.includes('--turns')) throw new Error('Explicit --turns required; chat text is not committed.');
 const outDir = valueOf('--out');
@@ -22,7 +35,7 @@ const turnsPath = valueOf('--turns');
 const cdpBase = valueOf('--cdp', 'http://127.0.0.1:9222');
 const startAt = Number(valueOf('--start', '1'));
 const summaryTimeout = Number(valueOf('--summary-timeout', '420000'));
-const batches = String(valueOf('--batches', '10,20,30,40')).split(',').map(Number).filter(Boolean);
+let batches = String(valueOf('--batches', detailMode ? '10,20' : '10,20,30,40')).split(',').map(Number).filter(Boolean);
 const maxTurn = Number(valueOf('--max', '0')) || null;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -31,7 +44,13 @@ if (resolvedOut === HERE || resolvedOut.startsWith(HERE + path.sep)) {
   throw new Error('--out must stay outside the repository: ' + resolvedOut);
 }
 
-const turns = JSON.parse(fs.readFileSync(turnsPath, 'utf8'));
+const rawTurns = JSON.parse(fs.readFileSync(turnsPath, 'utf8'));
+const parsedTurns = parseTurnsFile(rawTurns);
+if (parsedTurns.errors.length) throw new Error('turns file: ' + parsedTurns.errors.join('; '));
+if (detailMode && parsedTurns.legacy) {
+  throw new Error('--detail-survival needs a detailed turns file: a bare array of turn strings carries no needles. See detail-survival.mjs for the schema.');
+}
+const turns = parsedTurns.turns;
 fs.mkdirSync(outDir, { recursive: true });
 const jsonlPath = path.join(outDir, 'longchat.turns.jsonl');
 const metaPath = path.join(outDir, 'longchat.meta.json');
@@ -84,6 +103,8 @@ const settings = await asJson('window.__acceptance.module.deepSnapshot(SillyTave
 const startSnap = await snapshot(true);
 const meta = {
   startedAt: nowIso(), target: { url: target.url, id: target.id }, turnsPath, outDir, startAt, batches,
+  detailMode, legacyTurns: parsedTurns.legacy, probeMode: parsedTurns.probeMode, cadence: parsedTurns.cadence,
+  declaredDetails: parsedTurns.details.length, negativeControls: parsedTurns.negatives.length,
   startSnapshot: { chatId: startSnap.chatId, name2: startSnap.name2, chatLength: startSnap.chatLength,
     completeTurns: startSnap.completeTurns, anchorsActive: startSnap.anchors && startSnap.anchors.active ? startSnap.anchors.active.length : 0 },
   startPrompts: startSnap.prompts,
@@ -96,11 +117,22 @@ let summaryEvidence = [];
 if (fs.existsSync(evidencePath)) { try { summaryEvidence = JSON.parse(fs.readFileSync(evidencePath, 'utf8')); } catch (error) { summaryEvidence = []; } }
 
 const last = Math.min(turns.length, maxTurn || turns.length);
+if (detailMode && startAt !== 1) {
+  throw new Error('--detail-survival runs the whole phase-1 sequence: the adaptive selection needs one committed summary, not a resumed count.');
+}
+if (detailMode && last % parsedTurns.cadence !== 0) {
+  throw new Error('--detail-survival needs phase 1 to end on a cadence boundary: ' + last + ' turns at cadence ' + parsedTurns.cadence);
+}
+if (detailMode && parsedTurns.phase1Turns && parsedTurns.phase1Turns !== turns.length) {
+  throw new Error('phase1Turns (' + parsedTurns.phase1Turns + ') does not match the ' + turns.length
+    + ' turns in the file; the phase-1 file must carry exactly the turns it plays');
+}
+if (detailMode && !batches.includes(last)) batches = batches.concat(last).sort((a, b) => a - b);
 const collected = new Set();
-for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
-  const text = turns[turnNo - 1];
-  const isBatch = batches.includes(turnNo);
-  const deep = isBatch || turnNo === last;
+
+// One turn: snapshot, generate, wait for a batch summary, capture and append. The plain loop and the
+// detail-survival probe turns both run through here, so a probe turn is recorded exactly like any other.
+const runTurn = async (turnNo, text, { isBatch, deep }) => {
   const pre = await snapshot(deep);
   const prevCovered = pre.summary && Array.isArray(pre.summary.covered) ? pre.summary.covered.length : 0;
   const prevErrorAt = (pre.diagnostics && pre.diagnostics.summary_last_error && pre.diagnostics.summary_last_error.at) || 0;
@@ -139,12 +171,86 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
     fs.writeFileSync(evidencePath, JSON.stringify(summaryEvidence, null, 2));
     console.log('=== BATCH turn ' + turnNo + ' ' + JSON.stringify(waitRes) + ' calls=' + newCalls.length + ' ===');
   }
+  return { record, pre, post, waitRes, newCalls, error };
+};
+
+for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
+  const text = turns[turnNo - 1].text;
+  const isBatch = batches.includes(turnNo);
+  const deep = isBatch || turnNo === last;
+  const { record, error } = await runTurn(turnNo, text, { isBatch, deep });
   const state = record.post || {};
   console.log('turn ' + turnNo + '/' + last + (error ? ' ERROR=' + error : '')
     + ' len=' + (state.chatLength != null ? state.chatLength : '?') + ' completed=' + (state.completeTurns != null ? state.completeTurns : '?')
     + ' covered=' + (state.covered != null ? state.covered : '?') + ' folded=' + (state.folded != null ? state.folded : '?')
     + ' anchors=' + (state.anchorsActive != null ? state.anchorsActive : '?') + ' pending=' + (state.pendingFloors != null ? state.pendingFloors : '?')
     + ' fails=' + (state.summaryFailures != null ? state.summaryFailures : '?') + ' injRev=' + (state.injected ? state.injected.state_revision : '?'));
+}
+
+// Detail survival: turn the manual baseline into a repeatable mode. Phase 1 has played the turns file and
+// the phase-1 batches have committed; the committed summary decides which details to ask about, so the
+// author's expectation never selects anything. Only the probe turn's own block (injections.thisTurn) is
+// graded - reading the previous turn's block is what once made retrieval look a turn late.
+if (detailMode) {
+  const phase1Last = last;
+  const committed = await snapshot(true);
+  const bag = continuityBag(committed);
+  const retention = splitDetailsByRetention(parsedTurns.details, bag);
+  const positive = choosePositive(retention.retained);
+  const items = buildProbeItems({ dropped: retention.dropped, positive, negatives: parsedTurns.negatives });
+  console.log('DETAIL-SURVIVAL retention: 已声明 ' + retention.total + ' 个细节，摘要保留 ' + retention.retained.length
+    + ' 个，丢弃 ' + retention.dropped.length + ' 个；预期不符 ' + retention.expectationMismatches.length
+    + (retention.expectationMismatches.length ? '（' + retention.expectationMismatches.join(', ') + '）' : ''));
+  if (!retention.dropped.length) {
+    console.log('DETAIL-SURVIVAL notice: 摘要没有丢掉任何已声明细节，本次运行只测到 continuity 通道，不能证明检索。');
+  }
+  if (!items.length) {
+    console.log('DETAIL-SURVIVAL: 没有可提问的条目（无 dropped、无正控、无负控），跳过阶段二。');
+  } else {
+    const groups = parsedTurns.probeMode === 'perTurn' ? items.map(item => [item]) : [items];
+    if (parsedTurns.probeMode === 'perTurn') {
+      console.log('DETAIL-SURVIVAL notice: perTurn 模式下后面的提问回合看得到前面的回复，可能互相污染；single 模式（默认）把它们放进同一个回合。');
+    }
+    const probes = [];
+    const graded = [];
+    let probeTurnNo = phase1Last;
+    for (const group of groups) {
+      probeTurnNo += 1;
+      const question = buildProbeQuestion(group);
+      if (question.leaks.length) {
+        throw new Error('probe question leaks the needle for ' + question.leaks.join(', ')
+          + '; a question must name the subject, never the value it is testing');
+      }
+      const { record, error: probeError } = await runTurn(probeTurnNo, question.text, { isBatch: false, deep: true });
+      const injection = record.injections && record.injections.thisTurn ? record.injections.thisTurn : null;
+      const replyText = record.turnRes && record.turnRes.reply ? record.turnRes.reply : '';
+      const probeFailed = Boolean(probeError) || !replyText;
+      if (probeFailed) {
+        console.log('DETAIL-SURVIVAL notice: probe turn ' + probeTurnNo + ' produced no reply'
+          + (probeError ? ' (error: ' + probeError + ')' : '') + '; its items are recorded as fixture-defect, not as model misses.');
+      }
+      const rows = group.map(item => gradeProbeItem(item, { injection, replyText, questionText: question.text, probeFailed }));
+      graded.push(...rows);
+      probes.push({ turn: probeTurnNo, question: question.text, leaks: question.leaks, replyText, injection,
+        error: probeError || null, graded: rows });
+    }
+    const adjudication = parseAdjudicationJsonl(graded.map(row => JSON.stringify(row.mechanical)).join('\n'));
+    const adjudicationSummary = summarizeAdjudication(adjudication.rows);
+    const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items });
+    const detailEvidence = buildDetailEvidence({ at: nowIso(), probeTurns: probes.map(probe => probe.turn),
+      phase1Last, retention, positive, items, probes, adjudicationErrors: adjudication.errors,
+      adjudicationSummary, survival });
+    fs.writeFileSync(path.join(outDir, 'detail-survival.json'), JSON.stringify(detailEvidence, null, 2));
+    fs.writeFileSync(path.join(outDir, 'detail-survival.adjudication.jsonl'),
+      adjudication.rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+    console.log(formatDetailReport(survival));
+    for (const outcome of survival.outcomes) {
+      console.log('  probe ' + outcome.id + ' kind=' + outcome.kind + ' channel=' + outcome.channel
+        + ' conveys=' + outcome.conveys + ' -> ' + outcome.outcome
+        + (outcome.fixtureDefect ? ' [fixture-defect]' : ''));
+    }
+    console.log('DETAIL-SURVIVAL evidence: ' + path.join(outDir, 'detail-survival.json'));
+  }
 }
 
 const unfinished = (await modelCalls()).filter(call => call.status === 'running');

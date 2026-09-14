@@ -16,6 +16,14 @@ summary/retrieval handoff gap, followed by recovery, isolation and product clari
 its own acceptance and stopping condition; no new long-chat campaign or architecture layer is
 required to begin.
 
+`node acceptance-longchat.mjs --detail-survival` is the reusable instrument for the hand-run
+detail-survival baseline: it asks only the details the committed summary dropped, with a retained
+positive control and a never-written negative control, and attributes each answer to the continuity or
+the evidence channel (N29). The cross-merge question - how many identity/place facts, still-live states,
+promises, conditions, negations and knowledge boundaries a merge loses, against how many dropped
+details were merely decorative - is still unmeasured. The instrument exists; no number from it may be
+quoted until it has a live run on this branch.
+
 Keep versioned raw history, a compact continuity snapshot, original-chunk retrieval, optional reranking
 and budgeted quotations. The summary is not an embedding document. The default summary cadence remains
 ten complete user turns (normally twenty message rows); its frozen input and successful coverage must agree.

@@ -15,6 +15,8 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 | node replay-anchor-evidence.mjs | Replay of the 421757c acceptance requests and responses through the current parser with no model call. Exits 0 with a note when the local evidence directory is absent |
 | node eval-anchor-protocol.mjs --out report.json | Opt-in five-call model probe through an open host's summary connection and local CDP endpoint; saves synthetic inputs, raw responses, parsed operations and ledgers without writing chat state. Structural passes require manual semantic review |
 | node acceptance-longchat.mjs --turns <file> --out <dir> | Reusable long-chat acceptance driver. Requires `node runtime-precheck.mjs` to exit 0 first; imports the versioned capture module from the page and refuses an `--out` inside the repository, so chat text and raw responses stay out of it |
+| node acceptance-longchat.mjs --turns <file> --out <dir> --detail-survival | Detail-survival mode. Phase 1 plays a detailed turns file (every detail declares a needle and the question that tests it); the committed summary then decides what phase 2 asks. It asks only the details the summary actually dropped, plus one retained positive control and every declared negative control, all in one probe turn, and prints the four counts - summary-kept / retrieval-recovered / refused / fabricated - with the adjudicated rows written next to the run |
+| node test-detail-survival.mjs | The mode's decision logic against captured text: the adaptive retention split over summary prose, active anchors and knowledge; channel attribution from the probe turn's own `injections.thisTurn`; the question-leak refusal; the four counts; and a Chinese-only needle against an English reply recorded as a fixture defect rather than a model miss. No model call |
 | node test-acceptance-capture.mjs | The capture boundary with a simulated transport: both the summary and its targeted repair record request, response and elapsed, two consecutive turns keep separate injected blocks, and the block a turn actually saw is read from `injections.thisTurn` rather than the stale `before`. No model call |
 | node test-summary-diagnostics.mjs | Failure stages and the retained record, the two state versions, injection recorded only after the prompt is set, the assembly-across-a-commit case, the five warning conditions, and the input-budget default |
 | node test-summary-contract.mjs | The batching contract: the floor horizon, committed vs injected coverage, one-entry-per-message requests, the cost of the text that is sent, and the difference between a local budget block and an interface failure |
@@ -68,6 +70,20 @@ summary over its accept budget, format - with the input cost and the response st
 marks it recovered rather than erasing it (ADR-0025). "Injected" means the host was given the block, and
 the state version, not the floor count, decides staleness. Run test-summary-contract.mjs and
 test-summary-diagnostics.mjs before deploying a summary change.
+
+The detail-survival mode answers "what must the summary keep?" with a measurement instead of an
+assumption. A set of small details crosses at least two summary passes; the committed summary - prose,
+active anchors and knowledge - is read once, and the details it does not contain are what phase 2 asks
+about, so the author's expectation is recorded as calibration and never selects a question. The positive
+control comes from what the summary did contain and each negative control is a value the story never
+wrote, so an answer is attributed to a channel instead of to plausibility. Channel attribution reads
+`injections.thisTurn` - the block the probe turn's own generation set - never the previous turn's block,
+which is the instrument defect 76c50d0 fixed. A probe question that contains the needle it tests is
+refused before a generation is spent. A needle match is a machine reading: every item goes through
+answer-adjudication.mjs, and a needle-language mismatch is a recorded fixture defect rather than a model
+miss, because one English reply was once scored a miss by a Chinese needle. The mode measures only and
+changes no summary, retrieval or injection behaviour. It has no live run on this branch yet, so it is an
+instrument, not evidence.
 
 Run at least 30 completed turns to exercise three automatic summaries. Record summary responses
 (requested output cap, finish reason, body length, reasoning usage when returned), covered sources,

@@ -18,6 +18,7 @@
 | Offline regression and syntax gates | test-*.mjs, run-tests.mjs, check-syntax.mjs |
 | Retrieval measurements | recall-baseline.mjs, recall-embed.mjs, embedding-cassette.mjs, retrieval-audit.mjs, retrieval-experiment.mjs |
 | Runtime preflight and evidence replay | runtime-precheck.mjs, replay-anchor-evidence.mjs |
+| Long-chat acceptance and detail-survival measurement | acceptance-longchat.mjs, acceptance-capture.js, detail-survival.mjs, answer-adjudication.mjs |
 
 The current v55-rerank.js is the optional original-text reranker introduced by ADR-0016.
 The fact-path reranker with the same filename was retired by ADR-0009; that historical retirement
