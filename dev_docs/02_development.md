@@ -197,6 +197,16 @@ missed were quoted and then cut by the trim, not left unranked.
 restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
 an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
 
+A summary body refused for `format` or `over_budget` now earns one repair (ADR-0042): the same request
+again, a correction, and the refused text (bounded to 1,600 characters) to cut rather than rewrite. It is
+recorded as `body_repair` with its own cost, checked against the input budget before sending, run through the
+same frozen-state check, and the second answer is evaluated exactly like the first. The request now also states
+the hard ceiling and its consequence, which it had never done. Offline both stages commit (`test-anchor-repair`
+4b/4c). Live, forced with a 100-token target and ceiling on a ten-turn batch, the path fired: two calls, the
+repaired answer 172 tokens against the ceiling, batch still refused with `recovered: false` and the repair's
+cost recorded. A first forcing attempt at a 300-token ceiling needed no repair - the model obeyed the stated
+ceiling - which is one run, not a rate. `input_budget` stays an unrepaired local block (ADR-0024).
+
 The evidence window (ADR-0037) is now moved by the question's **words** first and its n-grams second
 (ADR-0041). The n-grams alone had matched fragments that straddle two question words, so on the frozen probe
 turn the head window of the tea answer covered two fragments and no question word and nothing moved. With the

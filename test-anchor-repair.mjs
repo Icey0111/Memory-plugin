@@ -98,16 +98,65 @@ const invalidLine = prompt => '更新 A9 | 来源 ' + src(prompt) + ' | 钥匙�
     assert.equal(report.summary_last_error.repair.attempt, 1);
 }
 
-// --- 4. a failure a repair cannot fix is not repaired ------------------------------------------------
+// --- 4. a body refusal earns exactly one body repair, and a repair that is still wrong is refused ------
+// A missing body used to be refused without a second call, on the rule that the anchor repair is for the anchor
+// section. Measured: three recorded runs had a batch that never committed, and the alternative to one bounded
+// second call is waiting for a later batch to cover the same floors - which never comes if the story stops.
 {
     const calls = [];
     const h = host(async (ctx, prompt) => { calls.push(prompt); return '\n【锚点变更】\n- 无\n【知情边界】\n- 无'; });
     fill(h, 1, 10);
     await updateNarrative(h.ctx, h.services, { force: true });
     const report = readNarrativeReport(h.ctx);
-    assert.equal(calls.length, 1, 'a missing summary body is not a format problem the anchor repair can fix');
-    assert.equal(report.summary_last_error.stage, 'format');
-    assert.equal(report.anchor_repair, null);
+    assert.equal(calls.length, 2, 'exactly one body repair, not a retry loop');
+    assert.match(calls[1], /（补交）/, 'the repair says the previous output was refused');
+    assert.match(calls[1], /硬上限 600 token/, 'and states the ceiling it must fit');
+    assert.match(calls[0], /正文超过 600 token 会被整批退回/, 'which the first request already named');
+    assert.equal(report.summary_last_error.stage, 'format', 'the batch is still refused for what it was refused for');
+    assert.equal(report.anchor_repair, null, 'a body refusal is not an anchor repair');
+    assert.equal(report.body_repair.kind, 'body');
+    assert.equal(report.body_repair.sent, true);
+    assert.equal(report.body_repair.stage_after, 'format', 'the repaired answer failed the same check');
+    assert.equal(report.body_repair.recovered, false);
+    assert.equal(h.store().narrative_summary, undefined, 'and nothing was committed');
+}
+// --- 4b. a repair that supplies the body commits the batch --------------------------------------------
+{
+    const calls = [];
+    const h = host(async (ctx, prompt) => {
+        calls.push(prompt);
+        if (calls.length === 1) return '\n【锚点变更】\n- 无\n【知情边界】\n- 无';
+        return '局面：门还关着，钥匙在甲手里。\n【锚点变更】\n- 无\n【知情边界】\n- 无';
+    });
+    fill(h, 1, 10);
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const report = readNarrativeReport(h.ctx);
+    assert.equal(calls.length, 2);
+    assert.equal(report.summary_last_error, null, 'the repaired batch commits');
+    assert.equal(report.summary_failures, 0);
+    assert.equal(h.store().narrative_summary.text, '局面：门还关着，钥匙在甲手里。');
+    assert.equal(report.body_repair.recovered, true, 'and the repair is recorded as what saved it');
+}
+
+// --- 4c. an oversized body is repaired with the text that was too long --------------------------------
+{
+    const calls = [];
+    const h = host(async (ctx, prompt) => {
+        calls.push(prompt);
+        if (calls.length === 1) return '正文'.repeat(400) + '\n【锚点变更】\n- 无\n【知情边界】\n- 无';
+        return '门还关着。\n【锚点变更】\n- 无\n【知情边界】\n- 无';
+    });
+    fill(h, 1, 10);
+    await updateNarrative(h.ctx, h.services, { force: true });
+    const report = readNarrativeReport(h.ctx);
+    assert.equal(calls.length, 2, 'one repair for an over-ceiling body');
+    assert.equal(report.body_repair.stage, 'over_budget');
+    assert.equal(report.body_repair.summary_tokens > 600, true, 'the refused body is recorded with its size');
+    assert.match(calls[1], /【你上一轮写出的内容，供你压缩与订正，不要照抄】/, 'the refused text rides along to be cut');
+    assert.match(calls[1], /硬上限 600 token/);
+    assert.equal(report.summary_failures, 0, 'and the shortened answer commits');
+    assert.equal(h.store().narrative_summary.text, '门还关着。');
+    assert.equal(report.body_repair.recovered, true);
 }
 
 // --- 5. a recoverable heading needs no second call ----------------------------------------------------

@@ -1,5 +1,5 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
-    summaryMessages, summaryRequest, summaryBlockState, anchorRepairRequest, stateRevisionOf,
+    summaryMessages, summaryRequest, summaryBlockState, anchorRepairRequest, summaryBodyRepairRequest, stateRevisionOf,
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
     selectAnchors, selectKnowledge, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
     SHIPPED_PACK_POLICY, shippedRetrievalConfig, ledgerCarriers, supersededSources,
@@ -309,8 +309,8 @@ export function updateNarrative(ctx, services) {
         const messages = summaryMessages(state.history, batch);
         // summaryRequest builds the alias table from the same anchor list it formats, and returns it, so the
         // ids the model is shown are exactly the versions the answer will be checked against.
-        const request = summaryRequest(previous?.text, messages,
-            opts.summaryTokens, previousAnchors?.active, previousKnowledge?.entries);
+        const request = summaryRequest(previous?.text, messages, opts.summaryTokens,
+            previousAnchors?.active, previousKnowledge?.entries, { ceiling: opts.summaryCeiling });
         // Rule 5: the operations only mean anything against the text the model was handed. This is that
         // text, as one number, checked again at commit so a row edited during the call is noticed.
         const batchFingerprint = sourceBatchFingerprint(messages);
@@ -396,6 +396,10 @@ export function updateNarrative(ctx, services) {
                 live.narrative_anchors?.active, live.narrative_knowledge?.entries);
             const pastFailure = live.narrative_diagnostics?.summary_last_error;
             const pastRepair = live.narrative_diagnostics?.anchor_repair;
+            const pastBodyRepair = live.narrative_diagnostics?.body_repair;
+            // A repair that is being committed did recover the batch it was sent for, and says so; the failure
+            // branches below keep their own record with recovered false.
+            const committedRepair = repair ? { ...repair, recovered: true, recovered_at: Date.now() } : null;
             diagnose(ctx, { summary_error: null, summary_invalidated: null, summary_failures: 0,
                 persist_error: null,
                 summary_block: null, summary_batch_changed: null, anchor_parse: parsed.anchor_section,
@@ -403,7 +407,12 @@ export function updateNarrative(ctx, services) {
                 summary_over_target: overTarget ? { at: Date.now(), target: opts.summaryTokens,
                     ceiling: opts.summaryCeiling, accepted_tokens: estimateTokens(parsed.summary) } : null,
                 anchor_ops: anchorOps,
-                anchor_repair: repair || (pastRepair ? { ...pastRepair, recovered: true, recovered_at: Date.now() } : null),
+                // A repair record is named for what it repaired. A body repair is not an anchor repair, and
+                // a reader chasing "which stage was refused" must not be sent to the anchor section.
+                anchor_repair: (committedRepair && committedRepair.kind !== 'body') ? committedRepair
+                    : (pastRepair ? { ...pastRepair, recovered: true, recovered_at: Date.now() } : null),
+                body_repair: (committedRepair && committedRepair.kind === 'body') ? committedRepair
+                    : (pastBodyRepair ? { ...pastBodyRepair, recovered: true, recovered_at: Date.now() } : null),
                 anchor_op_errors: live.narrative_diagnostics?.anchor_op_errors
                     ? { ...live.narrative_diagnostics.anchor_op_errors, recovered: true, recovered_at: Date.now() }
                     : null,
@@ -452,8 +461,77 @@ export function updateNarrative(ctx, services) {
             try {
                 first = evaluateAnswer(text, firstResponse);
             } catch (commitError) {
-                // One targeted repair, and only for an anchor section the parser could evaluate. A transport,
-                // budget or record-version failure is not a formatting problem and is not repaired.
+                // One targeted repair. A body that is missing or past the ceiling is repaired by asking for the
+                // whole answer again with the ceiling stated; an anchor section that failed validation is
+                // repaired by replacing the rejected lines. A transport failure, a local budget block or a
+                // record-version failure is neither and is not repaired.
+                if (commitError?.stage === 'format' || commitError?.stage === 'over_budget') {
+                    if (!services.isCurrent()) throw commitError;
+                    const bodyPrompt = summaryBodyRepairRequest({ requestText: request.text,
+                        reason: commitError.stage, detail: bounded(String(commitError.message || '')),
+                        summaryTokens: opts.summaryTokens, ceiling: opts.summaryCeiling, refusedText: text });
+                    const repair = { kind: 'body', at: Date.now(), attempt: 1, batch_id: batchIdOf(batch),
+                        stage: commitError.stage, reason: bounded(String(commitError.message || '')),
+                        refused_chars: String(text || '').length,
+                        summary_tokens: Number.isFinite(commitError.summary_tokens) ? commitError.summary_tokens : null,
+                        request_chars: bodyPrompt.text.length,
+                        prompt_tokens_estimated: estimateTokens(bodyPrompt.text),
+                        sent: false, blocked: false, error: null, response: null,
+                        recovered: false, recovered_at: null,
+                        cost: { prompt_chars: bodyPrompt.text.length,
+                            prompt_tokens_estimated: estimateTokens(bodyPrompt.text),
+                            completion_tokens: null, reasoning_tokens: null, usage_status: 'unknown' } };
+                    if (bodyPrompt.text.length > opts.inputChars) {
+                        repair.blocked = true; repair.stage = 'input_budget';
+                        repair.needed_chars = bodyPrompt.text.length; repair.budget_chars = opts.inputChars;
+                        diagnose(ctx, { body_repair: repair });
+                        commitError.repair = repair;
+                        throw commitError;
+                    }
+                    repair.sent = true;
+                    let repairedText;
+                    try {
+                        repairedText = await (services.summarize || generateNarrativeSummary)(ctx, bodyPrompt.text, state.settings);
+                    } catch (repairFailure) {
+                        repair.stage = repairFailure?.stage || 'transport';
+                        repair.error = bounded(String(repairFailure?.message || repairFailure));
+                        repair.response = repairFailure?.response || null;
+                        diagnose(ctx, { body_repair: repair });
+                        commitError.repair = repair;
+                        throw commitError;
+                    }
+                    repair.response = storeOf(ctx).narrative_diagnostics?.summary_response || null;
+                    if (repair.response) {
+                        repair.cost.completion_tokens = repair.response.completion_tokens ?? null;
+                        repair.cost.reasoning_tokens = repair.response.reasoning_tokens ?? null;
+                        repair.cost.usage_status = 'reported';
+                    }
+                    {
+                        const reason = stillFrozen();
+                        if (reason) {
+                            repair.stopped = reason;
+                            diagnose(ctx, { body_repair: repair });
+                            persist(ctx);
+                            return;
+                        }
+                    }
+                    // The second answer is evaluated exactly like the first - body, ceiling, section and every
+                    // anchor reference - so a repair cannot commit through a weaker path than the answer it
+                    // replaces, and a repair that is still wrong leaves the batch as refused as it was.
+                    let second;
+                    try {
+                        second = evaluateAnswer(repairedText, repair.response);
+                    } catch (secondError) {
+                        repair.stage_after = secondError?.stage || 'unknown';
+                        repair.reason_after = bounded(String(secondError?.message || secondError));
+                        repair.errors_after = secondError?.anchor_errors || null;
+                        diagnose(ctx, { body_repair: repair });
+                        if (secondError && typeof secondError === 'object') secondError.repair = repair;
+                        throw secondError;
+                    }
+                    commitMerged(second.parsed, second.checked.changes, repair.response, repair, second.overTarget === true);
+                    return;
+                }
                 if (commitError?.stage !== 'anchor_ops' || !commitError.parsed || !services.isCurrent()) throw commitError;
                 const repairPrompt = anchorRepairRequest({ validLines: commitError.valid_lines || [],
                     errors: commitError.anchor_errors, plan: request.anchors, sources: batch.sources,
@@ -578,8 +656,12 @@ export function updateNarrative(ctx, services) {
                     anchor_op_errors: error?.anchor_errors
                         ? { at: Date.now(), stage, batch_id: batchId, errors: error.anchor_errors }
                         : (live.narrative_diagnostics?.anchor_op_errors || null),
-                    // A failed repair keeps its own record: what it cost, and the errors it was asked to fix.
-                    anchor_repair: error?.repair || (live.narrative_diagnostics?.anchor_repair || null),
+                    // A failed repair keeps its own record, named for what it repaired: what it cost, and the
+                    // errors it was asked to fix.
+                    anchor_repair: (error?.repair && error.repair.kind !== 'body') ? error.repair
+                        : (live.narrative_diagnostics?.anchor_repair || null),
+                    body_repair: (error?.repair && error.repair.kind === 'body') ? error.repair
+                        : (live.narrative_diagnostics?.body_repair || null),
                     summary_last_error: {
                         anchor_errors: error?.anchor_errors || null,
                         repair: error?.repair || null,
@@ -1299,6 +1381,7 @@ export function readNarrativeReport(ctx) {
         // the price of a format failure stays visible instead of hiding inside the batch's token total.
         anchor_repaired: store.narrative_diagnostics?.anchor_ops?.repaired === true,
         anchor_repair: store.narrative_diagnostics?.anchor_repair || null,
+        body_repair: store.narrative_diagnostics?.body_repair || null,
         anchors_same_subject: countAnchorCollisions(activeAnchors),
         anchors_superseded_limit: MAX_SUPERSEDED,
         anchors_superseded_recent: (store.narrative_anchors?.superseded || []).slice(0, 6).map(item => ({

@@ -447,11 +447,17 @@ export function summaryLengthVerdict(tokens, { target = 600, ceiling = target } 
  * else. It is not the model's context window, which the plugin cannot read: a request that fits the
  * budget can still be refused by the provider, and no report here claims otherwise.
  */
-export function summaryRequest(previous, messages, maxTokens, anchors, knowledge) {
+export function summaryRequest(previous, messages, maxTokens, anchors, knowledge, { ceiling = null } = {}) {
     // The alias table is built here, inside the call that builds the text, so the ids the model is shown and
     // the versions the host will check at commit time cannot be two different lists.
     const plan = planAnchors(anchors);
-    const instructions = `你是剧情续接摘要器。将旧摘要与新增原文合成一份替代旧摘要的紧凑摘要，目标不超过 ${maxTokens} token。\n`
+    // The hard ceiling is stated with its consequence. Measured: two of the recorded merges never committed
+    // because the body overran the ceiling the model had never been told about, and one because the answer
+    // carried only the anchor sections. A refusal costs the merge until a later batch covers the same floors.
+    const limit = Number(ceiling) > 0 && Number(ceiling) > Number(maxTokens)
+        ? `正文超过 ${ceiling} token 会被整批退回，本轮不提交。\n` : '';
+    const instructions = `你是剧情续接摘要器。将旧摘要与新增原文合成一份替代旧摘要的紧凑摘要，目标不超过 ${maxTokens} token。`
+        + limit
         + '只保留目前局面、导致局面的必要因果、在场人物与目的、仍影响后续的承诺和未决事项。'
         // Added 2026-09-14, after the first fact-survival run: the merge dropped a still-live state (a blocked
         // road) while keeping incidental details, because "保留否定、条件和状态变化" reads as changes only and
@@ -810,6 +816,40 @@ export function anchorRepairRequest({ validLines = [], errors = [], plan = [], s
         + '如果被拒的行确实不该存在，就不要为它写替代操作；' + ANCHOR_SECTION + '写“无”。';
     return { text, parts: { valid_lines: (validLines || []).length, rejected: (errors || []).length,
         total_chars: text.length } };
+}
+
+/** How much of the refused answer a body repair is shown. Enough to cut, bounded so it cannot blow the budget. */
+export const SUMMARY_REPAIR_BODY_CHARS = 1600;
+
+/**
+ * The one repair a missing or oversized summary body earns.
+ *
+ * `format` (no body the parser could find) and `over_budget` (a body past the hard ceiling) are refusals about
+ * the body. The batch is otherwise ready: it is frozen, the aliases are known and the material is unchanged. So
+ * the same one-targeted-repair budget the anchor section already has is spent here - the request again, a
+ * correction naming what was wrong, and the refused text itself when it was too long, to be cut rather than
+ * written from nothing. Measured need: three recorded runs had a batch that never committed, and two of them
+ * were these two stages; the merge waits for a later batch to cover the same floors, which never comes if the
+ * story stops.
+ *
+ * It is not a retry loop. The caller allows exactly one, checks the input budget before sending, records the
+ * repair beside the refusal it fixes, and re-runs the whole evaluation - anchors included - on the second
+ * answer, so a repair cannot commit through a weaker path than the first answer was held to.
+ */
+export function summaryBodyRepairRequest({ requestText = '', reason = 'format', detail = '', summaryTokens = 600,
+    ceiling = 900, refusedText = '' } = {}) {
+    const shown = String(refusedText || '').slice(0, SUMMARY_REPAIR_BODY_CHARS);
+    const correction = '（补交）你上一轮的输出没有被接受：'
+        + (String(detail || '').trim() || (reason === 'over_budget' ? '摘要正文超过硬上限' : '没有摘要正文'))
+        + '\n请重新给出完整的四节答案，节次与格式与上面的要求完全相同。\n'
+        + '- 第 1 节必须是一段连贯的摘要正文；只给锚点、没有正文的答案会被退回。\n'
+        + '- 正文目标不超过 ' + summaryTokens + ' token，硬上限 ' + ceiling + ' token，超过会被整批退回。\n'
+        + '- ' + ANCHOR_SECTION + '、' + RESOLVED_SECTION + '、' + KNOWLEDGE_SECTION
+        + ' 的规则与上面相同；没有变化就写“无”。'
+        + (shown ? '\n\n【你上一轮写出的内容，供你压缩与订正，不要照抄】\n' + shown : '');
+    const text = String(requestText || '') + '\n\n' + correction;
+    return { text, parts: { reason, detail: String(detail || '').slice(0, 200), refused_chars: shown.length,
+        target_tokens: summaryTokens, ceiling_tokens: ceiling, total_chars: text.length } };
 }
 
 // The statement is kept exactly as the model wrote it. NFKC is applied where two strings are compared,
