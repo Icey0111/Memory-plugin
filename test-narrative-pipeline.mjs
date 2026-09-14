@@ -1047,4 +1047,31 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
   assert.deepEqual(summarizeEvidenceTrace([]), { total: 0, counts: {}, rows: [] });
 }
 
+// --- the window rule is only live if the shipped path passes the query ---------------------------
+// Measured defect: packRawEvidence trims an over-share span from the head, and ADR-0037 taught it to keep
+// the part the question is about - but the runtime called it without `query`, so the rule ran with an empty
+// term list and returned immediately. Every offline harness passed the query and reported the fix working;
+// the live prompt never took that path. This test goes through buildNarrativeContext, which is what runs.
+{
+  // The answer sits at the end of the first chunk of a long message, so the span is over its per-slot share
+  // and has to be trimmed: the head-anchored window then stops short of it, and only the query can move it.
+  const FILLER = '雾压在河面上，风从上游过来。'.repeat(46) + '她右前臂上那道月牙疤很清楚。'
+    + '雾又压了下来。'.repeat(8);
+  const host = makeHost(12, { settings: { narrative_every: 1, narrative_evidence_tokens: 1000 },
+    summarize: async () => '摘要：两人在渡口说话。\n【锚点变更】\n无' });
+  const { ctx, chat, services } = host;
+  chat[3].mes = FILLER + '她右前臂上那道月牙疤很清楚。';
+  chat.push({ is_user: true, mes: '船夫右前臂上的旧疤是什么形状？' });
+  // The summary covers a prefix of the chunks, so the long message has to be inside that prefix before it can
+  // be hidden. One forced pass after a fresh host covers two chunks; a few passes walk the prefix forward.
+  for (let pass = 0; pass < 6; pass += 1) await updateNarrative(ctx, services, { force: true });
+  const bundle = await buildNarrativeContext(ctx, services, { contextSize: 32768 });
+  const folded = chat.filter(row => row.is_system === true).length;
+  assert.ok(folded > 0, 'the long message is hidden behind the summary, so it is eligible as evidence');
+  assert.match(bundle.referenceBlock, /月牙/, 'the shipped path quotes the part the question is about');
+  const quoted = (bundle.diagnostics.sources || []).find(source => source.source === 'raw_' + 4);
+  assert.ok(quoted && quoted.start > 0, 'and it did it by moving the window, not by quoting the whole message');
+  assert.equal(quoted.trimmed, true, 'the quote is recorded as shortened');
+}
+
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

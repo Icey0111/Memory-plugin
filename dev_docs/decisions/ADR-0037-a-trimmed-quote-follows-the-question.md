@@ -31,6 +31,29 @@ times per sentence. Terms are capped at 256 (longest first) and candidate starts
 the cost. The growth branch, the per-slot share, the entry count and the total budget are untouched: the window
 keeps its length, so the number of messages reached and the tokens spent do not change.
 
+## Correction (2026-09-14)
+
+The rule was **inert in the shipped prompt** from the day it was written. `packRawEvidence` accepts `query`, and
+`narrative-runtime.js` called it without that option, so the term list was empty and `slideWindowToQuery`
+returned immediately - while both measurements that accepted the change passed the query: the labelled A/B runs
+`packRawEvidence` from `recall-baseline.mjs`, and `test-evidence-window.mjs` passes it explicitly. The unit
+test was true and the A/B was true, and neither was about the code the prompt runs. Two live probes were read as
+confirming the trim was cutting answers, which it was - for the old reason, in the old way.
+
+`narrative-runtime.js` now passes the query, and `test-narrative-pipeline.mjs` proves it through
+`buildNarrativeContext`: a long hidden message whose answer sits at the end of its first chunk must be quoted
+with that answer in the window. That test fails when the option is removed again.
+
+Replaying the frozen probe turn that prompted this ADR, with its own emitted rows as the candidate list:
+
+| row | without the query (what ran) | with the query (what runs now) |
+| --- | --- | --- |
+| `raw_19` (holds 月牙) | `[0, 231]` - the word is outside | `[103, 334]` - **the word is inside** |
+| `raw_9` (holds 茉莉) | `[0, 199]` - outside | `[0, 199]` - still outside |
+
+So one of the two live losses is a wiring defect now fixed; the other is a real limit of a rule driven by the
+question's own words, because that answer sits where no question word does.
+
 ## Consequences
 
 - Labelled A/B on the frozen FactSurvival3 chat (6 authored questions, lexical only, the same candidate list

@@ -197,6 +197,16 @@ missed were quoted and then cut by the trim, not left unranked.
 restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
 an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
 
+A rule can be measured and still not run. `packRawEvidence`'s window rule (ADR-0037) was inert in the
+shipped prompt from the day it was written: the runtime called the packer without `query`, so the term list was
+empty and the rule returned immediately, while the labelled A/B (`recall-baseline.mjs`) and
+`test-evidence-window.mjs` both passed the query and reported it working. The runtime passes it now, and
+`test-narrative-pipeline.mjs` proves it through `buildNarrativeContext` - a long hidden message whose answer
+sits at the end of its first over-share chunk must be quoted with the answer inside, and the test fails if the
+option is removed. Replaying that frozen probe turn: `raw_19` moves from `[0, 231]` to `[103, 334]` and now
+holds 月牙; `raw_9` is unchanged, because no window of that message covers more of the question's words than its
+head does.
+
 ### Live run after the window change (2026-09-14)
 
 A rebuilt fixture (5 of the original 11 declared facts - the rest of that file was lost, which is why ADR-0038

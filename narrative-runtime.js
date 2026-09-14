@@ -976,8 +976,11 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     // The policy is named here rather than left to the packer's default, so the runtime module states which
     // packer it ships and a future edit cannot switch a live prompt to the offline submodular experiment by
     // changing a default somewhere else.
+    // The query is passed, not only used for ranking: a span larger than its share is trimmed from the head,
+    // and the packer needs the question to know which part to keep. Omitting it left that rule inert in the
+    // shipped prompt while every offline harness - which does pass it - measured it working.
     const evidence = packRawEvidence(ranked, history, { maxTokens: evidenceBudget, visibleSources,
-        policy: SHIPPED_PACK_POLICY });
+        policy: SHIPPED_PACK_POLICY, query });
     // The three local questions (may this floor be hidden, what fits the anchor block, what fits the boundary
     // block) are answered above; this is the one they do not answer between them: of the statements the ledger
     // still calls live, which ones does this prompt carry at all.
