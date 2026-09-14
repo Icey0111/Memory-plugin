@@ -313,14 +313,27 @@ if (detailMode) {
   if (!items.length) {
     console.log('DETAIL-SURVIVAL: 没有可提问的条目（无 dropped、无正控、无负控），跳过阶段二。');
   } else {
-    const groups = parsedTurns.probeMode === 'perTurn' ? items.map(item => [item]) : [items];
-    if (parsedTurns.probeMode === 'perTurn') {
-      console.log('DETAIL-SURVIVAL notice: perTurn 模式下后面的提问回合看得到前面的回复，可能互相污染；single 模式（默认）把它们放进同一个回合。');
+    const perTurn = parsedTurns.probeMode === 'perTurn';
+    const groups = perTurn ? items.map(item => [item]) : [items];
+    if (perTurn) {
+      console.log('DETAIL-SURVIVAL notice: perTurn 每条问题一个回合，回合之间把阶段一状态还原回去，'
+        + '所以每条都是同一起点的独立样本；single 模式（默认）把全部问题放进一个回合，共用一份证据预算。');
     }
     const probes = [];
     const graded = [];
     let probeTurnNo = phase1Last;
-    for (const group of groups) {
+    for (const [groupIndex, group] of groups.entries()) {
+      // A later question must not read an earlier reply: without this restore the second probe is a follow-up
+      // to the first, not a second sample of the same state, and the two are indistinguishable in the reply.
+      // The restore is the harness step ADR-0034 already describes - reset the surface epoch, redisplay the
+      // canonical chat, re-apply the fold classes - and it does not save the chat file.
+      let restored = false;
+      if (perTurn && groupIndex > 0) {
+        const restoreResult = await asJson('window.__acceptance.module.restoreSnapshot(SillyTavern.getContext(), '
+          + JSON.stringify(committed) + ', ' + JSON.stringify({ save: false }) + ')');
+        restored = true;
+        console.log('DETAIL-SURVIVAL restore before probe ' + (probeTurnNo + 1) + ': ' + JSON.stringify(restoreResult));
+      }
       probeTurnNo += 1;
       const question = buildProbeQuestion(group);
       if (question.leaks.length) {
@@ -338,17 +351,18 @@ if (detailMode) {
       const rows = group.map(item => gradeProbeItem(item, { injection, replyText, questionText: question.text, probeFailed }));
       graded.push(...rows);
       probes.push({ turn: probeTurnNo, question: question.text, leaks: question.leaks, replyText, injection,
-        error: probeError || null, graded: rows });
+        items: group.map(item => item.id), restored, error: probeError || null, graded: rows });
     }
     const adjudication = parseAdjudicationJsonl(graded.map(row => JSON.stringify(row.mechanical)).join('\n'));
     const adjudicationSummary = summarizeAdjudication(adjudication.rows);
     const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items });
     const detailEvidence = buildDetailEvidence({ at: nowIso(), probeTurns: probes.map(probe => probe.turn),
       phase1Last, retention, positive, items, probes, adjudicationErrors: adjudication.errors,
-      adjudicationSummary, survival });
+      adjudicationSummary, survival, probeMode: parsedTurns.probeMode });
     fs.writeFileSync(path.join(outDir, 'detail-survival.json'), JSON.stringify(detailEvidence, null, 2));
     fs.writeFileSync(path.join(outDir, 'detail-survival.adjudication.jsonl'),
       adjudication.rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+    console.log('DETAIL-SURVIVAL samples: ' + JSON.stringify(detailEvidence.independence));
     console.log(formatDetailReport(survival));
     for (const outcome of survival.outcomes) {
       console.log('  probe ' + outcome.id + ' kind=' + outcome.kind + ' fact=' + outcome.factKind + ' channel=' + outcome.channel

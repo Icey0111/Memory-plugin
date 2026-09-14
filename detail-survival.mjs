@@ -562,12 +562,37 @@ export function formatDetailReport(survival) {
         + ' [问题 ' + survival.items + ' 条，fixture-defect ' + survival.fixtureDefects + ']';
 }
 
+/**
+ * Whether the probe answers are independent samples of one state, and say so in the record.
+ *
+ * `single` asks every question in one turn: one composition, one retrieval budget, one answer to read, and the
+ * questions compete for the same evidence slots - which is how a six-item probe came back with one item quoted
+ * and five ranked out. `perTurn` asks one per turn, and it is only N samples if the phase-1 state is restored
+ * before each later question; without that restore the second question reads the first reply, which is
+ * contamination and not a second sample. The record states which of the two it holds, because the same reply
+ * count means different things in each.
+ */
+export function probeIndependence({ probeMode = 'single', probes = [] } = {}) {
+    if (String(probeMode) !== 'perTurn') {
+        const asked = probes.length && Array.isArray(probes[0].items) ? probes[0].items.length : probes.length;
+        return { mode: 'single', independent: false, samples: probes.length ? 1 : 0, competing: asked,
+            reason: '每一条问题都在同一个回合里，竞争同一份证据预算' };
+    }
+    const unrestored = probes.filter((probe, index) => index > 0 && probe.restored !== true).length;
+    return { mode: 'perTurn', independent: unrestored === 0, samples: probes.length, competing: 1,
+        reason: unrestored === 0 ? '每一条问题都从还原后的阶段一状态开始，互不污染'
+            : unrestored + ' 个较晚的问题没有还原状态，读得到前面的回复' };
+}
+
 /** The run record written outside the repository, with the block and reply it was read from. */
 export function buildDetailEvidence({ at, probeTurns = [], phase1Last = null, retention = null, positive = null,
-    items = [], probes = [], adjudicationErrors = [], adjudicationSummary = null, survival = null } = {}) {
+    items = [], probes = [], adjudicationErrors = [], adjudicationSummary = null, survival = null,
+    probeMode = 'single' } = {}) {
     return {
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,
         at, phase1Last,
+        probeMode,
+        independence: probeIndependence({ probeMode, probes }),
         probeTurns,
         positiveControl: positive ? positive.id : null,
         retention: retention ? {
@@ -579,6 +604,7 @@ export function buildDetailEvidence({ at, probeTurns = [], phase1Last = null, re
         items: (items || []).map(item => ({ id: item.id, kind: item.kind, needle: item.needle,
             question: item.question, expect: item.expect, turn: item.turn })),
         probes: (probes || []).map(probe => ({ turn: probe.turn, question: probe.question,
+            items: probe.items || [], restored: probe.restored === true,
             leaks: probe.leaks || [], replyText: probe.replyText || '', error: probe.error || null,
             injection: probe.injection ? { continuity: probe.injection.current_state || null,
                 evidence: probe.injection.reference || null } : null })),

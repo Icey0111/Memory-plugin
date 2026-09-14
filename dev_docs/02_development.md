@@ -189,6 +189,13 @@ lexically and is `entry_cap`, so it was ranked out and not unrankable - the live
 candidates from the dense, situation and character channels. Selection and packing are different outcomes in
 one record now (ADR-0039).
 
+The detail-survival probe now records what its answers are evidence of. `single` (default) asks every
+selected item in one turn, so one reply is one sample of a budget that four to six questions compete for - the
+live run quoted five rows and answered one of four items, with the jasmine row at rank 7 and `entry_cap`.
+`perTurn` asks one question per turn and restores the phase-1 snapshot before each later one (the ADR-0034
+restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
+an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
+
 ### Live run after the window change (2026-09-14)
 
 A rebuilt fixture (5 of the original 11 declared facts - the rest of that file was lost, which is why ADR-0038

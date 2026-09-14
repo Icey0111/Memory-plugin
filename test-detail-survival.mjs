@@ -17,6 +17,7 @@ import {
   attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival,
   formatDetailReport, buildDetailEvidence, matchNeedle, FACT_KINDS, DEFAULT_FACT_KIND, isMustKeep,
   summarizeFactSurvival, formatFactSurvival, leaksNeedle, freezeTurnsFixture, TURNS_FIXTURE_SCHEMA_VERSION,
+  probeIndependence,
 } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
@@ -269,6 +270,8 @@ const adjudicate = graded => {
   assert.ok(!source.includes('injections.before'), 'the probe phase never reads the previous turn');
   assert.ok(source.includes('question.leaks'), 'a question that contains its own answer is refused');
   assert.ok(source.includes('turns.fixture.json'), 'the run freezes the input it actually used');
+  assert.ok(source.includes('restoreSnapshot(SillyTavern.getContext()'), 'a later probe restores the state first');
+  assert.ok(source.includes('restored, error'), 'and the probe record says whether it was restored');
   assert.ok(source.includes('freezeTurnsFixture'), 'the frozen file is written by the versioned module');
   assert.ok(source.includes("createHash('sha256')"), 'the source file is identified by its hash');
 }
@@ -407,6 +410,40 @@ const adjudicate = graded => {
   assert.deepEqual(back.details, []);
   assert.deepEqual(back.negatives, []);
   assert.equal(back.cadence, 10);
+}
+
+// --- 14. are the probe answers independent samples, and does the record say so? -------------------------
+{
+  // Six questions in one turn compete for one evidence budget: the recorded FactSurvival3 turn quoted five
+  // rows and answered one item, while the tea that ranked seventh was never quoted. One answer from that
+  // composition is one sample. One question per turn, with the phase-1 state restored in between, is N.
+  const single = probeIndependence({ probeMode: 'single', probes: [{ items: ['a', 'b', 'c'] }] });
+  assert.equal(single.mode, 'single');
+  assert.equal(single.samples, 1);
+  assert.equal(single.competing, 3);
+  assert.equal(single.independent, false);
+  const clean = probeIndependence({ probeMode: 'perTurn', probes: [
+    { items: ['a'], restored: false }, { items: ['b'], restored: true }, { items: ['c'], restored: true }] });
+  assert.equal(clean.mode, 'perTurn');
+  assert.equal(clean.samples, 3);
+  assert.equal(clean.independent, true);
+  const dirty = probeIndependence({ probeMode: 'perTurn', probes: [
+    { items: ['a'] }, { items: ['b'] }, { items: ['c'], restored: true }] });
+  assert.equal(dirty.independent, false, 'a later question that was not restored reads the earlier reply');
+  assert.equal(dirty.samples, 3);
+  assert.ok(dirty.reason.includes('1'), dirty.reason);
+  assert.deepEqual(probeIndependence({ probeMode: 'single', probes: [] }),
+    { mode: 'single', independent: false, samples: 0, competing: 0, reason: '每一条问题都在同一个回合里，竞争同一份证据预算' });
+  // The evidence record carries it, so a reader of a saved run knows which kind of number it holds.
+  const evidence = buildDetailEvidence({ at: 'now', probeMode: 'perTurn', items: [{ id: 'a', kind: 'detail' }],
+    probes: [{ turn: 21, question: 'q', items: ['a'], restored: false, replyText: '', graded: [] },
+      { turn: 22, question: 'q', items: ['b'], restored: true, replyText: '', graded: [] }] });
+  assert.equal(evidence.probeMode, 'perTurn');
+  assert.equal(evidence.independence.independent, true);
+  assert.deepEqual(evidence.probes.map(probe => probe.restored), [false, true]);
+  assert.deepEqual(evidence.probes.map(probe => probe.items), [['a'], ['b']]);
+  assert.equal(buildDetailEvidence({ at: 'now' }).probeMode, 'single');
+  assert.equal(buildDetailEvidence({ at: 'now' }).independence.independent, false);
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');
