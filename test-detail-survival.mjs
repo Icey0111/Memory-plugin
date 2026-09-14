@@ -347,6 +347,15 @@ const adjudicate = graded => {
   assert.equal(staged.facts.find(fact => fact.id === 'c').lostBy, 'pipeline', 'the raw output wrote it and the bag did not keep it');
   assert.deepEqual(staged.mustKeepLostByModel, ['k']);
   assert.deepEqual(staged.mustKeepLostByPipeline, ['c']);
+  // A batch that did not commit merged nothing and must not be counted as a merge observation.
+  const uncommitted = summarizeFactSurvival([{ id: 'k', kind: 'state', needle: ['塌了方'] }], [
+    { batchTurn: 10, retained: ['k'], committed: true },
+    { batchTurn: 20, retained: [], committed: false }]);
+  assert.deepEqual(uncommitted.batches, [10], 'the failed batch is not a merge');
+  assert.deepEqual(uncommitted.uncommitted, [20]);
+  assert.equal(uncommitted.attempted, 2);
+  assert.deepEqual(uncommitted.mustKeepLostInAMerge, [], 'nothing was lost by a merge that never happened');
+  assert.ok(formatFactSurvival(uncommitted).includes('did not commit: [20]'));
   assert.ok(formatFactSurvival(staged).includes('lost at its first absent merge by'), formatFactSurvival(staged));
   // An incidental that still occupies the summary at the last merge is named as wasted room.
   const kept = summarizeFactSurvival([{ id: 'd-bell', kind: 'detail' }], [{ batchTurn: 20, retained: ['d-bell'] }]);

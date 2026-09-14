@@ -127,6 +127,21 @@ state - and incidental occupation fell from three facts to one (`d-cat`). The pl
 absent, but it was already absent from the floor-10 summary and the raw output never wrote it: an initial
 omission, not a merge loss.
 
+### Repeats (2026-09-14)
+
+Six runs of the same 11 facts, merges at floors 10 and 20. Two never reached the second merge:
+FactSurvival1 was blocked at its batch (`input_budget`) and FactSurvival4's floor-20 summary failed
+`over_budget`, so no merge committed. Neither may be read as a merge observation - FactSurvival4's report
+said "across 2 merges" while only one had happened, which is why the observation now carries `committed`
+and an uncommitted batch is excluded from the survival reading.
+
+Of the four valid two-merge runs, the pre-change one lost one must-keep fact in the merge (`k-state`,
+1/7) and the three post-change repeats lost none (0/7 each). Initial omissions still happened in two of the
+three: `k-place` was never written by the floor-10 summary in FactSurvival3, and `k-condition` in
+FactSurvival5 - though retrieval recovered the condition in that run's probe turn. Incidental occupation at
+the last merge fell from three facts (pre-change) to one, two and two. The instruction change removed the
+merge loss in every repeat; it did not make the first summary complete, and four runs is not a rate.
+
 A restored chat needs the host's own reset path. Replacing `ctx.chat` and re-applying the plugin's fold
 classes leaves the previous message roots mounted; the host's bounded ChatSurface allows one contiguous
 viewport plus the true tail and refuses an ambiguous projection with `ChatSurface projection has 3 ranges;

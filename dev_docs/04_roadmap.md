@@ -28,7 +28,10 @@ shows the model omitted it. One chat and eleven facts is a located defect, not a
 rule was then tightened (ADR-0036) and the same fixture re-run on FactSurvival3: every must-keep fact
 survived the floor-20 merge (state 1/1, condition 1/1; must-keep merge losses 1/7 to 0/7) and incidental
 occupation fell from three facts to one. The place name was absent from both summaries and from the raw
-output - an initial omission, not a merge loss.
+output - an initial omission, not a merge loss. Across six repeats of the same fixture, four reached the
+second merge: the pre-change run lost one must-keep fact in the merge and the three post-change runs lost
+none, while initial omissions still occurred twice. Two runs never committed the second batch at all (one
+input-budget block, one over-budget summary failure).
 
 Keep versioned raw history, a compact continuity snapshot, original-chunk retrieval, optional reranking
 and budgeted quotations. The summary is not an embedding document. The default summary cadence remains

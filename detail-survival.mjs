@@ -426,7 +426,15 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
  * cares about - while a fact absent from the first merge was never carried at all.
  */
 export function summarizeFactSurvival(details = [], observations = []) {
-    const batches = observations.map(observation => observation.batchTurn);
+    // A batch that was blocked or failed merged nothing: its reading is the previous committed state, and
+    // counting it as a merge would overstate what was observed. Run 4 did exactly that - its floor-20
+    // summary failed over_budget, the merge never committed, and the report still said "across 2 merges".
+    const attempted = observations.length;
+    const usable = observations.filter(observation => observation.committed !== false);
+    const uncommitted = observations.filter(observation => observation.committed === false)
+        .map(observation => observation.batchTurn);
+    const batches = usable.map(observation => observation.batchTurn);
+    observations = usable;
     const facts = (details || []).map(detail => {
         const retainedAt = {};
         const writtenAt = {};
@@ -464,7 +472,7 @@ export function summarizeFactSurvival(details = [], observations = []) {
     const mustKeep = facts.filter(fact => isMustKeep(fact.kind));
     const incidental = facts.filter(fact => !isMustKeep(fact.kind));
     const lastTurn = batches.length ? batches[batches.length - 1] : null;
-    return { batches, facts, kinds,
+    return { batches, uncommitted, attempted, facts, kinds,
         mustKeepTotal: mustKeep.length,
         mustKeepLostInAMerge: mustKeep.filter(fact => fact.lostInMerge).map(fact => fact.id),
         mustKeepWrittenButDropped: mustKeep.filter(fact => fact.writtenNotRetained).map(fact => fact.id),
@@ -480,7 +488,8 @@ export function summarizeFactSurvival(details = [], observations = []) {
 
 /** The fact-survival block: one line per kind, then the must-keep losses named. */
 export function formatFactSurvival(summary) {
-    const lines = ['FACT-SURVIVAL across ' + summary.batches.length + ' merge(s) at [' + summary.batches.join(', ') + ']'];
+    const lines = ['FACT-SURVIVAL across ' + summary.batches.length + ' merge(s) at [' + summary.batches.join(', ') + ']'
+        + ((summary.uncommitted || []).length ? ' | did not commit: [' + summary.uncommitted.join(', ') + ']' : '')];
     for (const row of Object.values(summary.kinds).sort((a, b) => a.kind.localeCompare(b.kind))) {
         lines.push('  ' + String(row.kind).padEnd(10) + (row.mustKeep ? 'must-keep ' : 'incidental')
             + ' ' + row.keptAtLastMerge + '/' + row.total + ' kept at the last merge'
