@@ -200,30 +200,36 @@ missed were quoted and then cut by the trim, not left unranked.
 restore path, not saved), so N questions are N independent samples. The saved evidence carries `probeMode`,
 an `independence` reading and each probe's `restored` flag, and the console prints it (ADR-0040).
 
-The character-description rewrite (ADR-0044) also had to bound its own risk. The first version sent objects and
-places to whichever chunk described a *person* most densely - the real chat's amber pendant and its barrier were
-both routed to the character's introduction row - because the dense window is name-independent. A cluster must
-now lie within 200 characters of a mention of the name (measured in that row: 7 characters from her name, 290
-from the pendant, 248 from the barrier). Across the twelve frozen chats and the real one, 52 scored pairs: the
-picked chunk changed in 28, the dense window contains the scored name in 33 cases against 26 without the range,
-and contains no name at all in 11 against 23. Eight still have another candidate name inside the window, which
-is the residual to watch.
+A real chat asked a named character's appearance and the reply invented it. The row that introduces her was never
+quoted; the character-description channel picked a 700-character action beat in which she is physically present
+(four mentions with eleven body and weapon words within +/-60 characters of them) over the introduction paragraph
+(three mentions, five words - Chinese names the person *after* describing them, so the cluster sits outside any
+window around the name). The channel also reported `detailed: true` for her while the quoted row never said what
+she looked like. A baseline over the twelve frozen chats and the real one (43 candidate names, every pick read)
+found 23 picks that were not a description of the name.
 
-The character-description channel was rewritten (ADR-0044) after a real chat asked what a character looked like
-and the reply invented it. The channel scored *descriptor words within +/-60 characters of a mention of the
-name*, so a 700-character action beat where the character is physically present (eleven body/weapon words near
-four mentions) beat the paragraph that introduces her (five words, because Chinese names the person after
-describing them). It also reported `detailed: true` for that character while the quoted row never said what she
-looked like. The score is now the densest 140-character descriptor window of the chunk, the lexicon gained the
-clothing and face words it was missing, and the "was she described" reading needs a cluster. On that chat the
-target row moves from score 21 (8th) to 39 (1st) and the evidence quotes a window of the introduction;
-`profileTargets` costs 0.53 ms before and 0.68 ms after (68 chunks, 4 names, min of 9x200), and the labelled
-A/B is unchanged.
+The attempt to fix it - score the densest 140-character descriptor cluster instead of descriptors near a mention,
+extend the lexicon with clothing and face words, anchor the cluster within 200 characters of the name, credit each
+descriptor to the nearest candidate name, break ties by distance - was **measured and rejected** (ADR-0044):
+*** went 23 -> 24 (three fixed, four regressed), 19 of 43 picks before the distance rules landed on a cluster about
+a different character, and two of the three "fixes" were accidental cross-character wins. The lexicon alone keeps
+the three regressions correct but leaves the motivating failure in place (the action beat still scores 44 against
+21). Nothing shipped, and the code is back to its previous state.
 
-A labelled probe set built from that same chat (10 questions, every needle unique) also measured what the
-channel is *not* responsible for: with the profile channel off, only 2 of 10 needles were quoted, and three of
-the misses have the right row quoted with the needle **outside the emitted window** - the residual limit of a
-window driven by the question's own words (ADR-0037/ADR-0041). Ranking and window are separate defects.
+The attempt does leave a usable instrument and a sharper diagnosis:
+
+- A labelled probe set from that chat - ten questions, every needle verified unique, six about appearance or
+  clothing - of which **2/10** have their needle inside a quoted window today. The misses split into two defects
+  that the set separates: the row is never quoted (ranking), or the row is quoted and the window lands elsewhere
+  in it (the window follows the question's own words, which for an appearance question do not occur near the
+  description at all - the ADR-0037/ADR-0041 limit).
+- Even the rejected scoring rule, which does get the introduction row quoted (`raw_9[437,643]`), leaves the probe
+  set at 2/10, so the next rule has to change the *window*, not only the ranking: a span quoted because a channel
+  picked it should carry that channel's region.
+- Descriptor ownership has to be decided by sentence rather than by nearest mention: crediting the nearest
+  candidate name misattributed a pronoun-subject sentence ("he has an old scar") to the innkeeper named in the
+  next clause instead of the man named in the previous sentence.
+
 
 A summary body refused for `format` or `over_budget` now earns one repair (ADR-0042): the same request
 again, a correction, and the refused text (bounded to 1,600 characters) to cut rather than rewrite. It is

@@ -182,7 +182,6 @@ the chat file keeps (ADR-0004).
 | N39 | The evidence window is moved by the question's **words** first and its n-grams second: n-grams match prose that shares two characters, so a head window can cover fragments of the question and no word of it, which is how a quoted answer stayed outside its own quote (ADR-0041) | queryWindowTerms, segmentWords, slideWindowToQuery, test-evidence-window.mjs |
 | N40 | A summary body refused for `format` or `over_budget` earns one repair - the request again, a correction, and the refused text to cut - recorded as `body_repair` with its own cost and re-evaluated against the same checks, while the request states the hard ceiling and its consequence; `input_budget` stays an unrepaired local block (ADR-0042) | summaryBodyRepairRequest, summaryRequest, commitMerged, test-anchor-repair.mjs |
 
-| N41 | The character-description channel scores the **densest descriptor cluster** in a chunk (the name only has to appear somewhere in it), not the count of descriptor words near a mention: a long action row where the character acts used to beat the row that introduces her, and the reading that says "she was described" now needs a cluster rather than one word near the name (ADR-0044) | describingWindow, profileTargets, profileRecall, PROFILE_TERMS, test-narrative-pipeline.mjs |
 
 ### 6. What this architecture does not do yet
 

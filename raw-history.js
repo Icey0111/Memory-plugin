@@ -111,84 +111,33 @@ export const ENTITY_WEIGHT = 0.5;
 export const ENTITY_DF_RATIO = 0.25;
 
 /**
- * What a passage has to say to count as describing a person.
+ * What a passage has to mention near a name to count as being *about* that person.
  *
  * The split this serves: the summary carries the logic - who these people are, what they want, what is
- * unresolved - and retrieval carries the concrete detail. So when a named character is in the situation, the
- * passage worth quoting is the one that describes them, not the one that merely scores well against the last
- * three messages.
- *
- * The lexicon is deliberately appearance-specific. The first version also carried every body word (手, 肩, 背,
- * 脚, 眼), and a long action scene where the character is physically present collected eleven of them near the
- * name, while the paragraph that actually introduces her collected five: description in Chinese names the
- * person *after* the description, so the cluster sits outside a window around the name (ADR-0044).
+ * unresolved - and retrieval carries the concrete detail. So when a named character is in the situation,
+ * the passage worth quoting is the one that describes them, not the one that merely scores well against the
+ * last three messages. Co-occurrence is required, within a window around the name, because most of these
+ * words are common enough to appear somewhere in any chunk.
  */
 export const PROFILE_TERMS = [
-    '眼', '目', '眉', '睫', '瞳', '眸', '发', '辫', '须', '疤', '痣', '脸', '颧', '腮', '唇', '齿', '颈',
-    '皮肤', '肤色', '身', '身材', '高', '矮', '瘦', '胖', '年纪', '岁', '声音', '嗓音', '口音', '腔',
-    '手', '指', '缺', '脚', '腿', '背', '肩', '腰', '袍', '篷', '甲', '衫', '褂', '帽', '兜帽', '披风',
-    '鞋', '靴', '佩', '刀', '剑', '杖', '装束', '衣着', '打扮', '灰绿', '图腾',
+    '眼', '目', '眉', '发', '辫', '须', '疤', '痣', '脸', '皮肤', '肤色', '身', '高', '矮', '瘦', '胖',
+    '年纪', '岁', '声音', '嗓音', '口音', '腔', '手', '指', '缺', '脚', '腿', '背', '肩',
+    '衣', '袍', '衫', '褂', '帽', '鞋', '靴', '佩', '刀', '剑', '杖',
     '沉默', '寡言', '话少', '多话', '急躁', '暴躁', '温和', '冷淡', '耿直', '谨慎', '咳嗽', '口吃', '习惯', '一向', '总先',
 ];
 export const PROFILE_WEIGHT = 0.6;
 export const PROFILE_LIMIT = 4;
-/** The window a description has to fit in, and how many of the words above make it one. */
-export const PROFILE_DENSE_WINDOW = 140;
-export const PROFILE_DENSE_MIN = 5;
-/**
- * How far a descriptor cluster may sit from a mention of the name and still be about that name.
- *
- * The cluster itself is name-independent, so without this a chunk that mentions an object once and describes a
- * person densely would win for the object: measured on the real chat, the paragraph about the character sits 7
- * characters from her name, while the same chunk mentions a pendant 290 characters past it and a barrier 248.
- * 200 keeps the appositive introduction - a description in front of the name - and rejects the other names in
- * the same row.
- */
-export const PROFILE_ANCHOR_RANGE = 200;
+const PROFILE_WINDOW = 60;
 
-/** How far a cluster is from the nearest mention of the name: 0 when the mention is inside the window. */
-function windowToNameDistance(text, win, name) {
-    let best = Infinity;
-    for (let at = text.indexOf(name); at >= 0; at = text.indexOf(name, at + 1)) {
-        best = Math.min(best, Math.max(0, Math.max(win.from - (at + name.length), at - win.to)));
+/** Is one of the descriptor words said near this name, rather than merely somewhere in the chunk? */
+function describesName(text, name, term) {
+    let from = 0;
+    for (;;) {
+        const at = text.indexOf(name, from);
+        if (at < 0) return false;
+        if (text.slice(Math.max(0, at - PROFILE_WINDOW), at + name.length + PROFILE_WINDOW).includes(term)) return true;
+        from = at + name.length;
     }
-    return best;
-}
-
-/**
- * The densest descriptor window of a passage, wherever it is.
- *
- * A description is a cluster: several of these words inside a sentence or two. That is the signal, not the
- * count near a name, because the name may come before or after the cluster. The window is anchored at every
- * descriptor occurrence and at every `window`-sized step, so a cluster cannot be missed by where the slice
- * happens to start.
- */
-export function describingWindow(text, { window = PROFILE_DENSE_WINDOW, terms = PROFILE_TERMS } = {}) {
-    const body = String(text || '');
-    if (!body) return { from: 0, to: 0, hits: [] };
-    const spots = [];
-    for (const term of terms) {
-        const found = [];
-        for (let at = body.indexOf(term); at >= 0; at = body.indexOf(term, at + 1)) found.push(at);
-        if (found.length) spots.push({ term, found });
-    }
-    if (!spots.length) return { from: 0, to: Math.min(body.length, window), hits: [] };
-    // Starts are deduped onto a 10-character grid: an occurrence-anchored start per hit is not needed at
-    // character resolution, and the grid bounds the work when a common word occurs many times in a chunk.
-    const last = Math.max(0, body.length - window);
-    const starts = new Set([0]);
-    for (let at = 0; at <= last; at += Math.max(20, Math.floor(window / 2))) starts.add(at);
-    for (const spot of spots) {
-        for (const at of spot.found) starts.add(Math.min(last, Math.floor(Math.max(0, at) / 10) * 10));
-        if (starts.size >= 160) break;
-    }
-    let best = { from: 0, to: Math.min(body.length, window), hits: [] };
-    for (const from of starts) {
-        const to = from + window;
-        const hits = spots.filter(spot => spot.found.some(at => at >= from && at < to)).map(spot => spot.term);
-        if (hits.length > best.hits.length) best = { from, to, hits };
-    }
-    return best;
 }
 
 /**
@@ -196,20 +145,12 @@ export function describingWindow(text, { window = PROFILE_DENSE_WINDOW, terms = 
  *
  * Measured need: a person who walked back into the scene after their floors were folded had their earlier
  * passage quoted in only three of six such moments, and the passages that were quoted were about the scene
- * rather than about the person. Rewritten after a live chat showed the metric picking an action scene over the
- * row that introduces her: a mention count is not a description, so the score is now the densest descriptor
- * cluster in the chunk, with mentions only as a small tie-breaker.
+ * rather than about the person. This picks the chunk with the most mentions of the name and the most
+ * descriptor words said near it, which is the one a reader would call "where this character is described".
  */
 export function profileTargets(chunks, names, { visibleSources = new Set(), limit = PROFILE_LIMIT } = {}) {
     const wanted = [...new Set((names || []).map(name => String(name || '').trim()))]
         .filter(name => name.length >= 2 && name.length <= 12);
-    // The densest window does not depend on the name, so it is computed once per chunk and reused for every
-    // name in the batch - and only for a chunk some name mentions, because that is the only place it is read.
-    const denseByChunk = new Map();
-    const denseOf = chunk => {
-        if (!denseByChunk.has(chunk)) denseByChunk.set(chunk, describingWindow(chunk.text));
-        return denseByChunk.get(chunk);
-    };
     const out = [];
     for (const name of wanted) {
         let best = null;
@@ -224,16 +165,13 @@ export function profileTargets(chunks, names, { visibleSources = new Set(), limi
                 from = at + name.length;
             }
             if (!occurrences) continue;
-            const dense = denseOf(chunk);
-            if (windowToNameDistance(text, dense, name) > PROFILE_ANCHOR_RANGE) continue;
-            const descriptors = dense.hits.length;
-            const score = descriptors * 3 + Math.min(occurrences, 3) * 2;
+            const descriptors = PROFILE_TERMS.filter(term => describesName(text, name, term)).length;
+            const score = occurrences * 2 + descriptors * 3;
             if (!best || score > best.score || (score === best.score && chunk.index < best.chunk.index)) {
-                best = { chunk, score, occurrences, descriptors, window: dense };
+                best = { chunk, score, occurrences, descriptors };
             }
         }
-        if (best) out.push({ name, chunk: best.chunk, score: best.score, occurrences: best.occurrences,
-            descriptors: best.descriptors, window: best.window });
+        if (best) out.push({ name, chunk: best.chunk, score: best.score, occurrences: best.occurrences, descriptors: best.descriptors });
     }
     return out.sort((a, b) => b.score - a.score).slice(0, limit);
 }
@@ -241,10 +179,9 @@ export function profileTargets(chunks, names, { visibleSources = new Set(), limi
 /**
  * Did a character who is in the situation get described back to the model?
  *
- * `quoted` is whether any packed passage mentions the name at all; `detailed` is whether one of them carries a
- * descriptor *cluster*, which is what the quoted passage has to show to count as a description. The first
- * version asked only whether one descriptor word sat near the name, so a quoted action scene reported
- * `detailed: true` for a character whose looks it never mentioned - the same question this file's scoring had.
+ * `quoted` is whether any packed passage mentions the name at all; `detailed` is whether one of them says
+ * a descriptor word near it. The second is the number that matters: a scene where the character appears is
+ * not the same as a passage that says what the character looks like or is like.
  */
 export function profileRecall(chunks, history, { names = [], visibleSources = new Set(), packed = [], limit = PROFILE_LIMIT } = {}) {
     const rows = quotedRows(history, packed);
@@ -253,16 +190,8 @@ export function profileRecall(chunks, history, { names = [], visibleSources = ne
         hidden_chunk: target.chunk.id,
         descriptors: target.descriptors,
         quoted: rows.some(row => row.text.includes(target.name)),
-        // Relative to the cluster the channel found for this character, with an absolute floor: quoting the
-        // row the channel picked counts, and so does a row nearly as dense, while a scene whose body words
-        // merely happen to sit close together does not. A short description is not punished for being short.
-        detailed: rows.some(row => {
-            if (!row.text.includes(target.name)) return false;
-            const win = describingWindow(row.text);
-            if (windowToNameDistance(row.text, win, target.name) > PROFILE_ANCHOR_RANGE) return false;
-            return win.hits.length
-                >= Math.min(target.descriptors, Math.max(PROFILE_DENSE_MIN, Math.ceil(target.descriptors * 0.6)));
-        }),
+        detailed: rows.some(row => row.text.includes(target.name)
+            && PROFILE_TERMS.some(term => describesName(row.text, target.name, term))),
     }));
 }
 

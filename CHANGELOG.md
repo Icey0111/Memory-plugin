@@ -7,11 +7,6 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
-- The character-description channel scored *descriptor words near a mention of the name*, so a long action
-  scene where a character is physically present beat the paragraph that introduces her - and the reading that
-  says "she was described" reported success for a quoted scene that never said what she looked like. It now
-  scores the densest descriptor cluster in the chunk, its lexicon covers clothing and face words, and the
-  reading needs a cluster rather than one word near the name (ADR-0044).
 - The evidence window rule (ADR-0037) was inert in every shipped prompt: the runtime called `packRawEvidence`
   without `query`, so the term list was empty and the rule returned immediately, while both harnesses that
   accepted the change passed the query themselves. The runtime passes it now and a runtime-level test through
