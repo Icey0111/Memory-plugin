@@ -17,6 +17,9 @@
 //   - which channel the probe turn actually saw (continuity / evidence / neither) - read from
 //     injections.thisTurn, the block that turn's own generation set, never the previous turn's;
 //   - whether the needle occurs in the reply and whether the question leaked it.
+// A needle is matched with a paraphrase-tolerant reading (a contiguous run of its content characters), so a
+// summary that says "缺角" still counts for a needle written "缺了一角"; the strict substring reading stays
+// where it matters, in the question-leak check. The match kind is recorded on every row.
 // A needle match is a machine reading, not a conclusion. Every probe item is emitted as an
 // answer-adjudication row so the classification (confirmed-pass / model-error / prompt-insufficient /
 // fixture-defect ...) is derived there, and a needle-language mismatch is recorded as a fixture defect
@@ -47,11 +50,53 @@ export function needleForms(item) {
     return list.map(normalizeText).filter(Boolean);
 }
 
-/** Does any surface form occur in the text? Empty text and empty needle are both false. */
+/** Does any surface form occur in the text verbatim? Empty text and empty needle are both false. */
 export function containsAny(haystack, forms) {
     const text = normalizeText(haystack);
     if (!text) return false;
     return (forms || []).some(form => form && text.includes(form));
+}
+
+/**
+ * Characters that carry no content, so a paraphrase may drop or reorder them: "缺了一角" and "缺角" are the
+ * same defect, "第三天夜里" and "第三夜前" are the same promise.
+ */
+const NEEDLE_STOP_CHARS = new Set(['了', '的', '是', '里', '之', '着', '过', '在', '和', '与',
+    '就', '都', '也', '还', '又', '把', '被', '给', '对', '从', '到', '这', '那', '一']);
+
+/** The content characters of one surface form, in order. */
+function contentChars(form) {
+    return [...normalizeText(form)].filter(ch => /[\u3400-\u9fff]/.test(ch) && !NEEDLE_STOP_CHARS.has(ch));
+}
+
+/**
+ * Match a needle against captured text, tolerating paraphrase.
+ *
+ * A verbatim-only reading binds the needle to the wording the author happened to pick, and a generated
+ * summary or reply paraphrases. On the first live run three of six details were read as absent while the
+ * channel carried them as "缺角" for "缺了一角", "左耳白" for "左耳是白的" and "第三夜前" for "第三天夜里".
+ * That is the instrument's phrasing assumption failing, not the memory.
+ *
+ * The second reading accepts any contiguous run of >= 2 of the needle's content characters, longest first,
+ * and reports which run matched so the reading stays auditable. Two characters is the floor: a shorter run
+ * is not evidence. The question-leak check stays on the strict substring reading.
+ */
+export function matchNeedle(text, forms) {
+    const hay = normalizeText(text);
+    if (!hay) return { matched: false, how: null, token: null };
+    for (const form of forms || []) {
+        if (form && hay.includes(form)) return { matched: true, how: 'verbatim', token: form };
+    }
+    for (const form of forms || []) {
+        const chars = contentChars(form);
+        for (let len = Math.min(4, chars.length); len >= 2; len -= 1) {
+            for (let start = 0; start + len <= chars.length; start += 1) {
+                const run = chars.slice(start, start + len).join('');
+                if (hay.includes(run)) return { matched: true, how: 'run' + len, token: run };
+            }
+        }
+    }
+    return { matched: false, how: null, token: null };
 }
 
 const cleanId = value => String(value == null ? '' : value).trim();
@@ -160,7 +205,7 @@ export function splitDetailsByRetention(details, bag) {
     const dropped = [];
     const expectationMismatches = [];
     for (const detail of details || []) {
-        const found = containsAny(bag, detail.needle);
+        const found = matchNeedle(bag, detail.needle).matched;
         if (found) retained.push(detail); else dropped.push(detail);
         if (detail.expect === 'summary' && !found) expectationMismatches.push(detail.id);
         if (detail.expect === 'dropped' && found) expectationMismatches.push(detail.id);
@@ -207,7 +252,9 @@ export function buildProbeQuestion(items) {
     const header = '【记忆核对】请只依据你记得的剧情回答下面每一条。记得就简短说清，不记得就直接说“不记得”，不要猜测，也不要补全。请保留编号逐条回答。';
     const lines = (items || []).map((item, index) => (index + 1) + '. ' + item.question);
     const text = [header].concat(lines).join('\n');
-    const leaks = (items || []).filter(item => containsAny(text, item.needle)).map(item => item.id);
+    // Tolerant, because a leading question that repeats a content run of the answer has leaked it even
+    // when it does not repeat the whole needle.
+    const leaks = (items || []).filter(item => matchNeedle(text, item.needle).matched).map(item => item.id);
     return { text, leaks };
 }
 
@@ -216,10 +263,12 @@ export function buildProbeQuestion(items) {
  * `injections.thisTurn`: `current_state` is the continuity channel, `reference` is the quoted evidence.
  */
 export function attributeChannel(injection, item) {
-    const continuity = containsAny(injection && injection.current_state, item.needle);
-    const evidence = containsAny(injection && injection.reference, item.needle);
-    const channel = continuity && evidence ? 'both' : continuity ? 'continuity' : evidence ? 'evidence' : 'none';
-    return { channel, continuity, evidence };
+    const continuity = matchNeedle(injection && injection.current_state, item.needle);
+    const evidence = matchNeedle(injection && injection.reference, item.needle);
+    const channel = continuity.matched && evidence.matched ? 'both'
+        : continuity.matched ? 'continuity' : evidence.matched ? 'evidence' : 'none';
+    return { channel, continuity: continuity.matched, evidence: evidence.matched,
+        continuityMatch: continuity, evidenceMatch: evidence };
 }
 
 /**
@@ -243,8 +292,10 @@ export function looksLikeLanguageMismatch(item, replyText) {
  * evidence carried but the reply missed is `model-error`.
  */
 export function gradeProbeItem(item, { injection = null, replyText = '', questionText = '', probeFailed = false } = {}) {
-    const { channel, continuity, evidence } = attributeChannel(injection, item);
-    const needleInReply = containsAny(replyText, item.needle);
+    const { channel, continuity, evidence, continuityMatch, evidenceMatch } = attributeChannel(injection, item);
+    const replyMatch = matchNeedle(replyText, item.needle);
+    const needleInReply = replyMatch.matched;
+    // The leak check stays strict: a question that contains the needle verbatim gives its own answer away.
     const leaked = containsAny(questionText, item.needle);
     const languageMismatch = looksLikeLanguageMismatch(item, replyText);
     // A probe turn that errored or produced no reply is not an observation at all: it is recorded as a
@@ -258,6 +309,7 @@ export function gradeProbeItem(item, { injection = null, replyText = '', questio
         failed ? 'probe-turn-error' : null].filter(Boolean).join('; ');
     return {
         id: item.id, kind: item.kind, channel, continuity, evidence, needleInReply, leaked, languageMismatch,
+        continuityMatch, evidenceMatch, replyMatch,
         mechanical: {
             id: item.id, machineVerdict: needleInReply ? 'hit' : 'miss',
             promptEvidence: channel === 'none' ? 'missing' : 'sufficient',

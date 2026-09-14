@@ -15,7 +15,7 @@ import {
   DETAIL_CHANNELS, DETAIL_EXPECTATIONS, normalizeText, needleForms, containsAny, parseTurnsFile,
   continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems, buildProbeQuestion,
   attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival,
-  formatDetailReport, buildDetailEvidence,
+  formatDetailReport, buildDetailEvidence, matchNeedle,
 } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
@@ -267,6 +267,37 @@ const adjudicate = graded => {
   assert.ok(source.includes('record.injections.thisTurn'), 'grading reads the block this turn saw');
   assert.ok(!source.includes('injections.before'), 'the probe phase never reads the previous turn');
   assert.ok(source.includes('question.leaks'), 'a question that contains its own answer is refused');
+}
+
+// --- 11. paraphrase tolerance: the reading follows the fact, not the author's wording ----------------
+{
+  // The first live run's three misreads: the channel carried each detail in different words, so a
+  // verbatim-only reader called two of them fabricated and one refused.
+  const bell = matchNeedle('门柱缺角哑铜铃, 铃身没晃起来——它本来就缺角', ['缺了一角']);
+  assert.equal(bell.matched, true);
+  assert.equal(bell.token, '缺角');
+  assert.equal(matchNeedle('只有左耳是白的', ['左耳是白的']).how, 'verbatim');
+  assert.equal(matchNeedle('第三夜前', ['第三天夜里']).matched, true, 'the promise survives as 第三');
+  assert.equal(matchNeedle('白的那只耳朵', ['左耳是白的']).matched, false, 'one wording is not every wording');
+  // A run needs two content characters that occur contiguously: a paraphrase is not a coincidence.
+  assert.equal(matchNeedle('水深，草是绿的', ['深绿']).matched, false);
+  assert.equal(matchNeedle('无关原文', ['深绿']).matched, false);
+  assert.equal(matchNeedle('', ['缺角']).matched, false);
+  assert.deepEqual(matchNeedle('x', []), { matched: false, how: null, token: null });
+  // Retention uses the same reading, so a summary that paraphrases still counts as keeping the detail.
+  const bag = continuityBag({ summary: { text: '门柱缺角哑铜铃；阿灰左耳白。' }, anchors: { active: [] }, knowledge: { entries: [] } });
+  const split = splitDetailsByRetention([
+    detail('d-bell', ['缺了一角'], '门柱上那只铜铃有什么缺损？', 'summary', 1),
+    detail('d-cat', ['左耳是白的'], '阿灰的耳朵有什么特别的地方？', 'dropped', 3),
+    detail('d-missing', ['三天两头'], 'q', 'dropped', 2)], bag);
+  assert.deepEqual(split.retained.map(item => item.id), ['d-bell', 'd-cat']);
+  assert.deepEqual(split.dropped.map(item => item.id), ['d-missing']);
+  // The channel reading follows suit, and the question-leak check refuses a leading question.
+  const channel = attributeChannel({ current_state: '门柱缺角哑铜铃', reference: null }, { id: 'x', needle: ['缺了一角'] });
+  assert.equal(channel.channel, 'continuity');
+  assert.equal(channel.continuityMatch.token, '缺角');
+  const leading = buildProbeQuestion([{ id: 'd', kind: 'detail', needle: ['缺了一角'], question: '那铃缺角了吗？' }]);
+  assert.deepEqual(leading.leaks, ['d']);
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');

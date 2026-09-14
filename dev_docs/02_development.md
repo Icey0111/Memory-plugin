@@ -82,11 +82,14 @@ control comes from what the summary did contain and each negative control is a v
 wrote, so an answer is attributed to a channel instead of to plausibility. Channel attribution reads
 `injections.thisTurn` - the block the probe turn's own generation set - never the previous turn's block,
 which is the instrument defect 76c50d0 fixed. A probe question that contains the needle it tests is
-refused before a generation is spent. A needle match is a machine reading: every item goes through
-answer-adjudication.mjs, and a needle-language mismatch is a recorded fixture defect rather than a model
-miss, because one English reply was once scored a miss by a Chinese needle. The mode measures only and
-changes no summary, retrieval or injection behaviour. It has no live run on this branch yet, so it is an
-instrument, not evidence.
+refused before a generation is spent. A needle is matched with a verbatim reading first and a paraphrase-tolerant content-run reading second:
+the first live run read three of six details as absent while the channels carried them as "缺角" for
+"缺了一角", "左耳白" for "左耳是白的" and "第三夜前" for "第三天夜里" (ADR-0035). Both readings record the
+matched token, and the question-leak check stays strict. A needle match is still a machine reading: every
+item goes through answer-adjudication.mjs, and a needle-language mismatch is a recorded fixture defect
+rather than a model miss. The mode measures only and changes no summary, retrieval or injection behaviour.
+A live run on 2026-09-14 (DetailSurvival1, 20 turns, both batches committed, zero failures) re-scores as
+摘要保留 4 / 检索取回 1 / 拒绝 1 / 编造 0: five confirmed passes and the never-written value refused.
 
 A restored chat needs the host's own reset path. Replacing `ctx.chat` and re-applying the plugin's fold
 classes leaves the previous message roots mounted; the host's bounded ChatSurface allows one contiguous
