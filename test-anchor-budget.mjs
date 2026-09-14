@@ -8,10 +8,11 @@
 //   C. the ledger keeps its history: a replacement moves an entry, it does not delete it;
 //   D. when the budget still binds, the cut is by kind round-robin and newest-first, and it is reported.
 import assert from 'node:assert/strict';
-import { orderAnchors, selectAnchors, mergeAnchors, parseAnchors, parseAnchorChanges, formatAnchors,
-    formatAnchorPrompt, planAnchors, anchorSubjectKey, MAX_SUPERSEDED, MAX_RESOLVED } from './raw-history.js';
+import { orderAnchors, selectAnchors, selectKnowledge, mergeAnchors, parseAnchors, parseAnchorChanges,
+    formatAnchors, formatAnchorPrompt, planAnchors, anchorSubjectKey, MAX_SUPERSEDED, MAX_RESOLVED } from './raw-history.js';
 import { updateNarrative, buildNarrativeContext, readNarrativeReport,
     narrativeSettings } from './narrative-runtime.js';
+import { estimateTokens } from './v55-tokenizer.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
 const pair = n => [{ is_user: true, mes: '第' + n + '轮：主角走进大厅。' },
@@ -245,6 +246,29 @@ const KNIFE_SUNK = 'Ilyra长刀已沉入井底根结槽中，被根须合拢锁�
     const h = host({ settings: { narrative_anchor_tokens: 300 } });
     assert.ok(readNarrativeReport(h.ctx).notices.some(n => /300/.test(n) && /旧默认值/.test(n)));
     assert.equal(narrativeSettings(h.ctx).narrative_anchor_tokens, 300);
+}
+
+// --- 14. the knowledge block reports what it dropped, the same way the anchor block does -------------
+{
+    // The two blocks are the same kind of thing - a budgeted list of live statements - but only the anchor
+    // block said what it left out. selectKnowledge closes that gap, and it keeps the fit rule the injected
+    // text already had: whole lines only, stop at the first line that does not fit.
+    const entries = [{ kind: '苏晚/不知道', text: '钥匙来自林舟' },
+        { kind: '林舟/知道', text: '钥匙现在在苏晚手里' }];
+    const roomy = selectKnowledge(entries, { budget: 4000 });
+    assert.equal(roomy.total, 2);
+    assert.equal(roomy.injected, 2, 'both boundaries fit when there is room');
+    assert.equal(roomy.parked.length, 0);
+    assert.equal(roomy.text, formatAnchors(entries), 'and the text is what formatting them all produces');
+    const none = selectKnowledge(entries, { budget: 0 });
+    assert.equal(none.injected, 0, 'no budget, nothing injected');
+    assert.equal(none.text, '');
+    assert.equal(none.parked.length, 2, 'and every dropped boundary is named');
+    const one = selectKnowledge(entries, { budget: estimateTokens(formatAnchors([entries[0]])) });
+    assert.equal(one.injected, 1, 'a budget for exactly one line injects one line');
+    assert.equal(one.parked.length, 1, 'the rest is reported, not silent');
+    assert.match(one.parked[0], /林舟/);
+    assert.equal(selectKnowledge([], { budget: 4000 }).total, 0, 'an empty ledger has nothing to drop');
 }
 
 console.log('anchor-budget: ok');

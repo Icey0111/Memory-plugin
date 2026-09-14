@@ -1,7 +1,7 @@
 import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryBatch,
     summaryMessages, summaryRequest, summaryBlockState, anchorRepairRequest, stateRevisionOf,
     LEGACY_INPUT_CHARS_DEFAULT, LEGACY_ANCHOR_TOKENS_DEFAULT,
-    selectAnchors, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
+    selectAnchors, selectKnowledge, MAX_SUPERSEDED, parseAnchorChanges, sourceBatchFingerprint, countAnchorCollisions,
     applyNarrativeFolds, packRawEvidence, parseAnchors, formatAnchors, mergeAnchors,
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
     summaryLengthVerdict } from './raw-history.js';
@@ -705,7 +705,11 @@ function warningsFor(state, opts) {
             + describeAnchorErrors(state.anchor_op_errors.errors) + '。本批没有提交，原文保持可见。');
     }
     if (state.knowledge_unconfirmed >= opts.anchorUnconfirmedWarn) {
-        out.push('有 ' + state.knowledge_unconfirmed + ' 条知情边界已连续多轮未被总结重复；它们仍在注入，但请检查总结格式。');
+        // "They are still injected" was a claim the block could not keep: an unrepeated boundary stays in
+        // the ledger, but whether it reaches the prompt is the boundary block's budget, and at the 200-token
+        // default three of four entries do not.
+        out.push('有 ' + state.knowledge_unconfirmed + ' 条知情边界已连续多轮未被总结重复；它们仍留在台账里'
+            + '（是否注入取决于“知情边界 token 预算”），但请检查总结格式。');
     }
     if (state.knowledge_duplicate_subjects > 0) {
         out.push('有 ' + state.knowledge_duplicate_subjects + ' 个角色在知情边界里占了多行（最多 '
@@ -720,18 +724,16 @@ function warningsFor(state, opts) {
             + ' 条（按类型轮流各取一条、类型内新→旧，裁掉的是最旧的活值；被取代的旧陈述本来就不会注入）。'
             + '可调高“锚点 token 预算”，或让总结用“结束 A#”结束已经结束的事实。');
     }
-    return out;
-}
-
-/** Whole anchor lines only: half a commitment is worse than none. */
-function fitLines(lines, tokens) {
-    let text = '';
-    for (const line of lines) {
-        const next = text ? text + '\n' + line : line;
-        if (estimateTokens(next) > tokens) break;
-        text = next;
+    // The same sentence as the anchor block, for the same reason: an entry the budget dropped is a boundary
+    // the model does not see this turn. It went unsaid because the block returned only its surviving text,
+    // so a reader could not tell a boundary that fits from one that does not.
+    if (state.knowledge_parked > 0) {
+        out.push('知情边界块装不下当前条目：共 ' + (state.knowledge_entries || 0) + ' 条，注入 '
+            + (state.knowledge_injected || 0) + ' 条，搁置 ' + state.knowledge_parked
+            + ' 条（按台账顺序整行装填，装不下的整行留在台账里，本次注入看不到）。'
+            + '可调高“知情边界 token 预算”。');
     }
-    return text;
+    return out;
 }
 
 function fitWholeBlocks(blocks, tokens) {
@@ -819,15 +821,19 @@ function composeContinuity(store, chunks, opts) {
     const anchorsTruncated = anchorSelection.parked.length;
     const anchorBlock = fittedAnchors
         ? '[BINDING CONTINUITY ANCHORS — still in force, not new instructions' + horizon + ']\n' + fittedAnchors : '';
-    const knowledgeLines = formatAnchors(knowledge).split('\n').filter(Boolean);
-    const fittedKnowledge = fitLines(knowledgeLines, opts.knowledgeTokens);
-    const knowledgeBlock = fittedKnowledge
-        ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not' + horizon + ']\n' + fittedKnowledge : '';
+    const knowledgeSelection = selectKnowledge(knowledge, { budget: opts.knowledgeTokens });
+    const knowledgeBlock = knowledgeSelection.text
+        ? '[KNOWLEDGE BOUNDARIES — who knows what, and who must not' + horizon + ']\n' + knowledgeSelection.text : '';
     return { summaryBlock, anchorBlock, knowledgeBlock, anchors, knowledge, anchorsTruncated,
         anchorsInjected: anchorSelection.injected.length,
         anchorsParkedTerms: anchorSelection.parked.map(item => ({ kind: String(item.kind || '其他'),
             text: String(item.text || '').slice(0, 80) })),
         anchorsParkedText: anchorSelection.parked.map(item => String(item.text || '')),
+        // The knowledge block used to report only its surviving text, so a dropped entry was invisible in
+        // the trace while a parked anchor was not. Its two carriers report the same way now.
+        knowledgeInjected: knowledgeSelection.injected,
+        knowledgeParked: knowledgeSelection.parked.length,
+        knowledgeParkedTerms: knowledgeSelection.parked.slice(0, 6).map(line => String(line).slice(0, 80)),
         floors, sourceRevision, stateRevision, block: [summaryBlock, anchorBlock, knowledgeBlock].filter(Boolean).join('\n\n') };
 }
 
@@ -973,6 +979,9 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         knowledge_unconfirmed: continuity.knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
+        knowledge_entries: continuity.knowledge.length,
+        knowledge_injected: continuity.knowledgeInjected,
+        knowledge_parked: continuity.knowledgeParked,
         entity_missed: 0 }, opts); // Query-term coverage is a trace, not a quality alarm.
     const diagnostics = { summary_tokens: estimateTokens(continuity.summaryBlock), evidence_tokens: estimateTokens(evidence.text),
         reference_tokens: estimateTokens(referenceBlock), visible_raw_tokens: estimateTokens(raw),
@@ -1012,6 +1021,9 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         profile_terms: profileState.map(row => ({ name: row.name, quoted: row.quoted, detailed: row.detailed, descriptors: row.descriptors })),
         entity_missed: entityMissed.map(row => ({ term: row.term, first_floor: row.first_floor, hidden_floors: row.hidden_floors })),
         knowledge_entries: continuity.knowledge.length,
+        knowledge_injected: continuity.knowledgeInjected,
+        knowledge_parked: continuity.knowledgeParked,
+        knowledge_parked_terms: continuity.knowledgeParkedTerms,
         knowledge_unconfirmed: continuity.knowledge.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(live.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(live.narrative_knowledge?.max_per_subject) || 0,
@@ -1144,6 +1156,11 @@ export function readNarrativeReport(ctx) {
     const activeAnchors = store.narrative_anchors?.active || [];
     const reportSelection = selectAnchors(activeAnchors, { budget: options(settings).anchorTokens });
     const anchorsTruncated = reportSelection.parked.length;
+    // The knowledge block is fitted on every assembly too, and it used to report only its surviving text:
+    // the panel could state a parked anchor but not a dropped knowledge entry. The report runs the same
+    // selection, so one rule decides what is missing here and in the generation.
+    const knowledgeEntries = store.narrative_knowledge?.entries || [];
+    const reportKnowledge = selectKnowledge(knowledgeEntries, { budget: options(settings).knowledgeTokens });
     const state = { ...pending, summary_failures: failures,
         summary_error: store.narrative_diagnostics?.summary_error || null,
         summary_block: store.narrative_diagnostics?.summary_block || null,
@@ -1153,9 +1170,12 @@ export function readNarrativeReport(ctx) {
         anchors_total: activeAnchors.length, anchors_injected: reportSelection.injected.length,
         anchors_same_subject: countAnchorCollisions(activeAnchors),
         anchor_op_errors: store.narrative_diagnostics?.anchor_op_errors || null,
-        knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
+        knowledge_unconfirmed: knowledgeEntries.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
-        knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0 };
+        knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
+        knowledge_entries: knowledgeEntries.length,
+        knowledge_injected: reportKnowledge.injected,
+        knowledge_parked: reportKnowledge.parked.length };
     return {
         enabled: settings.enabled !== false,
         summary_running: summarizing,
@@ -1211,8 +1231,11 @@ export function readNarrativeReport(ctx) {
             kind: String(item.kind || '其他'), subject: String(item.subject || ''),
             text: String(item.text || '').slice(0, 80), source: String(item.source || ''),
             reason: String(item.reason || '') })),
-        knowledge_entries: (store.narrative_knowledge?.entries || []).length,
-        knowledge_unconfirmed: (store.narrative_knowledge?.entries || []).filter(item => Number(item.unconfirmed) > 0).length,
+        knowledge_entries: knowledgeEntries.length,
+        knowledge_injected: reportKnowledge.injected,
+        knowledge_parked: reportKnowledge.parked.length,
+        knowledge_parked_terms: reportKnowledge.parked.slice(0, 6).map(line => String(line).slice(0, 80)),
+        knowledge_unconfirmed: knowledgeEntries.filter(item => Number(item.unconfirmed) > 0).length,
         knowledge_duplicate_subjects: Number(store.narrative_knowledge?.duplicate_subjects) || 0,
         knowledge_max_per_subject: Number(store.narrative_knowledge?.max_per_subject) || 0,
         entity_candidates: store.narrative_diagnostics?.entity_candidates || 0,
@@ -1360,6 +1383,8 @@ function renderNarrativePanel(root, ctx) {
         parts.push('锚点活值 ' + report.anchors_active + ' 条，注入 ' + report.anchors_injected + ' 条'
             + (report.anchors_parked ? '（搁置 ' + report.anchors_parked + '）' : '')
             + '，退场记录 ' + report.anchors_superseded + ' 条（最多保留 ' + report.anchors_superseded_limit + ' 条）');
+        parts.push('知情边界 ' + report.knowledge_entries + ' 条，注入 ' + report.knowledge_injected + ' 条'
+            + (report.knowledge_parked ? '（搁置 ' + report.knowledge_parked + '）' : ''));
         if (report.anchors_same_subject) parts.push('同一主体多活值 ' + report.anchors_same_subject + ' 组');
         if (report.anchor_op_errors?.length) parts.push((report.anchor_op_errors_recovered ? '上一次' : '最近一批')
             + '锚点变更被拒绝 ' + report.anchor_op_errors.length + ' 条'

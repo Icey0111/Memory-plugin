@@ -14,6 +14,13 @@ belongs in Git commits and pull requests.
   DashScope-compatible qwen3 Embedding route rejects a larger batch, and the caller's 40-chunk insert made the
   whole original-text index rebuild throw: the index record was deleted and dense recall stayed off with only a
   diagnostics reason to account for it (ADR-0010).
+- The knowledge-boundary block reports what it injected and what the budget left out, the way the anchor block
+  already did. It used to return only its surviving text, so an accepted boundary could be dropped on every
+  generation with nothing in the trace to show it: the live chat carried four entries at the 200-token default
+  and injected exactly one, and one of the three left out restated the same negation that the anchor budget had
+  already parked. The panel states the counts, the warning names the dropped entry, and the read-only report
+  runs the same selection (`knowledge_injected`, `knowledge_parked`, `knowledge_parked_terms`;
+  `selectKnowledge`).
 
 ### Changed
 

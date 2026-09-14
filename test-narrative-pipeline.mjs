@@ -20,6 +20,7 @@ import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
 import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
+import { estimateTokens } from './v55-tokenizer.js';
 
 const KEY = 'aetheriaUnifiedMemoryV54';
 /** The first source id the request actually offered, so no fixture depends on the raw_N numbering. */
@@ -533,6 +534,34 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const clipped = await buildNarrativeContext(tight.ctx, tight.services, { contextSize: 32768 });
     assert.doesNotMatch(clipped.currentStateBlock, /KNOWLEDGE BOUNDARIES/, 'no budget, no block');
     assert.equal(clipped.diagnostics.knowledge_entries, 2, 'but the entries are still recorded');
+
+    // A budget that fits exactly one of the two lines. The injected text is unchanged - whole lines only,
+    // stop at the first that does not fit - but the entry that did not make it is reported now. It was not
+    // before: the block returned only its surviving text, so a boundary could be dropped on every
+    // generation while the trace showed only a total. On the live chat that is exactly what happened at
+    // the 200-token default: four entries, one injected, and nothing said the other three were missing.
+    const firstLine = formatAnchors([{ kind: '苏晚/不知道', text: '钥匙来自林舟' }]);
+    const twoLineBudget = estimateTokens(firstLine) + 1;
+    const oneFits = makeHost(12, { settings: { narrative_knowledge_tokens: twoLineBudget },
+        summarize: async (_ctx, prompt) => withBoundaries(prompt) });
+    await updateNarrative(oneFits.ctx, oneFits.services, { force: true });
+    const partial = await buildNarrativeContext(oneFits.ctx, oneFits.services, { contextSize: 32768 });
+    assert.match(partial.currentStateBlock, /钥匙来自林舟/, 'the line that fits is still injected');
+    assert.doesNotMatch(partial.currentStateBlock, /钥匙现在在苏晚手里/,
+        'and the line that does not fit is still left out, exactly as before');
+    assert.equal(partial.diagnostics.knowledge_entries, 2, 'the accepted entries are still counted');
+    assert.equal(partial.diagnostics.knowledge_injected, 1, 'and so is what reached the prompt');
+    assert.equal(partial.diagnostics.knowledge_parked, 1, 'and what the budget dropped');
+    assert.equal(partial.diagnostics.knowledge_parked_terms.length, 1,
+        'the dropped boundary is named, so it is not a silent omission');
+    assert.match(partial.diagnostics.knowledge_parked_terms[0], /林舟/,
+        'the named entry is the one that did not fit');
+    assert.ok(partial.diagnostics.warnings.some(line => line.includes('知情边界块装不下当前条目')),
+        'a dropped boundary is stated, the way a parked anchor already was');
+    const partialReport = readNarrativeReport(oneFits.ctx);
+    assert.equal(partialReport.knowledge_injected, 1, 'the read-only report runs the same selection');
+    assert.equal(partialReport.knowledge_parked, 1);
+    assert.match(partialReport.knowledge_parked_terms[0] || '', /林舟/);
 }
 
 // --- 15. ten rewrites: continuity survives, and the resident cost does not drift ------------------

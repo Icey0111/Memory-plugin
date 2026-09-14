@@ -986,6 +986,30 @@ export function selectAnchors(active, { budget = 600 } = {}) {
     return { injected, parked, text, tokens: estimateTokens(text) };
 }
 
+/**
+ * What fits the knowledge-boundary budget, and what the budget dropped.
+ *
+ * It mirrors selectAnchors, and it exists because the two blocks did not report the same thing: the anchor
+ * block said what it injected and what it parked, while the knowledge block returned only the surviving
+ * text. An accepted entry could therefore be dropped on every single generation with nothing in the trace
+ * to show it - the live chat carried four entries at a 200-token budget and injected exactly one, and one
+ * of the dropped three carried the same "the cloak does not make you invisible" constraint that the anchor
+ * budget had already parked. A boundary states which subject knows what, so a later short line is not a
+ * substitute for an earlier one and the fit stops at the first line that does not fit, as it always did.
+ */
+export function selectKnowledge(entries, { budget = 200 } = {}) {
+    const lines = formatAnchors(entries).split('\n').filter(Boolean);
+    let text = '';
+    let injected = 0;
+    for (const line of lines) {
+        const next = text ? text + '\n' + line : line;
+        if (estimateTokens(next) > budget) break;
+        text = next;
+        injected += 1;
+    }
+    return { text, injected, total: lines.length, parked: lines.slice(injected) };
+}
+
 export function anchorId(item) {
     return 'anchor_' + fnv1a32(anchorKey(item)).toString(36);
 }
