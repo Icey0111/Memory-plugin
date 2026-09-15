@@ -778,3 +778,19 @@ Read with the rest of this section: the composite-key form is a real in-domain m
 out-of-domain data it is not better than the retriever already shipping, and neither a wider vocabulary rule nor a
 retrieval-time ranking closes the gap.
 
+### A quoted window no longer trades its channel anchor for the question's words (2026-09-15)
+
+The window rule scores candidate windows by how many of the question's own words they carry, and that is a proxy
+for where the answer is. A move that leaves no channel region inside the window is quoting a different part of the
+row than the one the slot was spent on. Measured with an instrument that reproduces the shipped control exactly:
+on a held-out chat the lantern row was quoted from offset 128 while its needle sat at 41, because the question's
+words pulled the window forward and off the anchor at the head.
+
+The rule now refuses a move that would take the last channel region out of the window while the incumbent window
+still holds one. Measured: the labelled ten-probe gate is unchanged at **9/10**; the 1,289-turn corpus paired
+check is **0 turns worse and 4 better** (character-description readings 101 -> 105, situation terms 3,990 ->
+4,023); and the held-out chat's runtime-faithful reading rises from 6/10 to 7/10. The archive-wide variant of the
+same held-out control loses one probe (`h_hair`) - with every row quotable the guard refuses a move that would
+have reached that needle - and that is recorded because it is the honest cost, not because the runtime path uses
+that variant.
+

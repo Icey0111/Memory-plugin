@@ -7,6 +7,15 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- A quoted window no longer slides off every region the channel that picked the span voted for. Window placement
+  scores candidate windows by how many of the question's own words they carry, which is a proxy for where the
+  answer is; a move that left no channel region inside quoted a different part of the row than the one the slot
+  was spent on. On a held-out chat the lantern row was quoted from offset 128 while its needle sat at 41, because
+  the question's words pulled the window forward and off the anchor at the head. Measured: the ten-probe labelled
+  gate is unchanged at **9/10**, and the 1,289-turn corpus paired check is **0 turns worse and 4 better**
+  (character-description readings 101 -> 105). The archive-wide variant of the same held-out control loses one
+  probe, which is the honest cost of refusing the move.
+
 - A quoted window opened on the question's own word now reaches back a few characters when that word sits at
   the window's **head**, so the modifier phrase that answers the question is not cut off: "一个穿灰袍、拄藤杖的
   老头" now falls inside the quote for "那个老头最显眼的穿着是什么", which takes the labelled probe set from

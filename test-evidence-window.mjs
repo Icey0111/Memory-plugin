@@ -120,3 +120,24 @@ const quote = (history, source, packed) => {
     assert.ok(quoted.includes('灰袍'), 'the phrase before the matched word is inside the window: ' + JSON.stringify(quoted.slice(-70)));
 }
 
+// --- 7. a window does not slide off the region the channel that picked it voted for --------------------
+// The question's own words are a proxy for where the answer is, and a move that leaves no channel region
+// inside the window is quoting a different part of the row than the one the slot was spent on. Measured
+// need: on a held-out chat the lantern row was quoted from offset 128 while its needle sat at 41, because
+// the question's words pulled the window forward and off the anchor at the head. Section 5 is the other
+// direction - a window with no channel region to protect still moves onto the question.
+{
+    const head = '她穿着深绿色的皮甲，左颧骨有一道细白的疤痕。';
+    const text = head + FILLER + '雾里的渡口就在眼前，这渡口叫青石渡。';
+    const { history, chunks } = build([row('我到了这里。', true), row(text)]);
+    const own = chunks.filter(chunk => chunk.source === 'raw_2');
+    const ranked = own.map((chunk, index) => ({ chunk, score: 1 - index * 0.1, lexical: 1 - index * 0.1,
+        channels: ['profile'], anchors: [{ start: 0, end: head.length, channel: 'profile', weight: 0.6 }] }));
+    const packed = packRawEvidence(ranked, history,
+        { maxTokens: 1000, visibleSources: new Set(['raw_1']), query: '这个渡口叫什么名字？' });
+    const quoted = quote(history, 'raw_2', packed);
+    assert.ok(quoted.text.includes('皮甲'), 'the anchored head region stays inside the quote: ' + JSON.stringify(quoted.text.slice(0, 40)));
+    assert.equal(quoted.anchored, true, 'and the record says the window sits on a channel region');
+    assert.ok(!quoted.text.includes('青石渡'), 'the question did not trade the anchor for its own words');
+    assert.ok(packed.tokens <= 1000, 'the budget is still respected');
+}

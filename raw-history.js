@@ -1803,7 +1803,14 @@ function fitEvidenceSpan(span, budget, terms = { words: [], grams: [] }, anchors
         const seats = anchors.slice().sort((a, b) => (b.weight || 0) - (a.weight || 0))
             .map(at => (at.channel === 'entity' ? Math.max(span.start, at.start - ANCHOR_PREROLL) : at.start));
         const moved = slideWindowToQuery(row.text, start, length, span.start, span.end, terms, seats);
-        if (moved && costOf(moved.start, moved.start + length) <= budget) {
+        // A window must not slide off every region the channel that earned the slot voted for. The head window
+        // is the incumbent and only a strictly better window displaces it, but "better" is measured in the
+        // question's own terms - a proxy - so a move that leaves no channel region inside is quoting a
+        // different part of the row than the one the slot was spent on. Measured need: on a held-out chat the
+        // lantern row was quoted from offset 128 while its needle sat at 41, because the question's words
+        // pulled the window forward and off the anchor at the head.
+        const anchoredAt = from => anchors.some(at => from <= at.start && at.start < from + length);
+        if (moved && (!anchoredAt(start) || anchoredAt(moved.start)) && costOf(moved.start, moved.start + length) <= budget) {
             start = moved.start;
             if (moved.movedBy === 'query' && moved.termOffset !== null && moved.termOffset <= WINDOW_LEAD_IN * 2) {
                 const lead = Math.min(WINDOW_LEAD_IN, start - span.start);
