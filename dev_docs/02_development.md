@@ -571,3 +571,28 @@ annotation set are the instrument the next attempt has to pass, and the plan's S
 coverage rises" to "reachability rises with bidder precision as a floor". The instrument reads a private chat
 and private needles, so only the method and the numbers are recorded here; it is not committed.
 
+### The last two misses became a fan-out problem, not a vocabulary one (2026-09-15)
+
+ADR-0046 left `s_hair` and `m_speech` unreachable, and they were one defect: the attribute word can sit
+hundreds of characters from the subject's name (`瑟拉菲娜` at 22 against `粉色的发丝` at 372; `薇斯珀` at
+287 against `像刀子一样直` at 334), so the densest-cluster anchor never reaches it. Anchoring the span on the
+attribute word itself, and attributing it to the row's own subject - the archived row's speaker name mapped to
+the knowledge subject, plus the subjects named in the row - instead of to a distance threshold does reach both.
+
+What blocks it is the fan-out, and one reading of it was again an artefact:
+
+- With no frequency cap the attribute-anchored spans reach 15/16 but fire **2801 spans**. A frequency cap applied
+  over the enlarged set then counted occurrences across every new span and stripped the new spans' terms to
+  empty, so one variant read as 34 spans at **70.6%** precision while its index was effectively empty.
+- The fan-out concentrates in common attribute words: the single composite key `薇斯珀.口` has **100 candidate
+  spans across 17 rows** - `开口`, `门口` and every other 口 in the story, all attributed to her because the
+  row is hers.
+- Because the cap zeroes those spans' terms, the rule that keeps the best three spans per key is ordering by a
+  number that is now uniformly zero. Its 16/16 is a tie-break that happens to include a covering span, not a
+  mechanism; the best principled point on the curve is **15/16 at 54 fired spans and 53.7% precision**.
+
+The remaining work is therefore precise: an attribute vocabulary that separates a person's attribute from the
+same character inside a common word, and a key-to-span ranking by proximity or descriptor density rather than by
+a term count the frequency cap has already removed. Later exploration scripts drifted in their flat baseline, so
+only ADR-0046's numbers and the v7 reproduction inside them are comparable to the table above.
+

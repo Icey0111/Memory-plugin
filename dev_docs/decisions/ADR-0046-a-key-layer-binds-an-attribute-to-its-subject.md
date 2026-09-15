@@ -61,7 +61,10 @@ subject key's canonical span is what reaches a named subject, so the removed ter
 - **Nothing is shipped.** The shipped pipeline is unchanged; this ADR records the form the key layer must take
   when it is built, not a capability.
 - The two remaining misses are one defect: a character's later re-description is covered by no span. That is the
-  selection defect Issue #2 keeps separate from the key table.
+  selection defect Issue #2 keeps separate from the key table. A measurement the same day narrowed it further:
+  anchoring a span on the attribute word and attributing it to the row's own subject reaches both misses, but the
+  fan-out of a common attribute key (100 candidate spans for one key) is what blocks it, and the frequency cap
+  that would bound the fan-out removes the ranking signal. See 02_development.md.
 - The instrument reads a private chat and private needles, so it is not committed; its method and its numbers are.
 - **A measurement defect can manufacture a design conclusion.** The first reading of the composite rules was
   taken while the ruler's subject-key route was silently inert - the canonical span set was built from pre-copy
