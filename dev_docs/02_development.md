@@ -547,21 +547,24 @@ the right subject and a legitimate route. Measured verbatim, no model call:
 | --- | --- | --- | --- | --- | --- |
 | person descriptor clusters only (today's derivation) | 8/16 | 6/16 | 5/16 | 188 | 4.3% |
 | + attribute vocabulary, aliases, name fragments and one canonical place key | 13/16 | 13/16 | 13/16 | 162 | 8.6% |
-| composite keys (`主体.属性`), with no frequency cutoff | 13/16 | 13/16 | **13/16** | **101** | **13.9%** |
+| composite keys (`主体.属性`), the subject key pointing at the subject's two densest spans | 14/16 | 14/16 | 14/16 | 112 | 13.4% |
+| composite keys with attribute keys kept only while specific (row count <= 6) | 14/16 | 14/16 | **14/16** | **38** | **36.8%** |
 
 Three findings are worth keeping.
 
-- **What makes a key selective is the namespace, not a frequency cutoff.** A single attribute key can be both
-  correct and too common (`地` for a place question), and a document-frequency floor then drops the right key.
-  The composite form `炭窑洼.地` is specific without one. Keeping the floor on top of composite keys starves
-  them - reachability falls to 5/16 - so in that structure the floor is not merely unnecessary, it is wrong.
-- **Composite keys cut the competition below the baseline.** The 13/16 rule fires 101 spans where today's
-  derivation fires 188, and 13.9% of them carry the needle against 4.3%. The three rejected nomination attempts
-  showed that coverage bought by nominating more is paid for in the precision of what is quoted; keys bought by
-  binding subject and attribute are not.
-- **The misses are three different defects, not one.** They are the later re-description of a character that no
-  span covers (`s_hair`, `m_speech`) and a subject-only question with no attribute to bind (`p_firepit`),
-  which needs a canonical *describing* span for its subject rather than the densest one.
+- **Binding an attribute to its subject is what stops a fired key from selecting an unrelated row.** A flat key
+  fires wherever its word appears; the composite form `主体.属性` fires only for that subject's spans, and the
+  subject key points at the subject's two densest spans rather than at every row the name occurs in. That alone
+  takes reachability from 13/16 to 14/16 and the fired spans from 162 to 112, because a question about one
+  attribute of a character no longer selects every row that happens to carry a common descriptor word.
+- **The specificity floor still earns its place on top.** Dropping attribute terms that appear in more than six
+  rows cuts the fired spans from 112 to 38 and lifts the share that carry the needle from 13.4% to **36.8%**,
+  with no loss of reachability: the subject key's canonical span is what reaches a named subject, so the removed
+  terms were noise rather than answers. (This corrects an earlier reading of this section, taken while the
+  ruler's subject-key route was silently inert.)
+- **The two remaining misses are one defect, not two.** `s_hair` and `m_speech` are a later re-description of
+  a character that no span covers. A subject-only question (`p_firepit`) is reached once the subject key points
+  at the subject's canonical span, so it is not a separate case.
 
 Nothing shipped: the key layer is a measurement prototype and the pipeline is unchanged. The ruler and its
 annotation set are the instrument the next attempt has to pass, and the plan's Step 1 target changes from "key
