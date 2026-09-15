@@ -5,6 +5,15 @@ belongs in Git commits and pull requests.
 
 ## Unreleased
 
+### Added
+
+- The rerank diagnostics record what the stage changed, not only that it ran. `rerank_cost` now carries
+  `shortlist`, `moved` (shortlist positions whose occupant changed), `top1_changed`, and the first three
+  candidate sources before and after the reorder; a failed call records `moved: 0` rather than leaving the
+  reader to infer it from the error. Ten live runs recorded `rerank_used` and its cost and nothing about the
+  order, so none of them could say whether a configured reranker had reordered the prompt at all. The metric is
+  a pure function of the two orders, so it adds no provider cost.
+
 ### Fixed
 
 - The cross-encoder rerank stage reaches providers that serve rerank on their own path instead of the

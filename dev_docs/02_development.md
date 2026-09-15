@@ -1305,3 +1305,18 @@ other miss in this batch is the window quoting the wrong region of the right row
 batch's `d-manner` pair now witnesses live. The next change belongs there, and the signal it needs is coverage of
 the question's terms inside the quoted span, not another ordering rule.
 
+#### A run now records what the reranker changed, not only that it ran (2026-09-16)
+
+The ten runs above recorded `rerank_used`, `rerank_error` and `rerank_cost`, and nothing about the order. A
+configured reranker therefore read the same whether it had reordered the shortlist or handed the fused order
+straight back, and no amount of live running could answer whether the stage did anything - the only controlled
+evidence for its effect is the offline held-out table, and that was measured with a different model
+(jina-reranker-v3) than the one this install names (`qwen3.7-text-rerank`).
+
+`rerankMoveMetrics` (`v55-rerank.js`) now scores the reorder itself: `shortlist`, `moved` (positions whose
+occupant changed), `top1_changed`, and the first three candidate sources before and after. A failed call records
+`moved: 0` instead of leaving that to be inferred from the error string. It is a pure function of the two orders,
+so it adds nothing to what a run costs. `runtime-precheck` watches both new functions, and section 19 of the
+pipeline tests pins a full reversal (`moved === shortlist`), an order that agrees with the fusion (`moved: 0`) and
+the fail-open case.
+

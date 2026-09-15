@@ -18,7 +18,7 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig,
     summarizeEvidenceCandidates, summarizeEvidenceTrace, EVIDENCE_TRACE_LIMIT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
-import { buildRerankRequest, parseRerankResponse, requestRerank,
+import { buildRerankRequest, parseRerankResponse, requestRerank, rerankHead, rerankMoveMetrics,
     buildNativeRerankRequest, parseNativeRerankResponse, nativeRerankUrl } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
@@ -884,6 +884,26 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(used.diagnostics.rerank_model, 'test-rerank');
     assert.ok(used.diagnostics.rerank_cost.input_tokens_estimated > 0);
     assert.equal(used.diagnostics.rerank_cost.provider_tokens, null, 'estimated input is not provider billing');
+    // What the stage changed has to be in the record too. Ten live runs reported the call and its cost and
+    // nothing about the order, so none of them could say whether the prompt had moved at all.
+    const rows = [{ chunk: { source: 'raw_2', index: 2 } }, { chunk: { source: 'raw_9', index: 9 } }];
+    assert.deepEqual(rerankMoveMetrics(rows, [{ index: 0, score: 0.1 }, { index: 1, score: 0.9 }]),
+        { shortlist: 2, moved: 2, top1_changed: true, top_before: ['raw_2', 'raw_9'], top_after: ['raw_9', 'raw_2'] });
+    assert.deepEqual(rerankMoveMetrics(rows, [{ index: 0, score: 0.9 }, { index: 1, score: 0.1 }]),
+        { shortlist: 2, moved: 0, top1_changed: false, top_before: ['raw_2', 'raw_9'], top_after: ['raw_2', 'raw_9'] },
+        'a provider that agrees with the fusion records no movement');
+    assert.equal(rerankHead(rows, [{ index: 0, score: 0.9 }, { index: 1, score: 0.1 }])[0].chunk.source, 'raw_2');
+    const reordering = { ...host.services, rerank: () => ({ supported: true, model: 'test-rerank',
+        rerank: async (query, documents) => documents.map((_, index) => ({ index, score: index })) }) };
+    const reordered = await buildNarrativeContext(host.ctx, reordering, { contextSize: 32768 });
+    assert.equal(reordered.diagnostics.rerank_used, true);
+    assert.equal(reordered.diagnostics.rerank_cost.moved, reordered.diagnostics.rerank_cost.shortlist,
+        'a full reversal moves every shortlist position, and the count is recorded');
+    assert.equal(reordered.diagnostics.rerank_cost.top1_changed, true);
+    assert.equal(reordered.diagnostics.rerank_cost.top_before.length, 3);
+    assert.equal(reordered.diagnostics.rerank_cost.top_after.length, 3);
+    assert.equal(used.diagnostics.rerank_cost.moved, 0, 'the working reranker above agreed with the fusion');
+    assert.equal(failed.diagnostics.rerank_cost.moved, 0, 'and a failed call records that nothing moved');
     const off = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });
     assert.equal(off.diagnostics.rerank_used, false, 'and an install with no model never calls one');
     // A live run spent one rerank call per turn while every floor was still unfolded, which is a call

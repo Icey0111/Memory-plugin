@@ -19,11 +19,34 @@ export function rerankShortlist(ranked, visibleSources, limit = 24, extra = 8) {
         && row.channels.some(channel => channel === 'entity' || channel === 'profile')).slice(0, extra)];
 }
 
-export function applyRerankOrder(ranked, pick, order) {
+/** The reordered shortlist, before it is put back in front of the tail it did not touch. */
+export function rerankHead(pick, order) {
     const scores = new Map(order.map(row => [row.index, row.score]));
-    const head = pick.map((row, index) => ({ ...row, rerank: scores.get(index) ?? null }))
+    return pick.map((row, index) => ({ ...row, rerank: scores.get(index) ?? null }))
         .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.chunk.index - b.chunk.index);
-    return [...head, ...ranked.filter(row => !pick.includes(row))];
+}
+
+export function applyRerankOrder(ranked, pick, order) {
+    return [...rerankHead(pick, order), ...ranked.filter(row => !pick.includes(row))];
+}
+
+/**
+ * What the stage changed, so a run can answer "did the reranking do anything" from its own record.
+ *
+ * Ten live runs recorded `rerank_used` and `rerank_cost` and nothing about the order, so none of them could
+ * say whether the prompt moved: a configured reranker read the same whether it reordered the shortlist or
+ * returned the fused order back. `moved` counts the shortlist positions whose occupant changed, `top1_changed`
+ * is the head, and the two three-entry source lists are the before and after a reader can check by eye.
+ */
+export function rerankMoveMetrics(pick, order) {
+    const head = rerankHead(pick, order);
+    const sources = rows => rows.slice(0, 3).map(row => String(row.chunk && row.chunk.source));
+    let moved = 0;
+    for (let index = 0; index < pick.length; index += 1) {
+        if (head[index].chunk !== pick[index].chunk) moved += 1;
+    }
+    return { shortlist: pick.length, moved, top1_changed: pick.length > 0 && head[0].chunk !== pick[0].chunk,
+        top_before: sources(pick), top_after: sources(head) };
 }
 
 /** The request a cross-encoder reranker expects. */

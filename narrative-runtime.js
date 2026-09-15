@@ -7,7 +7,7 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
     summaryLengthVerdict, summarizeEvidenceCandidates, summarizeEvidenceTrace } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
-import { rerankShortlist, applyRerankOrder } from './v55-rerank.js';
+import { rerankShortlist, applyRerankOrder, rerankMoveMetrics } from './v55-rerank.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -873,10 +873,15 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
         input_tokens_estimated: estimateTokens([query, ...pick.map(row => row.chunk.retrievalText)].join('\n')), provider_tokens: null });
     try {
         const order = await service.rerank(query, pick.map(row => row.chunk.retrievalText), model);
+        // What changed, not only what it cost: a run that records the call but not the order cannot say
+        // whether the stage did anything, and ten live runs read exactly that way.
         return { ranked: applyRerankOrder(ranked, pick, order), used: true, error: null,
-            metrics: order.metrics || cost() };
+            metrics: { ...(order.metrics || cost()), ...rerankMoveMetrics(pick, order) } };
     } catch (error) {
-        return { ranked, used: false, error: String(error?.message || error), metrics: cost() };
+        // Fail-open: the fused order stands, and the record says so with a number instead of leaving a
+        // reader to infer it from the error string.
+        return { ranked, used: false, error: String(error?.message || error),
+            metrics: { ...cost(), shortlist: pick.length, moved: 0, top1_changed: false } };
     }
 }
 
