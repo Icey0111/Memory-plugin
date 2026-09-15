@@ -111,6 +111,31 @@ five** of the row's appearance and clothing details (左颧骨, 深绿色的皮�
 Before this change the same turn quoted neither row 8 nor those details anywhere. That is the production
 query, not a probe question, and it is the reading the probes were a proxy for.
 
+## The live turn after the change
+
+The memory check was then run again in a branch of the same chat, and the record the plugin kept for that turn
+is the live reading this ADR was otherwise missing:
+
+- `profile_names = ["薇斯珀"]`, `profile_terms = [{quoted: true, detailed: true, descriptors: 13}]`. The
+  `detailed` reading is now true rather than the false success ADR-0044 found on an action beat.
+- Five spans were quoted (trace: 5 included, 16 entry_cap, 1 same-message): row 8 at `[146, 352]` with
+  `anchored: true`, and rows 24 `[136, 340]`, 28 `[768, 995]`, 30 `[1139, 1347]`.
+- Row 8's candidate is `["lexical", "profile"]` at relevance 0.008 - the lowest of the five. The character
+  channel's introduction candidate is what carried it into the block, and its window is the descriptor region,
+  so seven descriptor phrases of that row sit inside the quote (左颧骨, 深绿色的皮甲, 藤条编成, 刀鞘上刻着,
+  像刀子一样直, 鬓角, 灰绿色的眼睛). Without the anchor the same span would have been trimmed to its head.
+- Read against the quoted text, the reply's appearance and clothing sentences are grounded in it, including
+  "鞘上刻着和我家门框一样的图腾" and "左颧骨有道细疤……她一抿嘴，那道疤就跟着抽一下"; its scene sentences are
+  grounded in rows 24 and 30; and "缠纹和你肩上那几道岔口，一处不差" traces to row 26 ("它们的走法跟火塘边那半截
+  藤杖上的一模一样。一圈缠一圈") and to the injected knowledge line about the half-burnt staff. The clauses
+  that are not in the text are voice rather than fact ("编得比我的结实，刺都是朝外的", "鞘口磨白了", "不是讲究，
+  是怕打斗时被抓住") and contradict nothing.
+- One diagnostic gap surfaced on the same turn, worth its own iteration: `asked_terms` records 外貌 and 性格
+  as `recalled: false`, because that metric asks whether the *question's own words* appear in the quoted rows
+  and a story never writes "外貌"; the name itself is dropped by the term frequency cap (only its n-gram
+  `斯珀的` survives), so a question about a character is structurally reported as unrecalled however well the
+  turn goes. The reading that matched this turn is `profile_terms.detailed`.
+
 ## Decision
 
 Shipped. It ships as the window rule, not as a new score: the character channel's ranking score is unchanged
