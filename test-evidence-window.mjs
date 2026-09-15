@@ -105,3 +105,18 @@ const quote = (history, source, packed) => {
   assert.equal(quoted.trimmed, true, 'and the quote is recorded as shortened');
 }
 
+// --- 6. a window opened on the question's word keeps the phrase that modifies it -----------------------
+// The answer modifies the word the question shares - "一个穿灰袍、拄藤杖的老头" answers "最显眼的穿着是什么" -
+// so a window opened on 老头 starts one character after 灰袍. It reaches back a little, and only when the
+// matched word sits at the window's head: the same reach applied to a window whose answer is in its last
+// characters destroys that answer, and section 4 is the guard for that direction.
+{
+    const filler = '雾压在河面上，风从上游过来。'.repeat(60);
+    const body = filler + '有没有遇到过谁？一个穿灰袍、拄藤杖的老头，或者一个卖给你东西的人？';
+    const { history, chunks } = build([row('我到了这里。'), row(body)]);
+    const query = '那个老头最显眼的穿着是什么？';
+    const packed = packRawEvidence(rankRawChunks(chunks, query, [], {}), history, { maxTokens: 1000, query });
+    const quoted = packed.sources.map(entry => history.records[entry.source].text.slice(entry.start, entry.end)).join('\n');
+    assert.ok(quoted.includes('灰袍'), 'the phrase before the matched word is inside the window: ' + JSON.stringify(quoted.slice(-70)));
+}
+

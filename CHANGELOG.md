@@ -7,6 +7,14 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- A quoted window opened on the question's own word now reaches back a few characters when that word sits at
+  the window's **head**, so the modifier phrase that answers the question is not cut off: "一个穿灰袍、拄藤杖的
+  老头" now falls inside the quote for "那个老头最显眼的穿着是什么", which takes the labelled probe set from
+  8/10 to **9/10** strict needle readings (10/10 by the tolerant matcher) with the 1,289-turn corpus paired
+  check at **0 turns worse and 3 better**. The reach is deliberately scoped to a word at the window's head: the
+  same reach applied to a window whose answer sits in its last characters destroys that answer, and
+  `test-evidence-window` section 4 is the guard for that direction.
+
 - A quoted original window now follows the region the channel that picked the span actually found, and a
   character's introduction row is a candidate of its own (ADR-0045, N41). On a real chat the reply had
   described a character's appearance confidently and wrongly, because the describing paragraph - which comes

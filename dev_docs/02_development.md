@@ -431,4 +431,16 @@ commit settles. A wrong fact-survival verdict is worse than no verdict: it argue
 state does not need, and this one would have added a protection clause to the merge request for a loss that
 never happened.
 
+### The window reaches back for a modifier phrase (2026-09-15)
+
+One of the two probes that stayed outside its quote by wording was a window opened on the question's own word
+one character after the answer: "一个穿灰袍、拄藤杖的老头" answers "那个老头最显眼的穿着是什么", and the
+window started on 老头. A few characters of lead-in fix it - and a first attempt at a blanket lead-in broke
+`test-evidence-window`'s live case, cutting 青石渡 out of the tail it sits in. Both shapes are real: the answer
+may modify the matched word or follow it. The discriminator is where the matched word sits in the window, so the
+reach now applies only when that word is at the window's head, and the dangerous direction keeps its own test.
+Measured: strict needle readings 8/10 -> 9/10, and the 1,289-turn corpus paired check is unchanged at 0 turns
+worse and 3 better. The remaining probe miss is not a window case at all: a later re-description of a character
+never ranks, which is the selection defect Issue #2 keeps apart from the window rule.
+
 
