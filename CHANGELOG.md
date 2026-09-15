@@ -14,7 +14,9 @@ belongs in Git commits and pull requests.
   story frequency (a word the whole story uses cannot move a window), a character's own name is never a window
   seat, and the descriptor run that defines a description is chosen for density rather than for count in a wide
   window. A ten-question labelled probe set from that chat went from 2/10 to 8/10 needles inside a quoted
-  window; the two misses are named in the ADR. The channel's ranking score is unchanged, and its pick table
+  window, or **10/10 by the project's own paraphrase-tolerant reading** - both strict misses are the matcher's
+  two-character floor with the answering fact inside the quote (粉色长发 in the quoted introduction row,
+  "灰袍、拄藤杖的老头" at the head of the row-12 window). The channel's ranking score is unchanged, and its pick table
   was re-measured by hand (43 rows reproduced exactly; 3 moved, none better or worse). A row that mentions
   another candidate character earlier than the name it would introduce is that character's row and no longer
   counts as this one's introduction - that qualification removed 9 of 25 introduction candidates, all of them a

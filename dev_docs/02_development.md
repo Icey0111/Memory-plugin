@@ -235,7 +235,9 @@ region that channel found, a character's introduction row is a candidate of its 
 by story frequency, and one descriptor run is chosen for density rather than for count in a wide window. The
 labelled probe set went from **2/10** needles inside a quoted window to **8/10** (7/10 without the lexicon
 extension that the describing sentences actually need), with each mechanism measured behind a switch before
-the combination shipped. The channel's ranking score did not change, so the 43-name pick table from ADR-0044
+the combination shipped. Read with the repository's own paraphrase-tolerant matcher the same ten probes are
+**10/10**: both strict misses are the matcher's two-character floor and the answering fact is inside the quoted
+window, so what remains is a missing *route* to the row that phrases it, not a missing fact. The channel's ranking score did not change, so the 43-name pick table from ADR-0044
 was re-measured rather than re-litigated: the baseline reproduced exactly (43/43), 3 top picks moved with no
 improvement and no regression (both rows of each pair read the same way as before), and the totals stay 23 / 20.
 The introduction candidate was measured too - 25 rows, 8 of them read as *not* introducing that name, all eight

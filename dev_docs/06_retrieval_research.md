@@ -56,8 +56,11 @@ because a channel picked it now keeps the region that channel found, a character
 candidate of its own, window terms are filtered by the story's own frequency, and one descriptor run is chosen
 for density rather than for count in a wide window; the same ten questions reach **8/10** (7/10 without the
 lexicon extension the describing sentences need), each mechanism measured alone and together before shipping
-(ADR-0045). The two misses are one ranking defect - a row the channel never speaks for - and one
-window-boundary case, both named in the ADR.
+(ADR-0045), and **10/10 by the repository's own paraphrase-tolerant matcher** - both strict-verbatim misses
+are the matcher's two-character floor, with the answering fact present in the quoted window (粉色长发 in row 2,
+"灰袍、拄藤杖的老头" at the head of row 12's window). What remains is not a missing fact but a missing route to
+the row that *phrases* it: row 6, the later re-description of a character's hair, never ranks - the selection
+defect Issue #2 keeps apart from the window rule.
 
 The same change was checked against the natural track over the whole corpus (73 chats, 1,258 real-query turns,
 lexical only, the same chats on both sides): situation-term recall 85.0% -> 85.5% (3996/4673), asked-thing

@@ -72,11 +72,22 @@ the needle is inside a quoted window. Each mechanism was behind a switch during 
 The window rule has to be right, not only the ranking: the introduction candidate on its own reaches the
 describing row and leaves the set at 2/10, because the window still follows the question.
 
-The two remaining misses are named rather than averaged away:
+The two remaining misses are named rather than averaged away - and then read again with the repository's own
+paraphrase-tolerant matcher (`detail-survival.mjs`'s `matchNeedle`), which is the reading every other probe
+instrument in this project uses:
 
-- `s_hair` (瑟拉菲娜的头发是什么颜色？, needle 粉色的发丝 in row 6): the row never ranks - the channel speaks
-  for row 2, where she is introduced, and the needle is in a later row it never nominates. A ranking defect,
-  not a window one.
+- **The same ten probes read 10/10 at the fact level.** Both misses are the matcher's two-character floor
+  rather than a missing fact: `s_hair`'s needle (`粉色的发丝`, row 6) does not occur, but the quoted row 2
+  carries 粉色长发 and the matcher reads it as `run2(粉色)`; `g_robe`'s needle (`穿灰袍`, row 12) does not
+  occur, but the quoted window `[610, 815]` begins with "灰袍、拄藤杖的老头" and reads as `run2(灰袍)`. The
+  strict-verbatim instrument therefore undercounts this rule by two, and the honest pair of numbers is
+  **8/10 verbatim, 10/10 by the project's own tolerant reading**.
+- `s_hair` is still a real, separate defect, just not a window one: the row that holds that *wording* (row 6,
+  a later re-description of her hair) never ranks. The introduction row answers the question, so the fact came
+  back; a question that only the later row answers would not. That is the selection defect Issue #2 names
+  separately ("a row that never ranks is not addressed by the window rule").
+- `g_robe` misses by one character: the window starts at the only matching question term, and the answering
+  phrase ("一个穿灰袍、拄藤杖的老头") begins one character before it.
 - `g_robe` (needle 穿灰袍 at 609 in row 12): the row is quoted and the window starts at 610 on the only
   matching question term ("老头" at 617), three characters after the modifier phrase that answers the
   question. The window-boundary case; ADR-0044's second rule is about this shape.
@@ -196,5 +207,7 @@ quote that was shortened still records itself as trimmed.
 - Proven offline by `test-profile-window.mjs` on a synthetic story that reproduces the conditions - the name
   recurs, the description precedes the name, an action beat outscores the introduction - with the control that
   the same question reaches the description only with the channel on. No chat text is committed.
-- Not fixed: descriptor ownership by sentence (ADR-0044's second rule), the `s_hair` ranking shape, and the
-  window-boundary shape of `g_robe`.
+- Not fixed, and now named precisely: descriptor ownership by sentence (ADR-0044's second rule) and the
+  selection defect the probes only half show - a row that never ranks at all (`s_hair`'s row 6, the later
+  re-description of a character). The fact-level reading of the same ten probes is 10/10, so what remains is
+  not a missing fact but a missing *route* to the row that phrases it.
