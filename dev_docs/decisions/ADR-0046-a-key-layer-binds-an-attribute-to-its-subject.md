@@ -67,9 +67,10 @@ subject key's canonical span is what reaches a named subject, so the removed ter
   the same day closed it on the ruler: attribute-anchored spans ranked by the pre-cap term count then proximity,
   plus a phrase table ranked by phrase length, reach 16/16 at 67 fired spans and 47.8%, with each miss decided by
   a rank-1 mechanism rather than a tie. An audit the same day bounds that reading: 51.4% of the fired spans carry
-  no needle, the reading falls to 8/16 without the annotated subject in the query, and the same rule reads 2/10 on
-  an unrelated chat. The composite form is promising; the 16/16 is not evidence of unaided retrieval. See
-  02_development.md.
+  no needle; splitting the query-expansion flag shows the legitimate subject-key route alone carries 13/16 and the
+  shipped planner's resolution carries the last three, at 119 fired spans and 37.0%; and on an unrelated chat the
+  same rule reads 2/10 where the shipped retriever reads 6/10. The key form holds in domain; what is unproven is
+  whether the attribute vocabulary can be derived rather than authored per story. See 02_development.md.
 - The instrument reads a private chat and private needles, so it is not committed; its method and its numbers are.
 - **A measurement defect can manufacture a design conclusion.** The first reading of the composite rules was
   taken while the ruler's subject-key route was silently inert - the canonical span set was built from pre-copy

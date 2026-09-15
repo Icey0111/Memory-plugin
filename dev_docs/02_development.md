@@ -700,3 +700,30 @@ The honest statement is narrower than the milestone above: the derived spans do 
 the sixteen questions, and the composite-key form beats the flat baseline, but 16/16 is not evidence that the key
 layer retrieves them unaided.
 
+### The audit's 8/16 was itself a conflation, and the shipped path wins out of domain (2026-09-15)
+
+Two controls complete the audit.
+
+**The 8/16 reading was wrong in the same way the earlier 16/16 was.** The flag the audit removed did two unrelated
+jobs: it gated the subject-key route, and it appended the annotated subject. Split into two switches, the four
+combinations read: neither, 8/16; the subject route alone, **13/16**; the annotated subject alone, 10/16; both,
+16/16. So the legitimate mechanism carries thirteen of the sixteen on its own, and only the three pronoun questions
+need a resolver. The shipped planner supplies one - run with its `profileNames` instead of the annotated subject
+and the rule still reads **16/16**, at 119 fired spans and 37.0% precision against 74 and 48.6% with the oracle.
+The planner appends every scene name rather than disambiguating, so the heavier cost is the honest price of a
+realistic resolver, not a loss of reachability. The descriptive references the planner does not cover (`老头`,
+`水汊`) are still carried by the hand-authored alias table.
+
+**Out of domain, what ships wins.** On the second chat's ten held-out probes the shipped path reaches **6/10**
+when the chat's own summary is respected (4/10 with every row quotable) and quotes the needle's row in 8/10
+(6/10), while the key layer reaches **2/10**. That chat's subjects are read correctly from its own knowledge
+block, but the attribute vocabulary is the first story's: seven of the eight misses need a word the table does not
+contain, six distinct ones. The prototype is therefore not better than the retriever that already ships on data it
+was not tuned for.
+
+**What stays open is vocabulary acquisition, not the key form.** In domain the composite-key mechanism carries
+13/16 unaided and 16/16 with a shipped resolver; out of domain it collapses only because its attribute keys were
+authored per story. The next question is whether that vocabulary can be derived from the summary's own relation
+net instead of written by hand - if it cannot, the key layer costs an author several entries per chapter and buys
+nothing over the retriever already in place.
+
