@@ -167,6 +167,18 @@ are injected; and three floors were still pending at floor 40.
   without the span carrying the lock constraint, and adding the parked statements recovered the original row
   (`raw_18`). The dense query is untouched and reserved evidence seats stay rejected (`raw-history.js`).
 
+## Key-layer direction (measured, not built)
+
+The next structural step is a key layer ([ADR-0046](decisions/ADR-0046-a-key-layer-binds-an-attribute-to-its-subject.md)):
+the summary's relation net names subjects and attributes and retrieval becomes a key-to-span lookup. Its
+acceptance instrument is a precision ruler, not coverage, because coverage is saturable - widening took 16
+authored questions from 9/16 to 16/16 while the spans a question fires grew from 188 to 634 and the share
+carrying the needle stayed near 4%. The measured form is composite keys (`subject.attribute`) with the subject
+key pointing at the subject's canonical spans and attribute keys kept only while they appear in six rows or
+fewer: **14/16 reachable with 38 fired spans and 36.8% of them carrying the needle**, against today's 8/16 at
+188 and 4.3%. The two remaining misses are one defect - a character's later re-description is covered by no span.
+Nothing is built yet.
+
 ## Measured summary-input budget
 
 Rebuilt from the chat that failed the first batching acceptance (41 rows, 43,352 characters of character
