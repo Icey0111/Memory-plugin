@@ -263,12 +263,17 @@ const runTurn = async (turnNo, text, { isBatch, deep }) => {
   return { record, pre, post, waitRes, newCalls, error };
 };
 
+let phase1State = null;
 for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
   const text = turns[turnNo - 1].text;
   const isBatch = batches.includes(turnNo);
   const deep = isBatch || turnNo === last;
   const { record, post, newCalls, waitRes, error } = await runTurn(turnNo, text, { isBatch, deep });
   const state = record.post || {};
+  // The last turn's own status is the live reading the gate needs: `deepSnapshot`'s post carries rows and
+  // diagnostics but not the committed summary's text or coverage, so a gate reading it saw "0 chunks covered"
+  // on a run whose own log said 43.
+  phase1State = state;
   console.log('turn ' + turnNo + '/' + last + (error ? ' ERROR=' + error : '')
     + ' len=' + (state.chatLength != null ? state.chatLength : '?') + ' completed=' + (state.completeTurns != null ? state.completeTurns : '?')
     + ' covered=' + (state.covered != null ? state.covered : '?') + ' folded=' + (state.folded != null ? state.folded : '?')
@@ -318,7 +323,7 @@ if (detailMode) {
     // No question is asked until phase 1 is summarized and its original rows are hidden: asking earlier
     // measures the transcript rather than the memory. This is the acceptance protocol's own precondition,
     // so a failure stops the run instead of being logged as a note.
-    const gate = summaryGate(committed.post || committed, { turns: phase1Last });
+    const gate = summaryGate(phase1State || committed.post || committed, { turns: phase1Last });
     console.log('DETAIL-SURVIVAL phase-1 gate: ' + (gate.ok ? 'PASS' : 'FAIL')
       + '（完整楼层 ' + gate.completeTurns + '/' + phase1Last + '，摘要 ' + gate.summaryChars
       + ' 字符覆盖 ' + gate.covered + ' 块，已折叠 ' + gate.folded + '，待总结 ' + gate.pendingFloors + '）'
