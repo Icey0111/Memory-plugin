@@ -650,3 +650,25 @@ terms then proximity; under that rule both variants agree, and the attribute spa
 spans close the hair miss, but no run combined them, so 16/16 remains unproven - and the earlier 16/16 readings
 stay artefacts of the degenerate ordering until the combination is measured on the rebuilt reference.
 
+### The two fixes together close both misses (2026-09-15)
+
+Combined on the rebuilt reference, attribute-anchored spans and phrase keys close both historical misses, and the
+controls reproduce each separate row exactly (v7 14/16 at 38 and 36.8%; the attribute rule 15/16 at 65 and 47.7%;
+the phrase rule 15/16 at 40 and 37.5%). The best point keeps one span per key: **16/16 reachable, right-subject
+and precise at 67 fired spans and 47.8%** with the reference's own attribution, or 74 spans at 48.6% if the
+persona-excluding attribution rule is added. Both misses are decided by a mechanism rather than a tie:
+
+- `s_hair`, key `瑟拉菲娜|发丝`: two candidates, and the covering span is rank 1 by distance (351 against
+  infinity for the other row).
+- `m_speech`, key `薇斯珀|语气`: 22 candidates, the covering spans are ranks 1, 2 and 3 by phrase length, and
+  rank 1 is chosen with no tie.
+
+Re-running the combined rule with no frequency cap still reads 16/16, so the result does not depend on the cap;
+swapping the phrase ranking from length to density drops it to 15/16, so the ranking signal is load-bearing. One
+integration defect was fixed on the way: merging alias tables with an object spread let a label table overwrite
+the base table's alias list, which cost one probe until the lists were unioned instead.
+
+This is still a measurement prototype. Nothing is shipped, the pipeline is untouched, the runs make no model
+calls, and the instrument reads a private chat and private needles, so only the method and the numbers are
+recorded.
+
