@@ -1196,71 +1196,112 @@ fetch-shaped adapter parses that number out and returns it, and an unnamed failu
 guess. `requestRerank` now prefers that shim whenever the host offers one. Live confirmation needs the next run:
 the wiring is proven at the shim (the probe above) and in the unit tests, not yet in a generation.
 
-#### Rerank reaches the provider in a real generation, and the floor-1 slot comes free (2026-09-15/16, runs 2e-2h)
+#### Rerank reaches the provider in a real generation and makes the instruction slot rare (2026-09-15/16, ten runs)
 
-Runs 2e-2h are the `石原` fixture, each on its own fresh chat (`turns-shiyuan.json`, `--detail-survival`,
-perTurn, 20 phase-1 turns), taken with `narrative_rerank_model = qwen3.7-text-rerank` and
-`narrative_rerank_candidates = 24`. They are the first runs in this log in which the rerank stage reached a
-provider.
+Ten runs took the stage with `narrative_rerank_model = qwen3.7-text-rerank` and
+`narrative_rerank_candidates = 24`: 2e-2h on the `石原` fixture and the six two-path runs described below. Each
+ran the `--detail-survival` acceptance with `perTurn` probes on its own fresh chat; the later ones were opened
+from the driver side with the host's `/newchat` slash command instead of by hand.
 
-| run | probe turns | rerank_used at turn 10 / 20 / final | transport | documents | elapsed | provider tokens |
+| runs | probe turns | rerank_used at turn 10 / 20 / final | transport | documents | elapsed | provider tokens |
 | --- | --- | --- | --- | --- | --- | --- |
-| 2e | 1 | false / true / true | native | 14, 23 | 110-175 ms | 3,091-3,123, 10,454 |
-| 2f | 2 | false / true / true | native | 14-15, 23 | 115-338 ms | 2,760-3,135, 9,457 |
-| 2g | 2 | false / true / true | native | 15, 23 | 124-181 ms | 3,149, 9,685 |
-| 2h | 1 | false / true / true | native | 15-16, 24 | 135-172 ms | 3,518-4,019, 10,385 |
+| 2e-2h | 1-2 | false / true / true | native | 14-24 | 110-338 ms | 2,760-10,454 |
+| path1-a..c | 3-5 | false / true / true | native | 13-24 | 119-191 ms | 2,300-11,270 |
+| path2-a..c | 3-5 | false / true / true | native | 14-24 | 121-232 ms | 3,116-15,620 |
 
-Across the four runs, **all 24 captures with `rerank_used: true` have `rerank_error: null`**: the stage neither
-failed nor fell back, at 110-338 ms and 14-24 documents. Turn 10 recording no call is the stage's own guard rather
-than a failure - with every floor still unfolded there are fewer than two candidates the prompt does not already
-show, so the shortlist is empty and no request is spent, the shape the code comment already recorded from an
-earlier live run. The cost is therefore one native call per generation once the first fold lands, 2,760-10,454
-provider tokens by shortlist size, so the ~10k figure quoted for this stage is the upper end and not the average.
+**All 92 captures with `rerank_used: true` have `rerank_error: null`**, over 13-24 documents and 110-338 ms.
+Turn 10 recording no call is the stage's own guard rather than a failure - with every floor still unfolded
+there are fewer than two candidates the prompt does not already show, so the shortlist is empty and no request is
+spent, the shape the code comment already recorded from an earlier live run. The cost is one native call per
+generation once the first fold lands, 2,300 provider tokens at the low end and 15,620 at the high end of a long
+chat, so the ~10k figure quoted for this stage is neither the floor nor the ceiling.
 
-Every run re-read the quoted-slot audit with only the stage changed:
+The quoted-slot audit, with the stage the only thing that changed:
 
-| run | rerank | probe turns | quoted sections | user rows quoted |
-| --- | --- | --- | --- | --- |
-| 2c | off | 1 | 5 | 1 (`raw_2`, floor 1) |
-| 2d | wired, CORS-blocked | 3 | 15 | 3 (`raw_2`, floor 1) |
-| 2e | on, native | 1 | 5 | 0 |
-| 2f | on, native | 2 | 10 | 0 |
-| 2g | on, native | 2 | 10 | 0 |
-| 2h | on, native | 1 | 5 | 0 |
+| stage | runs | probes | quoted sections | user rows quoted | probes quoting one |
+| --- | --- | --- | --- | --- | --- |
+| off (2c) or CORS-blocked (2d) | 2 | 4 | 20 | 4 - every one `raw_2`, floor 1 | 4/4 |
+| on, native | 10 | 31 | 155 | 3 | 3/31 |
 
-With the stage off or blocked, four of four probes quoted a user row, and it was always the same one: `raw_2`,
-the opening instruction whose text carries the needle for the identity probes. With the stage reaching the
-provider, none of six probes quoted a user row at all, and the identity probes are among them. That is the effect
-the offline held-out table predicted (the instruction row out of the top three in 6/6), now 0 for 6 inside
-generations against 4 for 4 without it. **A 4/4-versus-0/6 split is still not a rate**, and run-to-run variance is
-not separated by it, but it is no longer one case.
+Without the stage every probe spent a slot on a user row and it was always the same one: `raw_2`, the opening
+instruction whose text carries the needle for the identity probes. With the stage reaching the provider the share
+of quoted slots that are instruction rows falls from 4/20 to 3/155. The three survivors are `raw_2` (floor 1, the
+opening instruction), `raw_16` (floor 15) and `raw_6` (floor 5), the last two ordinary continuation
+instructions. **An earlier reading of "0 for 6" was a small-sample artifact and is corrected here**: the stage
+does not eliminate the instruction slot, it makes it rare. One of the three cost nothing - `path1-a`'s `d-jar`
+probe quoted both `raw_16` (the instruction that names `灶上一只粗陶罐`) and `raw_17` (the row the model actually
+wrote) and still recovered the detail.
 
-`d-manner` (`用指节敲两下`) then gave two live retrieval recoveries with the stage on that disagree about what
-the model does with the same evidence. It was dropped by the second merge in 2f and 2g, quoted back in both, and
-in both the full needle reached the reply (`evidenceMatch: verbatim`).
+All ten runs are otherwise clean: fold 21 then 41 and both batches committed in every run, gate PASS (20/20
+floors, 42 chunks covered), and `ungroundedPasses: 0` in every adjudication. Fact survival at the two merges,
+from the ten recorded runs: 5/5 then 6/6 (2e), 5/5 then 5/6 (2f), 5/5 then 5/6 (2g), 5/5 then 6/6 (2h), 6/7 then
+7/9 (path1-a), 7/7 then 9/9 (path1-b), 7/7 then 7/9 (path1-c), 4/5 then 5/6 (path2-a), 5/5 then 4/6 (path2-b),
+5/5 then 6/6 (path2-c). Two of those report a must-keep lost in a merge, both the
+promise `天亮前换岗`. Only `path1-c`'s is real: its committed summary does not contain the promise, which the
+retention check independently confirms. `path1-a`'s committed summary retains it, so that report is the
+one-revision-behind artifact this observation is already documented to have (`acceptance-longchat.mjs`).
 
-Run 2g answered the question:
+#### The crossed wall is the window, not the selection and not the question (2026-09-16, runs path1-a..c and path2-a..c)
 
-> 1. 敲。他开口之前会先蹲下，用指节在木头上敲两下——笃，笃——然后等回声散干净，才开口说话。
+Two paths were run three times each against the selection stage that now works.
 
-That is the first clean recovery recorded here: the needle was gone from the summary, the evidence block carried
-it, and the reply answers the question as asked.
+- `path1-tiedan` is the `铁蛋` fixture, nine declared details instead of six, so the adaptive probe set has more
+  to ask about when the merge drops something.
+- `path2-shiyuan` is the `石原` fixture with one question repaired. `d-manner` used to ask 他开口之前有什么固定动作
+  ("what fixed action precedes his speaking"), a relation the original text never states; it now asks 他怎么检查船板有
+  没有进水, which floor 8 does state.
 
-Run 2f did not:
+Both fixtures also declare negative controls under the key the parser actually reads. **They are the first runs
+in this log with any.** `parseTurnsFile` takes negative controls from `negativeControls`; every fixture used for
+the earlier runs declared them as `negatives`, and an unknown top-level key was ignored, so every "0 fabricated"
+recorded before this was measured on a probe set that had nothing to fabricate. The parser now reports the
+mis-keyed list as an error, which the driver turns into a stop before any paid run.
 
-> 1. 不记得有明确写定的"开口前固定动作"。我确实记得他敲船头侧板两下（"咚、咚"）、以及收黄铜卷尺在掌心一磕这类动作，但我不能确认那就是他每次开口前的固定动作，所以按"不记得"算。
+| run | dropped details probed | outcome |
+| --- | --- | --- |
+| path1-a | d-teeth, d-jar | 2 `retrieval-recovered` (门牙 run2/50%, 只粗陶罐 run4/67%) |
+| path1-b | none (9 of 9 retained) | - |
+| path1-c | d-teeth, d-promise | 1 recovered (门牙缺 run3/75%), 1 `retrieved-not-conveyed` |
+| path2-a | d-manner | `retrieved-not-conveyed` |
+| path2-b | d-tool, d-manner | 2 recovered (黄铜卷尺 verbatim/100%, 敲两下 run3/50%) |
+| path2-c | none (6 of 6 retained) | - |
 
-The model **declined the relation the question tested** while reporting the concrete action it could confirm. The
-instrument counts both as recoveries; read by hand, 2g is a recovery and 2f is retrieval delivering the evidence
-and the reply declining the stronger claim. Both carry `partialMatches: 1`, at the reply-match tolerance: 2f
-matched a two-character run (`token=两下(run2, 33%)`), 2g a three-character one (`token=用指节(run3, 50%)`).
-The two differ only in the reply, so this is a model-stance variance worth keeping visible rather than averaged
-into a rate.
+`path1-c` also lost the promise `天亮前换岗` end to end, and that is the first one this log records: a
+must-keep promise dropped by the merge (the retention check says so independently of the batch-time observation),
+not quoted back by the evidence, and not asserted in the reply - which correctly says 除此之外，我不记得他明确答应过谁
+什么具体的事. The contract says a promise is the kind of thing the summary exists to carry, so this is the reading
+to fix next, not a measurement artifact.
 
-The adaptive probe set is what makes the probe counts differ: 2e and 2h retained 6 of 6 declared details, so
-there was nothing dropped to ask about and only the positive control was probed; 2f and 2g dropped `d-manner`.
-All four runs are otherwise clean - fold 21 then 41 and both batches committed in each, fact survival 5/5 then
-6/6 (2e), 5/5 then 5/6 (2f), 5/5 then 5/6 (2g), 5/5 then 6/6 (2h), no must-keep lost in a merge in any of them,
-gate PASS in all (20/20 floors, 42 chunks covered), 0 refusals and 0 fabrications, and every adjudication is
-`ungroundedPasses: 0` with 2f's and 2g's two rows both `confirmed-pass` / `memoryAttributed`.
+**Twelve negative probes, twelve refusals, zero fabrications, zero negative leaks.** The refusals are not
+one-word dodges: `path1-c`'s answer to 门上挂着什么铃 was 不记得。（我记忆里没有出现过"门上挂铃"这一项——寨里相关的只有号鼓已毁、铁蛋腰间那面半张牛皮的鼓，以及阿婆灶间剁菜报平安的动静，没有门铃。）,
+and `path1-a`'s to the beast count was 不记得。…说不出，就不编。
+
+The `d-manner` pair isolates that remaining stage. Run 2g (with the old question) and `path2-b` (with the
+repaired one) both answered it; run 2f declined the relation, and `path2-a` refused outright with a bare 不记得。 - and its evidence
+block carried the full needle `用指节敲两下` verbatim, three times:
+
+| `path2-a` quoted row | what it says |
+| --- | --- |
+| `raw_9` floor 8 | 抬起手指，用指节敲两下身旁的**树干** |
+| `raw_17` floor 16 | 先走到桥上，用指节敲两下**桥面** |
+| `raw_19` floor 18 | 上钉子时，先用指节在**门框**上敲两下 |
+
+Not one of them is about checking a boat. The model's refusal is correct for the quote it was handed. `path2-b`
+quoted a different span and got the answer: 下湖前敲两下船帮。头一下问木，听它空不空；第二下问人，听水下有没有应。
+- which its reply reproduces almost verbatim.
+
+So repairing the question changed nothing about the outcome; **what changed the outcome was which characters of
+which row the window quoted.** `evidenceMatch` cannot see the difference, because it matches the needle and the
+question asks about a relation the needle does not carry: the instrument files both `path2-a` and `path2-b` under
+the evidence channel, and `path2-a` lands in `retrieved-not-conveyed`, which reads like the model dropping
+something it was given. The same shape is behind `path1-c`'s `d-promise`: the evidence match is the two-character
+run `换岗` from 到时辰了，换岗 (a relief-of-duty line, not the promise `天亮前换岗`), and the reply correctly says it
+does not remember such a promise. Both are placement and matching artifacts, not answer failures.
+
+That leaves the stages in order: the summary dropped a must-keep promise once in six runs (`path1-c`), the
+cross-encoder now stops the instruction row from taking most of its slots, and **the loss that remains on every
+other miss in this batch is the window quoting the wrong region of the right row** - the same stage the
+2026-09-15 trim geometry measured (ten needle occurrences 63-207 characters outside their quoted span) and this
+batch's `d-manner` pair now witnesses live. The next change belongs there, and the signal it needs is coverage of
+the question's terms inside the quoted span, not another ordering rule.
 

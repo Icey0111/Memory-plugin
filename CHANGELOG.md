@@ -29,6 +29,12 @@ belongs in Git commits and pull requests.
   reaches none of them, so the shape is a window placed at one end of a long row rather than a cut one punctuation
   short. Without the regions in the record such a miss cannot be attributed, which is what `seats` now fixes.
 
+- A turns file that declares its negative controls under the wrong key is refused instead of read as having
+  none. `parseTurnsFile` takes them from `negativeControls`; a file that used `negatives` parsed clean, reported
+  `negativeControls: 0`, and produced a "0 fabricated" acceptance reading from a probe set that had nothing to
+  fabricate - which is what every run recorded before 2026-09-16 did. The driver stops on parse errors, so the
+  mis-keyed list now fails before any model call.
+
 - The detail-survival acceptance no longer reads a probe answer that the transcript still shows as a fabrication.
   `detail-survival.needleSources` records, against the phase-1 snapshot, whether a declared needle is still in an
   unfolded row and whether any model-written row carries it; `summarizeDetailSurvival` reports those as

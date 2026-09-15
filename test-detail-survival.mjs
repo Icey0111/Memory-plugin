@@ -62,6 +62,19 @@ const adjudicate = graded => {
   assert.ok(bad.errors.some(error => error.includes('id 重复: x')));
   assert.ok(DETAIL_EXPECTATIONS.includes('unsure'));
   assert.deepEqual([...DETAIL_CHANNELS], ['continuity', 'evidence', 'both', 'none']);
+  // A negative-control list written under the other obvious name is refused, not silently dropped: the
+  // driver stops on parse errors before a paid run, and a probe set with no negative control reports
+  // "0 fabricated" from a set that could not have fabricated anything.
+  const misKeyed = parseTurnsFile({ turns: [{ text: 't' }],
+    negatives: [{ id: 'n1', needle: '暗红', question: '工具袋是什么颜色？' }] });
+  assert.equal(misKeyed.negatives.length, 0);
+  assert.ok(misKeyed.errors.some(error => error.includes('negativeControls')));
+  // A file carrying both keys loses the mis-named list, so it is refused rather than read as the correct one.
+  const bothKeys = parseTurnsFile({ turns: [{ text: 't' }],
+    negatives: [{ id: 'n0', needle: 'x', question: 'q0' }],
+    negativeControls: [{ id: 'n1', needle: '暗红', question: '工具袋是什么颜色？' }] });
+  assert.equal(bothKeys.negatives.length, 1);
+  assert.ok(bothKeys.errors.some(error => error.includes('negativeControls')));
 }
 
 // --- 2. matching folds case and width; an empty needle never matches -----------------------------------

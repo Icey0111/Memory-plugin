@@ -215,6 +215,13 @@ export function parseTurnsFile(raw) {
         out.turns.push({ text: turn.text, details });
     });
     const rawNegatives = Array.isArray(raw.negativeControls) ? raw.negativeControls : [];
+    // The other obvious name for this list is silently ignored, and a run with no negative control cannot
+    // measure fabrication at all: every fixture used for the 2026-09-15/16 runs declared `negatives`, so none
+    // of them had one, and the driver now stops on parse errors instead of probing nothing. A file carrying
+    // both keys drops the mis-named list too, so it is refused rather than read as the correct one.
+    if (Array.isArray(raw.negatives)) {
+        errors.push('负控必须写在 negativeControls 下；negatives 会被忽略');
+    }
     rawNegatives.forEach((entry, index) => {
         out.negatives.push(readProbe(entry, 'negativeControl ' + (index + 1), 'negative'));
     });
