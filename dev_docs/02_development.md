@@ -727,3 +727,27 @@ authored per story. The next question is whether that vocabulary can be derived 
 net instead of written by hand - if it cannot, the key layer costs an author several entries per chapter and buys
 nothing over the retriever already in place.
 
+### Automatic derivation recovers the held-out reading, and for a specific reason (2026-09-15)
+
+The held-out chat's attribute vocabulary was derived mechanically instead of authored: 2-4 character CJK fragments
+that recur near a knowledge subject, plus any the chat's own knowledge and anchor text carries, kept maximal and
+requiring at least two rows. That yields 822 candidate terms and recovers eight of the nine words the ten held-out
+questions need - all but the single-character `岔`, which the length rule excludes. On the same ten probes and the
+frozen rule, reachable goes from **2/10 to 6/10** at 150 terms and **7/10** at all 822, against the shipped
+retriever's 6/10.
+
+Adding the same missing words by hand does **not** move the reading: with `烟锅/船/麻丝/灯/岔/脚印` added it stays
+at 2/10. The two readings disagree only because the vocabularies differ in **specificity**, and they agree on the
+frozen control (both read 2/10), which is what makes the comparison meaningful. The derived list contains the
+multi-character phrases the questions actually use (`铜烟锅`, `渡船`, `船底`), and a key built on a rare phrase
+has few candidate spans, so the single span the rule keeps per key is the one that carries the needle; a key built
+on the generic noun (`烟锅`, `船`, `灯`) has many candidates and keeps the wrong one.
+
+So automatic derivation is a real route to the vocabulary, and it also exposes the structural defect underneath:
+**a composite key points at exactly one span, and the ordering that picks it does not know which occurrence the
+question needs.** Keeping twenty spans per key recovers the held-out reading to 8/10, but fires 212 spans at 11.8%
+precision where the shipped retriever quotes fifty. The next question is whether a key can point at a *set* of
+occurrences ranked with the question's own evidence, rather than at one span chosen before the question is known.
+Two caveats: the derivation rule was written by someone who had seen the probes, and the two implementations
+differ slightly in bidder counts (27 against 33 on the frozen control) even though their reachability agrees.
+
