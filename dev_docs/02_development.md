@@ -1196,62 +1196,71 @@ fetch-shaped adapter parses that number out and returns it, and an unnamed failu
 guess. `requestRerank` now prefers that shim whenever the host offers one. Live confirmation needs the next run:
 the wiring is proven at the shim (the probe above) and in the unit tests, not yet in a generation.
 
-#### Rerank reaches the provider in a real generation, and the floor-1 slot comes free (2026-09-15, runs 2e and 2f)
+#### Rerank reaches the provider in a real generation, and the floor-1 slot comes free (2026-09-15/16, runs 2e-2h)
 
-Runs 2e and 2f are the `石原` fixture on fresh chats (`turns-shiyuan.json`, `--detail-survival`, perTurn, 20
-phase-1 turns each), taken with `narrative_rerank_model = qwen3.7-text-rerank` and
+Runs 2e-2h are the `石原` fixture, each on its own fresh chat (`turns-shiyuan.json`, `--detail-survival`,
+perTurn, 20 phase-1 turns), taken with `narrative_rerank_model = qwen3.7-text-rerank` and
 `narrative_rerank_candidates = 24`. They are the first runs in this log in which the rerank stage reached a
 provider.
 
-| run | snapshot | rerank_used | transport | documents | elapsed | provider tokens |
+| run | probe turns | rerank_used at turn 10 / 20 / final | transport | documents | elapsed | provider tokens |
 | --- | --- | --- | --- | --- | --- | --- |
-| 2e | turn 10 | false | - | - | - | - (`rerank_cost: null`) |
-| 2e | turn 20 | true | native | 14 | 110-119 ms | ~3.1k |
-| 2e | final | true | native | 23 | 175 ms | 10,454 |
-| 2f | turn 10 | false | - | - | - | - |
-| 2f | turn 20 | true | native | 14, 15 | 115, 129 ms | 2,760, 3,135 |
-| 2f | final | true | native | 23 | 172 ms | 9,457 |
+| 2e | 1 | false / true / true | native | 14, 23 | 110-175 ms | 3,091-3,123, 10,454 |
+| 2f | 2 | false / true / true | native | 14-15, 23 | 115-338 ms | 2,760-3,135, 9,457 |
+| 2g | 2 | false / true / true | native | 15, 23 | 124-181 ms | 3,149, 9,685 |
+| 2h | 1 | false / true / true | native | 15-16, 24 | 135-172 ms | 3,518-4,019, 10,385 |
 
-Every captured diagnostics object in both runs has `rerank_error: null`: the stage neither failed nor fell back.
-Turn 10 recording no call is the stage's own guard rather than a failure - with every floor still unfolded there
-are fewer than two candidates the prompt does not already show, so the shortlist is empty and no request is spent,
-the shape the code comment already recorded from an earlier live run. The cost is therefore one native call per
-generation once the first fold lands, 2.7k-10.5k provider tokens by shortlist size, so the ~10k figure quoted for
-this stage is the upper end and not the average.
+Across the four runs, **all 24 captures with `rerank_used: true` have `rerank_error: null`**: the stage neither
+failed nor fell back, at 110-338 ms and 14-24 documents. Turn 10 recording no call is the stage's own guard rather
+than a failure - with every floor still unfolded there are fewer than two candidates the prompt does not already
+show, so the shortlist is empty and no request is spent, the shape the code comment already recorded from an
+earlier live run. The cost is therefore one native call per generation once the first fold lands, 2,760-10,454
+provider tokens by shortlist size, so the ~10k figure quoted for this stage is the upper end and not the average.
 
-Both runs re-read the quoted-slot audit with only the stage changed:
+Every run re-read the quoted-slot audit with only the stage changed:
 
 | run | rerank | probe turns | quoted sections | user rows quoted |
 | --- | --- | --- | --- | --- |
-| 2c | off | 1 | 5 | 1 (floor 1) |
-| 2d | wired, CORS-blocked | 3 | 15 | 3 (floor 1 in each) |
+| 2c | off | 1 | 5 | 1 (`raw_2`, floor 1) |
+| 2d | wired, CORS-blocked | 3 | 15 | 3 (`raw_2`, floor 1) |
 | 2e | on, native | 1 | 5 | 0 |
 | 2f | on, native | 2 | 10 | 0 |
+| 2g | on, native | 2 | 10 | 0 |
+| 2h | on, native | 1 | 5 | 0 |
 
-With the stage reaching the provider, none of three probes quoted a user row at all - including the probes whose
-needle is the character's own name, the needle that sits literally inside floor 1's instruction text
-(`开场：让一个新人物登场——石原，替人修船的男人`). With the stage off or blocked, four of four probes quoted it.
-That is the effect the offline held-out table predicted (the instruction row out of the top three in 6/6), now
-observed three times inside a generation. **Three live cases with no counter-example is still not a rate**, and
-run-to-run variance is not separated by it.
+With the stage off or blocked, four of four probes quoted a user row, and it was always the same one: `raw_2`,
+the opening instruction whose text carries the needle for the identity probes. With the stage reaching the
+provider, none of six probes quoted a user row at all, and the identity probes are among them. That is the effect
+the offline held-out table predicted (the instruction row out of the top three in 6/6), now 0 for 6 inside
+generations against 4 for 4 without it. **A 4/4-versus-0/6 split is still not a rate**, and run-to-run variance is
+not separated by it, but it is no longer one case.
 
-Run 2f also produced the first live retrieval recovery recorded with the stage on, and it is the reading that
-needs the most restraint: `d-manner` (`用指节敲两下`) was dropped by the second merge, quoted back at floor 8,
-and graded `retrieval-recovered`. The reply reads:
+`d-manner` (`用指节敲两下`) then gave two live retrieval recoveries with the stage on that disagree about what
+the model does with the same evidence. It was dropped by the second merge in 2f and 2g, quoted back in both, and
+in both the full needle reached the reply (`evidenceMatch: verbatim`).
+
+Run 2g answered the question:
+
+> 1. 敲。他开口之前会先蹲下，用指节在木头上敲两下——笃，笃——然后等回声散干净，才开口说话。
+
+That is the first clean recovery recorded here: the needle was gone from the summary, the evidence block carried
+it, and the reply answers the question as asked.
+
+Run 2f did not:
 
 > 1. 不记得有明确写定的"开口前固定动作"。我确实记得他敲船头侧板两下（"咚、咚"）、以及收黄铜卷尺在掌心一磕这类动作，但我不能确认那就是他每次开口前的固定动作，所以按"不记得"算。
 
-The needle reached the reply - `evidenceMatch` is `verbatim` on the full `用指节敲两下` - but the reply match is
-a two-character run (`token=两下(run2, 33%)`) and the model **declined the relation the question tested** while
-reporting the concrete action it could confirm. The instrument counts that as a recovery; read by hand it is
-retrieval delivering the evidence and the reply declining the stronger claim. The `summary-kept` positive control
-(`d-name`) is unambiguous in the same run.
+The model **declined the relation the question tested** while reporting the concrete action it could confirm. The
+instrument counts both as recoveries; read by hand, 2g is a recovery and 2f is retrieval delivering the evidence
+and the reply declining the stronger claim. Both carry `partialMatches: 1`, at the reply-match tolerance: 2f
+matched a two-character run (`token=两下(run2, 33%)`), 2g a three-character one (`token=用指节(run3, 50%)`).
+The two differ only in the reply, so this is a model-stance variance worth keeping visible rather than averaged
+into a rate.
 
-The adaptive probe set is what makes the two runs different: 2e's summary retained 6 of 6 declared details, so
-there was nothing dropped to ask about and only the positive control was probed; 2f dropped `d-manner`. Both runs
-are otherwise clean - fold 21 then 41, both batches committed in each, fact survival 5/5 then 6/6 (2e) and 5/5
-then 5/6 (2f), no must-keep lost in a merge, gate PASS in both (20/20 floors, 42 chunks covered), 0 refusals and 0
-fabrications in both, and 2f's adjudication is `confirmed-pass: 2`, `memoryAttributed: 2`,
-`ungroundedPasses: 0`. The one retrieval reading above carries `partialMatches: 1`, which is the tolerance floor
-this instrument has already been measured at.
+The adaptive probe set is what makes the probe counts differ: 2e and 2h retained 6 of 6 declared details, so
+there was nothing dropped to ask about and only the positive control was probed; 2f and 2g dropped `d-manner`.
+All four runs are otherwise clean - fold 21 then 41 and both batches committed in each, fact survival 5/5 then
+6/6 (2e), 5/5 then 5/6 (2f), 5/5 then 5/6 (2g), 5/5 then 6/6 (2h), no must-keep lost in a merge in any of them,
+gate PASS in all (20/20 floors, 42 chunks covered), 0 refusals and 0 fabrications, and every adjudication is
+`ungroundedPasses: 0` with 2f's and 2g's two rows both `confirmed-pass` / `memoryAttributed`.
 
