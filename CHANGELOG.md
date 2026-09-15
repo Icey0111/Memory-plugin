@@ -19,7 +19,10 @@ belongs in Git commits and pull requests.
   (`token=臂上(run2, 67%)`), so a tolerant two-character run is visible instead of hidden behind the boolean. A
   census over the six recorded runs found the floor carries 6 of 24 matches and every one shortens the needle; the
   candidate rule that forbids dropping a content character was measured and rejected because it removes two true
-  positives, including that run's only retrieval recovery. Measured: `node run-tests.mjs` 50/50 and
+  positives, including that run's only retrieval recovery. A frequency filter (ADR-0046's specificity idea) was
+  measured next and rejected as well: the true `卷尺` occurs in 9 of 41 rows while the false `臂上` occurs in 2,
+  and every token occurs only in rows that already carry the full needle. Run length, position and adjacency were
+  rejected the same way - the difference is the referent, not the text. Measured: `node run-tests.mjs` 50/50 and
   `node check-syntax.mjs` 99 files.
 
 - The opening greeting is hidden with the first committed summary batch instead of staying visible inside the

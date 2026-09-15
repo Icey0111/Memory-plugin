@@ -951,3 +951,38 @@ What ships is the reading, not a new verdict rule: every outcome carries `token`
 `partialMatches` counts the shortened runs, and the driver prints `token=臂上(run2, 67%)`. A reader sees what the
 verdict rests on, and a later rule has a measured population to be judged against.
 
+#### No text-local signal separates a shortened match from a wrong one (2026-09-15)
+
+The candidate that follows from the ADR-0046 specificity test is a frequency filter: a shortened run should not
+carry a verdict when its token is common in the story. Measured over the same seven shortened matches, the idea is
+refuted, and in the direction opposite to the intuition.
+
+| run | item | field | needle | token | token rows | needle rows | token outside the needle's rows |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | d-manner | evidence | 跺一下脚上的雪 | 下脚 | 2 | 2 | 0 |
+| 2 | d-tool | evidence, reply | 黄铜卷尺 | 卷尺 | 9 | 9 | 0 |
+| 2 | d-manner | evidence | 用指节敲两下 | 敲两下 | 8 | 14 | 0 |
+| 2b | d-arm | reply | 小臂上 | 臂上 | 2 | 2 | 0 |
+| 4 | d-basket | continuity, reply | 藤编的背篓 | 背篓 / 藤编 | 1 | 1 | 0 |
+
+`卷尺` appears in 9 of the 41 phase-1 rows and is the **true** one; `臂上` appears in 2 and is the **false** one. No
+token ever appears in a row that does not also carry the full needle, so "the token leaked outside its phrase" -
+the reading that would justify a frequency floor - never happens in this population. A threshold at df <= 2 drops
+`卷尺`, `敲两下` and `臂上` together: it removes true positives and keeps the one false positive.
+
+Three more text-local signals were tried and rejected the same way.
+
+- **Run length.** Requiring three characters drops `卷尺` and `背篓`, both true.
+- **Position.** Requiring the run to be a prefix or a suffix drops run 1's `下脚` and nothing else - the one
+  candidate that looked clean - but for the wrong reason. `下脚` sits in the right row and the quoted window was
+  trimmed; the rule would drop a needle whose answer is an attribute in the middle of a longer description, which
+  is the shape ADR-0045 works on.
+- **Adjacency.** Requiring the text's neighbouring content character to agree with the needle's rejects all seven,
+  because a correct terse reply has no neighbour at all: run 2's `d-tool` answered "1. 卷尺。", run 4's
+  `d-basket` answered "1. 藤编的。白先生背的是藤篓…", and both are true.
+
+The surviving difference is the **referent**, not the text. `卷尺` is a true match because the story has one tape
+measure; `臂上` is a false one because the story has two arms. That is world knowledge and this instrument has
+none. The reading shipped above is therefore the whole remedy: it makes a shortened match visible and auditable
+instead of pretending to adjudicate it.
+
