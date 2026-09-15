@@ -1320,3 +1320,49 @@ so it adds nothing to what a run costs. `runtime-precheck` watches both new func
 pipeline tests pins a full reversal (`moved === shortlist`), an order that agrees with the fusion (`moved: 0`) and
 the fail-open case.
 
+#### The on/off A/B: the stage does what it was bought for, and the answers do not move (2026-09-16, runs ab-off-1..3 and ab-on-1..3)
+
+Six runs of the `path2-shiyuan` fixture, three with `narrative_rerank_model` set and three with it empty,
+**interleaved** (off, on, off, on, off, on) so any drift over the batch is split between the arms. The setting is
+read live from `extensionSettings` on every generation (`narrativeSettings`), so each switch is a settings write
+plus a fresh chat - no host reload, which would land the page on the welcome screen. Every off run reports
+`rerank_model: null`, `rerank_used: false`, `rerank_cost: null`; every on run reports `used: true` with no error.
+
+**The stage reorders almost everything, and it removes the opening instruction row every time it sees it.** In
+all 22 captures the new metric recorded, `moved` is 13 of 14 up to 24 of 24 shortlist positions and
+`top1_changed` is **true**. The fused head puts the opening instruction row `raw_2` in the top three in nine of
+those captures, and the reranked head contains it in **none** - 9 for 9, which is the mechanism behind the slot
+reading below rather than another correlation.
+
+Cumulative slot audit, now over every run in this log:
+
+| arm | runs | probes | quoted sections | user-row slots | of which `raw_2` | probes quoting one |
+| --- | --- | --- | --- | --- | --- | --- |
+| off / CORS-blocked | 5 | 17 | 85 | 10 | **10** | 10 |
+| on, native | 13 | 44 | 220 | 7 | **1** | 5 |
+
+With the stage off, **every** user-row slot is the same row: `raw_2`, the opening instruction, which for the
+identity probe literally carries the answer. With it on, the surviving slots are ordinary continuation
+instructions (`raw_6` floor 5, `raw_8` floor 7, `raw_16` floor 15) and `raw_2` appears once in 44 probes.
+
+**The answers, however, do not separate.** Both arms recovered two details:
+
+| arm | recoveries | retrieved-not-conveyed | refused (all negative controls) | fabricated |
+| --- | --- | --- | --- | --- |
+| off | d-tool (verbatim 100%), d-promise (`船底` 29%) | d-manner twice | 6 | 0 |
+| on | d-tool (verbatim 100%), d-arm (verbatim 100%) | d-promise, d-manner | 6 | 0 |
+
+Two against two in thirteen probes each, with the retention differing between runs for reasons that have nothing
+to do with the stage (off dropped 0/1/3 details, on dropped 1/2/1). **This sample cannot show an answer-level
+gain, and at n=3 per arm it could not have.** What it does show is that the stage changes the prompt in the
+direction the offline held-out table predicted - the instruction row out of the top three - at 2,300-15,620
+provider tokens per generation once the first fold lands.
+
+Two readings that belong to the instrument rather than to the stage, and are recorded so they are not read as
+retrieval wins: `ab-on-2`'s `d-manner` reply describes the same check with a hammer (`用小锤沿船底敲了一圈`), not
+the knuckles the needle names, so it is counted as not conveyed; and `ab-off-3`'s `d-promise` is credited through
+the two-character run `船底`. One result-level failure stands out and is not explained by any of this: in
+`ab-on-1` the **positive control** `d-name` was answered 我从未到过什么渡口，也不认识修船的人 although the needle is in
+both channels - the model replied as the character denying knowledge, which is a probe-framing failure worth its
+own diagnosis.
+
