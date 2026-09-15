@@ -2131,6 +2131,12 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
     }
     const note = (span, outcome, slot) => ({ source: span.source, chunks: [...span.members], start: span.start,
         end: span.end, relevance: Math.round(span.rel * 1000) / 1000, cost: span.cost, outcome, slot });
+    // A window's placement is only auditable with the regions it was allowed to follow. `trimmed` and
+    // `anchored` alone cannot tell "no channel region existed" from "a region pointed at the head", and that
+    // is the question the 2026-09-15 held-out misses left open: ten needle occurrences fell 63-207 characters
+    // outside the span quoted for the row that carries them, and the capture could not say why.
+    const placement = span => ({ spanStart: span.start, spanEnd: span.end,
+        seats: (span.anchors || []).slice(0, 8).map(at => ({ at: at.start, channel: at.channel || null })) });
     const lines = [];
     const sources = [];
     const trace = [];
@@ -2161,7 +2167,7 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             used += fitted.tokens;
             lines.push(fitted.line);
             sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source,
-                trimmed: Boolean(fitted.trimmed), anchored: Boolean(fitted.anchored) });
+                trimmed: Boolean(fitted.trimmed), anchored: Boolean(fitted.anchored), ...placement(span) });
             trace.push({ ...note(span, 'included', sources.length - 1), trimmed: Boolean(fitted.trimmed),
                 anchored: Boolean(fitted.anchored) });
         }
@@ -2182,7 +2188,7 @@ export function packRawEvidence(ranked, history, { maxTokens = 1200, maxEntries 
             used += fitted.tokens;
             lines.push(fitted.line);
             sources.push({ source: span.source, start: fitted.start, end: fitted.end, chunk: span.source,
-                trimmed: Boolean(fitted.trimmed), anchored: Boolean(fitted.anchored) });
+                trimmed: Boolean(fitted.trimmed), anchored: Boolean(fitted.anchored), ...placement(span) });
             trace.push({ ...note(span, 'included', sources.length - 1), trimmed: Boolean(fitted.trimmed),
                 anchored: Boolean(fitted.anchored) });
         }

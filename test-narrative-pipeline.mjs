@@ -1092,6 +1092,12 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
   const quoted = (bundle.diagnostics.sources || []).find(source => source.source === 'raw_' + 4);
   assert.ok(quoted && quoted.start > 0, 'and it did it by moving the window, not by quoting the whole message');
   assert.equal(quoted.trimmed, true, 'the quote is recorded as shortened');
+  // Why the window sits where it does has to travel with the record: the candidate's own extent and the
+  // channel regions the window was allowed to follow. Without them a miss cannot be attributed to the
+  // absence of a region or to a region pointing somewhere else.
+  assert.equal(typeof quoted.spanStart, 'number', "the candidate's own extent is recorded");
+  assert.ok(quoted.spanEnd > quoted.spanStart);
+  assert.ok(Array.isArray(quoted.seats), 'and the channel regions the window could follow');
 }
 
 console.log('PASS narrative pipeline: summary for continuity, original text for detail, and no floor hidden without a stand-in');

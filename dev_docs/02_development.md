@@ -1042,3 +1042,42 @@ fixtures - a real user row is in-character evidence and belongs in the pool - an
 a population. What follows is a fixture rule, now in the schema: an identity needle is the name the instruction
 declares, so keep the name out of the instruction or read that probe as a channel control only.
 
+#### The trim misses are whole-sentence-scale, and sentence-end cannot reach them (2026-09-15)
+
+The held-out run above left two window/trim misses, and the recorded blocks measure them exactly: every quoted
+section carries its `[raw_N:start-end)` offsets and the row text carries the needle's own offset.
+
+| run | probe | needle | its offset | quoted span | gap |
+| --- | --- | --- | --- | --- | --- |
+| 1 | d-name | 阿箬 | 70 | [222,422) | the window starts 152 after the needle |
+| 2 | d-manner | 用指节敲两下 | 69 | [276,464) | 207 before the window |
+| 2 | d-manner | 用指节敲两下 | 314 | [0,204) | 110 past the end |
+| 2 | d-name | 石原 | 169 | [276,464) | 107 before the window |
+| 2b | d-name | 石原 | 12 | [168,379) | 156 before the window |
+| 3 | d-name | 柳娘 | 0 | [133,368) | 133 before the window |
+| 3 | d-name | 柳娘 | 0 | [133,368) | 133 before the window |
+| 5 | d-teeth | 门牙缺了一颗 | 264 | [0,201) | 63 past the end |
+| 5 | d-teeth | 门牙缺了一颗 | 326 | [0,210) | 116 past the end |
+| 5 | d-name | 铁蛋 | 317 | [0,210) | 107 past the end |
+
+Ten needle occurrences fall outside the span quoted for the row that carries them, by 63 to 207 characters. On the
+candidate rejected on 2026-09-13 - when a trimmed window ends mid-sentence, end it where the sentence ends - a
+full sentence-end extension reaches **zero** of the ten: each sits either beyond the next terminator or a whole
+sentence before the window's own sentence. That corpus rejection was therefore not a close call, and the held-out
+geometry says why: the shape is not a cut one punctuation short, it is a window placed at one end of a long row
+while the answer sits 63-207 characters away at the other.
+
+Eight of the ten are the identity probe, whose needle is the character's name: the name sits at offset 0 or 12 of
+a row while the window starts 133-276 deep into it. Those probes read `summary-kept` from the continuity channel
+anyway, so the verdict does not move - the evidence slot does.
+
+#### The capture could not say why the window was placed there (2026-09-15)
+
+`fitEvidenceSpan` places a trimmed window on the question's own words and on the regions the ranking channels
+voted for (`seats`), and refuses a move that leaves every region outside. A quoted source recorded only
+`trimmed` and `anchored`, so a miss could not be attributed: "no channel region existed in that row" and "a
+region pointed at the head" look identical in the record. Every quoted source now also carries
+`spanStart`/`spanEnd` (the candidate's own extent) and `seats` (up to eight region starts with their channels),
+and `test-narrative-pipeline` pins them on a case where the window has to move. The next placement change is
+measurable from a run's own record instead of a guess.
+

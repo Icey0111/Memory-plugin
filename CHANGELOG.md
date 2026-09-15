@@ -7,6 +7,12 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- A quoted evidence source now records the candidate's own extent (`spanStart`/`spanEnd`) and the channel
+  regions the window was allowed to follow (`seats`). Measured on the 2026-09-15 runs: ten needle occurrences fell
+  63-207 characters outside the span quoted for the row that carries them, and a full sentence-end extension
+  reaches none of them, so the shape is a window placed at one end of a long row rather than a cut one punctuation
+  short. Without the regions in the record such a miss cannot be attributed, which is what `seats` now fixes.
+
 - The detail-survival acceptance no longer reads a probe answer that the transcript still shows as a fabrication.
   `detail-survival.needleSources` records, against the phase-1 snapshot, whether a declared needle is still in an
   unfolded row and whether any model-written row carries it; `summarizeDetailSurvival` reports those as
