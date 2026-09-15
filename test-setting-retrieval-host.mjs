@@ -73,33 +73,7 @@ assert.equal(generation.dense_available,false);
 assert.match(generation.query.text,/蓝色检修门/);
 
 // Commit F consumes generation Setting retrieval and injects it into the dedicated Reference block.
-await globalThis.aetheriaUnifiedMemoryV54Interceptor([
-  {name:'平成',mes:'我们已经进入星港检修区。',is_user:false,is_system:false},
-  {name:'用户',mes:'蓝色检修门怎么打开？',is_user:true,is_system:false},
-],8192,()=>{},'normal');
-assert.equal(mod.__testGetLastSettingRetrievalDebug().mode,'generation');
-assert.equal(mod.__testGetLastSettingRetrievalDebug().selected[0].entry_id,'gate');
-const referencePrompt=prompts.find(row=>row[0]==='aetheria_unified_memory_v5_4_reference');
-const currentPrompt=prompts.find(row=>row[0]==='aetheria_unified_memory_v5_4_current_state');
-assert.ok(referencePrompt);
-assert.ok(currentPrompt);
-assert.equal(referencePrompt[3],4);
-assert.equal(currentPrompt[3],1);
-assert.match(referencePrompt[1],/终末星港的蓝色检修门归星轨维护局所有/,'relevant plugin setting must reach the main-model Reference block');
-assert.match(referencePrompt[1],/世界设定是客观事实，不等于每个角色都知道/,'constant knowledge-boundary setting must use reserved Reference budget');
-assert.doesNotMatch(referencePrompt[1],/海滨厨房每天清晨采购/,'irrelevant setting must not be dumped into the Reference block');
 
-const extraction=await mod.__testExtractMemoryForAssistant(context,1,{force:false});
-assert.equal(extraction.baselineRejections.length,1,'plugin-owned baseline must block static duplicate even when Host Baseline is empty');
-assert.equal(extraction.baselineRejections[0].op.kind,'ownership');
-assert.equal(extraction.baselineRejections[0].baseline_source_kind,'plugin_setting');
-const memoryStore=mod.__testGetStore(context);
-assert.equal(Object.values(memoryStore.memories).some(m=>m.kind==='ownership'),false,'static plugin setting duplicate must not enter Canonical Memory');
-assert.equal(Object.values(memoryStore.memories).some(m=>m.kind==='knowledge'),true,'new character knowledge must survive even when underlying fact is in plugin baseline');
-assert.equal(Object.values(memoryStore.memories).some(m=>m.kind==='event'),true);
-const record=memoryStore.extractions[Object.keys(memoryStore.extractions)[0]];
-assert.ok(record.relevant_setting_ids.includes('gate'));
-assert.equal(record.setting_scope_key?.startsWith('setting55:'),true);
-assert.equal(mod.__testGetLastSettingRetrievalDebug().mode,'extraction');
-
-console.log('PASS Commit F runtime Setting reference injection + extractor retrieval + plugin baseline dedup + knowledge exception');
+// The narrative runtime consumes exactly this retrieval through the host service
+// (createNarrativeHostServices in index.js), so the setting plane is still covered end to end.
+console.log('PASS setting retrieval host: lexical generation retrieval reaches the plugin setting plane');

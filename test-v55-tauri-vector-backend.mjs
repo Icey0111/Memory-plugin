@@ -7,6 +7,7 @@ import {
     cosineSimilarity,
     ensureTauriVectorApiKeyLoaded,
     decodeVector,
+    EMBEDDING_REQUEST_BATCH,
     encodeVector,
     getTauriVectorApiKey,
     handleTauriVectorRequest,
@@ -118,6 +119,22 @@ assert.equal(providerCalls[1].body.task, 'retrieval.query');
 assert.equal(query.metadata.length, 1);
 assert.equal(query.metadata[0].hash, 11);
 assert.deepEqual(query.hashes, [11, 22]);
+
+// The live TauriTavern run exposed this: a caller batched 40 chunks per insert, and the
+// DashScope-compatible qwen3 Embedding route rejected anything over 20 inputs, so the index rebuild
+// threw and dense recall silently stayed off. The transport must split one insert across as many
+// provider requests as its per-request input cap requires, and keep the result order.
+const batchCallsBefore = providerCalls.length;
+const manyItems = Array.from({ length: 45 }, (_, i) => ({ hash: 1000 + i, text: i === 44 ? 'alpha tail' : 'beta item ' + i, index: i }));
+response = await handleTauriVectorRequest('insert', { collectionId: 'aetheria_v55_tauri_batch', items: manyItems }, config, providerFetch);
+assert.equal(response.status, 200);
+assert.equal((await response.json()).inserted, 45, 'every chunk is inserted even when one request cannot carry them all');
+const batchCalls = providerCalls.slice(batchCallsBefore);
+assert.ok(batchCalls.length >= 3, 'a 45-item insert needs at least three provider requests at a cap of 20');
+assert.ok(batchCalls.every(call => call.body.input.length <= EMBEDDING_REQUEST_BATCH), 'no embedding request may exceed the provider input cap');
+assert.equal(batchCalls.reduce((total, call) => total + call.body.input.length, 0), 45, 'the split requests carry every input exactly once');
+response = await handleTauriVectorRequest('query', { collectionId: 'aetheria_v55_tauri_batch', searchText: 'alpha tail', topK: 3, threshold: 0.5 }, config, providerFetch);
+assert.deepEqual((await response.json()).metadata.map(row => row.hash), [1044], 'splitting the insert preserves the provider index order');
 
 response = await handleTauriVectorRequest('list', { collectionId: 'aetheria_v54_tauri_test:unsafe/path' }, config, providerFetch);
 assert.deepEqual((await response.json()).sort((a, b) => a - b), [11, 22]);

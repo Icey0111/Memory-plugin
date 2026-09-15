@@ -1,89 +1,93 @@
 # Data Model
 
-<!-- Versioned & append-only: never edit past versions; newest is last. -->
-
-
-<!-- VERSION 1 -->
-## v1 - baseline (pre-versioning)
-
-> Entities, schema, relationships. Remove this file if not applicable.
-
-
-<!-- VERSION 2 -->
-## v2 - 2026-09-11 00:22:38 - record the canonical and derived data model
-
 ### 1. Two stores, two rules
 
-| Store | Medium | Rule |
-| --- | --- | --- |
-| Canonical | chat metadata key `aetheriaUnifiedMemoryV54` | travels with the chat; losing it loses facts |
-| Derived | host extension store (IndexedDB fallback) | rebuildable; losing it costs time, never a fact |
+| Store | Medium | Key | Rule |
+| --- | --- | --- | --- |
+| Chat store | chat metadata | aetheriaUnifiedMemoryV54 | Travels with the chat. Losing it loses the archive |
+| Derived store | host extension store, IndexedDB fallback | namespace aetheria-unified-memory-v55, table derived | Rebuildable. Losing it costs time, never text |
 
-### 2. Canonical fields
+The vector collections are a third, rebuildable medium, addressed per chat and per space identity so
+two chats can never read each other's vectors.
 
-| Field | Meaning |
-| --- | --- |
-| `version`, `sequence` | store schema version and replay sequence |
-| `memories` | the current, replay-derived fact set (each record carries its slot, epistemic status and `channel`) |
-| `slots` | one slot per addressable piece of world state; a new value supersedes the old one without erasing the history |
-| `extractions` | the accepted operation transactions, in order - the replay log |
-| `source_fingerprints` | per-pair fingerprints used to detect edits, swipes and deletions |
-| `baseline`, `vector` | semantic baseline and memory index payloads (kept canonical: they are small, and a stripped copy would read as stale) |
-| `hierarchical_summaries` | the L1/L2/L3 summary tree, each row carrying `source_ids` that point at original turns |
-| `entity_registry` | entity identity across mentions; losing it fragments identity for every later mention |
-| `setting_binding` | which plugin-owned setting collection this chat is bound to |
-| `runtime_identity` | the authoritative identity assignment for this chat |
-| `last_*` | diagnostics: last active state, last extraction/recall debug, last errors |
+Anchor statements are stored without a character cutoff. Injection selection may park an entire record,
+but never shortens its stored conditions. Successful `narrative_diagnostics.anchor_ops.section` distinguishes
+`none` (explicit no change) from `ok` (validated operations). Missing/empty sections and invalid lines are
+recorded as `anchor_ops` failures with individual rules; they do not advance summary coverage.
 
-### 3. Derived fields
+### 2. The narrative keys (what the live pipeline reads and writes)
 
-``DERIVED_KEYS`` (in `v55-derived-store.js`): `cold_turns`, `scene_summaries`,
-`scene_summary_source`, `scene_summary_fingerprint`, `floor_folds`, `summary_history`,
-`provenance_registry`, `last_extraction_debug`, `last_recall_debug`, `last_errors`,
-`v55_consistency`, `v55_finalizer_diagnostics`, `current_state_authority`,
-`last_active_state_diagnostic`, `v55_inner_bundle`, `spine`.
+| Key | Shape | Written by | Meaning |
+| --- | --- | --- | --- |
+| raw_history.version | 1 | captureHistory | Archive schema version |
+| raw_history.sequence | integer | captureHistory | Id counter; ids are never reused |
+| raw_history.records | id -> { id, index, role, name, text } | captureHistory | Every version ever seen, including superseded ones |
+| raw_history.active | [id] | captureHistory | The lineage that is in the chat right now, in message order |
+| narrative_summary | { version, fixed_batch, text, covered, source_revision, state_revision } | updateNarrative | The continuity summary and the exact frozen chunk prefix it read. `source_revision` hashes the covered chunk ids; `state_revision` (`stateRevisionOf`) hashes coverage plus prose, anchors and boundaries, and is what an injection is compared against |
+| narrative_diagnostics | object | updateNarrative, buildNarrativeContext, runNarrativeGeneration | What the last pass delivered, cost, and what failed. `state_horizon_floors`, `injected_source_revision`, `injected_state_revision` and `injected_at` describe the injection that actually happened, written only after the host received the block; `summary_covered_floors`, `summary_revision` and `summary_state_revision` describe the committed summary; `summary_block` records a local input-budget block, which is not a failure; `summary_last_error` keeps the last classified failure after it recovers |
+| narrative_anchors | { version, active, superseded, resolved, subject_collisions, stats, parse, updated_at } | updateNarrative | Promises, ownership, secrets and life states, re-injected until something explicitly ends them. An active entry is `{ id, kind, subject, text, source, revision, first_seen, last_confirmed, passes, unconfirmed }`: `id` is the record's identity, `revision` counts the explicit updates applied to it, and `subject` is a label shown to the summarizer, never an authority to replace anything (ADR-0028). The model changes the ledger only through `新增 / 更新 A# / 结束 A#`, and every reference is checked against the frozen request before the same commit writes the summary and the ledger. `superseded` is a window of at most `MAX_SUPERSEDED` (40) retired records, each keeping its own `source` and the `replaced_by_source` that retired it; `resolved` is a window of `MAX_RESOLVED` (20) endings. Past those windows only the original floors remain, and the report states the limit rather than implying the history is complete |
+| narrative_knowledge | { entries, duplicate_subjects, max_per_subject, source_revision } | updateNarrative | Who knows what, one line per character, normalised by subject with the newest confirmation winning (ADR-0008, ADR-0012) |
+| narrative_vector | { fingerprint, hashes } | syncIndex | Which chunks the vector collection holds, for this embedding space |
 
-Deliberately **not** derived: `vector` and `baseline` (a stripped copy reads as stale),
-`entity_registry` (identity fragmentation), `runtime_identity` (the assignment is authoritative).
+A chunk id is `<raw_id>:<start>:<end>`; its index hash is `fnv1a32(chunkId + '|' + text)`, so a
+stored hash identifies an exact span of an exact message version. Chunks are ~700 characters with a
+100 character overlap, and the cut prefers a newline or a sentence end.
 
-### 4. Ownership rules in the metadata guard
+**Coverage is a prefix, not a set.** `narrative_summary.covered` must equal the first N chunk ids of
+the current chunk list, in order. Anything else is rejected and the summary is dropped, which is what
+makes an edited or reordered history safe.
 
-- `CANONICAL_OWNED_KEYS` (`version`, `sequence`, `memories`, `slots`, `source_fingerprints`,
-  `extractions`, `last_active_state`, `last_active_state_source`, `last_event_summary`,
-  `last_extraction_debug`, `last_errors`, `last_recall_debug`, `baseline`, `vector`) may be
-  replaced by a replay assignment.
-- `DERIVED_DROP_KEYS` (`scene_summaries`, `scene_summary_source`, `scene_summary_fingerprint`,
-  `v55_consistency`, `v55_finalizer_diagnostics`) are rebuilt from the new canonical state rather
-  than preserved.
-- A key owned by another store is never *resurrected* from the previous value - but it is also not
-  deleted from the object runtime readers see. "Drop" means "do not bring back", not "erase".
+`fixed_batch: true` marks coverage committed under the complete-N-turn policy. Legacy summaries are
+retained only when their coverage ends on a complete message and represents a multiple of the current
+cadence. Otherwise the summary and its projections are invalidated and plugin-owned folds are restored.
+Changing cadence does not invalidate already accepted fixed batches; it applies to the next batch.
 
-### 5. The memory spine
+### 3. Retained legacy keys
 
-`v55-spine.js`, `SPINE_VERSION = 1`, stored under the `spine` key:
+Since ADR-0004, memories, slots and hierarchical_summaries are derived keys: they stay readable as
+ordinary properties in memory, but they are written to the external record and left out of the
+serialized chat store. They are a projection of extractions (memories and slots are exactly
+buildCanonicalState(extractions)) and the summary tree is dead, so nothing is lost by dropping them
+from the file. The strip activates only after the external record for that chat has been read or
+written, so an install with no derived backend keeps them in the chat file as before.
 
-    {
-      version, seq,
-      nodes:   [ ... ],   // bounded window, MAX_NODES = 300
-      ledger:  [ ... ],   // one row per applied batch, MAX_LEDGER = 120
-      by_slot, by_memory, first_by_slot   // indices, MAX_INDEX = 24
-    }
+Old chats still carry the v5.4/v5.5 fact model: `memories`, `slots`, `extractions`,
+`source_fingerprints`, `entity_registry`, `vector`, `baseline`, `setting_binding`,
+`runtime_identity`, the diagnostics keys, and `hierarchical_summaries`. The narrative pipeline
+never reads or writes them; `index.js` still migrates and preserves them so an old chat opens
+without losing anything. `hierarchical_summaries` is no longer written by any module.
 
-- No timestamp is stored, so a rebuilt spine is byte-identical to the original.
-- Irreversibility is a fact about the world, not a judgement about the story:
-  `commitment 5`, `relation 4`, `ownership 4`, `knowledge 3`, `intention 2`,
-  `world_delta 2`, `state 1`, `belief 1`, `event 1`.
-- `NEVER_DROP_RANK = 4`: at or above this rank a memory is injected whatever recall decides.
-- Provenance channels: `saw`, `heard`, `told`, `inferred`.
+### 4. Derived keys
+
+`DERIVED_KEYS` in v55-derived-store.js: `cold_turns`, `scene_summaries`, `scene_summary_source`,
+
+Added by ADR-0004: memories, slots, hierarchical_summaries - measured at 99-371 KB per chat, 18-53% of
+the file, before the relocation.
+`scene_summary_fingerprint`, `floor_folds`, `summary_history`, `provenance_registry`,
+`last_extraction_debug`, `last_recall_debug`, `last_errors`, `v55_consistency`,
+`v55_finalizer_diagnostics`, `current_state_authority`, `last_active_state_diagnostic`,
+`v55_inner_bundle`, `spine`.
+
+Deliberately **not** derived: `vector` and `baseline` (a stripped copy would read as stale),
+`entity_registry` (identity would fragment), `runtime_identity` (the assignment is authoritative),
+and every narrative key above - the archive is the thing that must survive a lost backend.
+
+### 5. Ownership rules in the metadata guard
+
+- `CANONICAL_OWNED_KEYS` may be replaced by a canonical replay assignment.
+- `DERIVED_DROP_KEYS` are rebuilt from the new canonical state rather than preserved. "Drop" means
+  "do not bring back", not "erase": a key owned by another store is never resurrected from the
+  previous value, and it is not deleted from the object a runtime reader sees.
+- A diagnostics read must create nothing. `readNarrativeReport` and the store projections are
+  read-only for exactly this reason: a lazily created key would be written back into the chat file.
 
 ### 6. Invariants
 
 | Id | Statement |
 | --- | --- |
-| I1 | Canonical state is `replay(extractions)`; nothing else may rewrite it |
-| I2 | Summaries are derived from original turns, never from other summaries |
-| I3 | Every memory records how its holder came to know it (`channel`) |
-| C1 | A memory that cannot be derived from the chat must not live in the derived record |
-| C2 | Deleting the derived record must never delete a fact |
-
-See [MEMORY_PLAN_2026.md](MEMORY_PLAN_2026.md) sections 1 and 5 for the full statement.
+| D1 | The chat store is the archive of record; the derived store and the vector collections are rebuildable caches |
+| D2 | A superseded message version is archived, never overwritten |
+| D3 | A summary is valid only while its covered prefix matches the current chunk list |
+| D4 | Deleting the derived record must never delete text, a summary, or a coverage claim |
+| D5 | Nothing that a reader can trigger may create a stored key |
+| D6 | The fact set is a projection of the replay log: the projection may live in the derived record, the log stays in the chat file |

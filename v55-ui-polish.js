@@ -109,14 +109,6 @@ function translateUntitledPreview(value) {
     return translateText(text);
 }
 
-function translateRuntimeStatus(value) {
-    let text = translateText(value);
-    text = text.replace(/Overlay/g, '覆盖编辑');
-    text = text.replace(/向量 已就绪/g, '向量检索已就绪');
-    text = text.replace(/向量 未就绪 \/ 词法可用/g, '向量检索未就绪 / 词法检索可用');
-    return text;
-}
-
 function readSectionCollapsed(key, fallback = true) {
     try {
         const stored = globalThis.localStorage?.getItem(`${SECTION_STATE_PREFIX}${key}`);
@@ -284,10 +276,6 @@ function localizeStaticControls(root) {
     replaceTextNodes(root);
     const revisionKind = document.getElementById('aum-v54-setting-revision-kind');
     revisionKind?.querySelectorAll('option').forEach(translateOption);
-    const runtimeSummary = document.getElementById('aum-v55-runtime-summary');
-    if (runtimeSummary) setText(runtimeSummary, translateRuntimeStatus(runtimeSummary.textContent));
-    const runtimeDiag = document.querySelector('#aum-v55-runtime-dashboard summary');
-    if (runtimeDiag) setText(runtimeDiag, 'v5.5 运行诊断');
     const untitled = document.getElementById('aum-v55-untitled-preview');
     if (untitled) setText(untitled, translateUntitledPreview(untitled.textContent));
 }
