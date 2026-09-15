@@ -986,3 +986,31 @@ measure; `臂上` is a false one because the story has two arms. That is world k
 none. The reading shipped above is therefore the whole remedy: it makes a shortened match visible and auditable
 instead of pretending to adjudicate it.
 
+#### The descriptive-needle window does not generalize to fresh chats (2026-09-15)
+
+ADR-0045's ruler is six descriptive questions on one chat - a question that names its subject by description, e.g.
+"那个会用活印的老头最显眼的穿着是什么", scored by whether the needle lands inside a quoted window. It reported
+8/10 strict and 10/10 paraphrase-tolerant on that chat. The six chats from the acceptance runs above are a
+held-out domain for exactly that shape: the subject phrase is taken from each fixture's opening row, the needle is
+the fixture's own declared detail, and the reading is the shipped ranker and packer with the runtime's visible set.
+
+| run | needle | its row(s) | quoted rows | reading |
+| --- | --- | --- | --- | --- |
+| 1 | 跺一下脚上的雪 | [8] | [1,2,10,6,12] | miss - the needle's row is not quoted |
+| 2 | 用指节敲两下 | [4,8,…,38] | [1,2,4,16,20] | tolerant - row 4 is quoted, the window missed the needle |
+| 2b | 小臂上 | [4] | [1,12,40,36,30] | miss - the needle's row is not quoted |
+| 3 | 青瓷灯座 | [6,8,…,40] | [1,2,6,32,28] | **strict** |
+| 4 | 缺了一角的笠沿 | - | [1,24,18,38,26] | fixture defect: the model wrote the phrase reordered and nothing matches |
+| 5 | 门牙缺了一颗 | [4,6,…,40] | [1,32,8,12,10] | miss - row 12 is quoted, the window missed it |
+
+Held out: **strict 1/6, paraphrase-tolerant 2/6**, against 8/10 and 10/10 in domain. Of the five valid probes one
+hit, two are window/trim misses (the right row was quoted and the needle fell outside the quote) and two are
+selection misses (the right row was not quoted at all).
+
+One mechanism is visible in every row of the table: rows 1 and 2 are quoted in all six. Row 1 is the fixture's own
+opening instruction ("让一个新人物登场——石原，替人修船的男人"), and a descriptive question *reuses that phrase*,
+so the question's own source matches it lexically and takes a slot without holding the answer. That is partly an
+artifact of the acceptance fixtures - a real user rarely writes such an instruction - but a user who does give an
+out-of-character instruction gets the same competition, and run 1's `d-place` was answered from that row earlier
+the same day. It is recorded as a lead, not as a finding: the next measurement is selection, not the window rule.
+
