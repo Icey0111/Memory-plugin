@@ -257,10 +257,12 @@ it: the same diff is now 0 turns worse and 3 better, and the corpus ends at situ
 candidate is a second bidder for the same five slots, so it is now granted only to names the knowledge block
 tracks: on the 43-row table that is 14 candidates, every one a row that introduces or describes its name, and 13
 of the 14 are inside the fused top five - so it needs no reserved seat. The 8 rows once read as *not* introducing
-their name are removed by the passing-reference rule, not by the gate. The two misses left are named in
-the ADR - one is a ranking defect (`s_hair`: the row never ranks) and one a window-boundary case (`g_robe`:
-the window starts three characters after the modifier phrase that answers the question), which is the shape
-ADR-0044's second rule is about.
+their name are removed by the passing-reference rule, not by the gate. Read with the repository's own
+paraphrase-tolerant matcher the probes are **10/10**: both strict-verbatim misses are the matcher's
+two-character floor with the answering fact inside the quoted window (粉色长发 in the quoted introduction row for
+`s_hair`; "灰袍、拄藤杖的老头" at the head of row 12's window for `g_robe`, one character after the needle
+begins). What is still missing is a *route*, not a fact: `s_hair`'s row 6 - a later re-description of the same
+character - never ranks, which is the selection defect Issue #2 keeps apart from the window rule.
 
 
 A summary body refused for `format` or `over_budget` now earns one repair (ADR-0042): the same request
@@ -390,3 +392,24 @@ and a pre-annotated answer `needle`. The first phase emits `vectorRequests`; the
 (vector metadata or rerank index/score pairs), `ms`, or `error`. Inputs are hashed exactly; changed
 candidates require new calls. Keep first failures separately when retrying. Throttle by the provider's
 token limit, not only by request count. These phases never generate a summary or a story reply.
+
+### Settings and diagnostics clarity (Issue #2 step 5, in progress)
+
+The panel's controls were audited against their readers rather than read: eleven settings and two buttons, and
+every one of them is read - `narrative_every`, `narrative_summary_tokens`, `narrative_summary_ceiling_tokens`,
+`narrative_evidence_tokens`, `narrative_setting_tokens`, `narrative_anchor_tokens`, `narrative_input_chars`,
+`narrative_pending_warn_tokens`, `narrative_summary_failure_warn`, `narrative_rerank_model`, `narrative_fold`,
+"总结下一完整批次" and "恢复原文显示". No obsolete control was found, so none was removed, and the mount point is
+the settings page the host actually renders (`settings.html` keeps `#aum-v54-settings`, which the panel falls
+back to when the memory page id is absent) - the id that once failed was the panel's own, and that trap is pinned
+in `test-narrative-panel.mjs`.
+
+Two of the four conditions the plan asks to be shown distinctly were recorded in the read-only report and were
+not on the screen. The four now are: the soft target (`summary_over_target`), a hard failure (`summary_block`
+with its numbers, or a repeated failure with the last error), parked information (`anchors_parked` and
+`knowledge_parked`, now **named** rather than only counted - three per list, each cut to 22 characters, because
+the first rendering on the real chat pasted four eighty-character statements into one line), and an unresolvable
+statement (`anchors_without_subject`, now stated apart from "no carrier": the first cannot be resolved by
+anything, the second was not restated). The ledger line is built by the pure `anchorPanelText`, so what the
+panel says can be read offline; rendering it against the real branch chat is what caught the wall of text.
+
