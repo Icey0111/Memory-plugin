@@ -185,9 +185,13 @@ rule's 7/10 at 32.5%, and at a cut of one it is worse. The full record is in [02
 
 What is left is two bounded tasks rather than an architecture:
 
-1. **Fix the shipped retriever's measured weakness.** Paired replay shows the shipped path quotes the needle's own
-   row in 8 of 10 held-out cases but trims the needle out of the quote in some of them; the five-slot competition
-   is the other measured limit. No new layer is required.
+1. **Fix the shipped retriever's measured weakness.** The window case is fixed: a quoted window no longer slides
+   off the last channel region that earned the slot (commit `e950261`; the labelled gate is unchanged at 9/10, the
+   1,289-turn corpus paired check is 0 worse and 4 better, and the held-out chat's runtime-faithful reading rises
+   from 6/10 to 7/10). What remains is budget- and slot-bound: one needle sits 41 characters past its span's fair
+   per-entry share, and two rows lose the five-slot competition. Neither is reachable without spending more
+   evidence tokens or more slots, both of which were measured and rejected, so the residue is recorded rather
+   than chased. No new layer is required.
 2. **Treat the key layer as a complement for recurring entities and relations**, never as a replacement for
    lexical and vector retrieval, and gate any such work on the frozen ruler with a no-regression floor on the
    shipped path's reachability.
