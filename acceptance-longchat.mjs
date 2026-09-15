@@ -414,7 +414,7 @@ if (detailMode) {
     for (const outcome of survival.outcomes) {
       console.log('  probe ' + outcome.id + ' kind=' + outcome.kind + ' fact=' + outcome.factKind + ' channel=' + outcome.channel
         + ' conveys=' + outcome.conveys + ' -> ' + outcome.outcome
-        + (outcome.token ? ' token=' + outcome.token + '(' + outcome.how + ')' : '')
+        + (outcome.token ? ' token=' + outcome.token + '(' + outcome.how + ', ' + Math.round(outcome.coverage * 100) + '%)' : '')
         + (outcome.fixtureDefect ? ' [fixture-defect]' : ''));
     }
     console.log('DETAIL-SURVIVAL evidence: ' + path.join(outDir, 'detail-survival.json'));

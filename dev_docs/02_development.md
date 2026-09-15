@@ -917,3 +917,37 @@ the arm, not the forearm). The token was already computed and thrown away. `summ
 carried the verdict instead of trusting the boolean. The matcher is unchanged: ADR-0035's two-character floor is
 what recovers "缺角" for "缺了一角", and tightening it is a measured change, not a drive-by.
 
+#### The two-character floor is load-bearing, and "content-complete" is rejected (2026-09-15)
+
+The token exposure made the next question measurable: should the tolerant reading be tightened so a run cannot
+drop a *content* character? The census is every needle match the six recorded runs made - 42 field checks over
+continuity, evidence and reply.
+
+| tier | matches |
+| --- | --- |
+| verbatim | 17 |
+| run3 | 1 |
+| run2 (the floor) | 6 |
+| none | 18 |
+
+The floor carries 6 of the 24 matches, so it is not decoration. Every one of the six shortens the needle
+(`coverage < 1`); none is a pure stop-character contraction:
+
+| run | item | field | needle | matched | read |
+| --- | --- | --- | --- | --- | --- |
+| 1 | d-manner | evidence | 跺一下脚上的雪 | 下脚 | false positive: a generic middle run |
+| 2 | d-tool | evidence, reply | 黄铜卷尺 | 卷尺 | true: the story's only tape measure |
+| 2b | d-arm | reply | 小臂上 | 臂上 | false: the reply said 手臂上, the arm |
+| 4 | d-basket | continuity, reply | 藤编的背篓 | 背篓 / 藤编 | true: the story's only basket |
+
+The candidate rule - only stop characters may be dropped, so a run must keep every content character - removes all
+seven shortened matches, including two true positives (`d-tool` evidence and reply, `d-basket` continuity and
+reply). `d-tool` is run 2's only `retrieval-recovered` verdict, so the rule would have moved a real reading.
+Rejected: the floor cannot be tightened geometrically without losing a documented true reading. The difference
+between "卷尺" and "臂上" is how generic the fragment is, which is a frequency question (the ADR-0046 specificity
+test), not a length question.
+
+What ships is the reading, not a new verdict rule: every outcome carries `token`, `how` and `coverage`,
+`partialMatches` counts the shortened runs, and the driver prints `token=臂上(run2, 67%)`. A reader sees what the
+verdict rests on, and a later rule has a measured population to be judged against.
+

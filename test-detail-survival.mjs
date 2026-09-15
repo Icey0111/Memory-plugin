@@ -543,6 +543,9 @@ const adjudicate = graded => {
   assert.equal(unread.retrievalRecovered, 3, 'an unknown transcript keeps the ordinary reading');
   assert.equal(survival.outcomes.find(outcome => outcome.id === 'd-visible').token, '青苔',
     'the substring that carried the verdict is exposed');
+  assert.equal(survival.outcomes.find(outcome => outcome.id === 'd-visible').coverage, 1,
+    'a verbatim match covers the whole needle');
+  assert.equal(survival.partialMatches, 0, 'nothing in this fixture was matched by a shortened run');
   // Run 2b showed why it has to be: the tolerant reading accepted "臂上" for the needle "小臂上" out of a
   // reply that said "手臂上" and went on to invent the scar's history, and nothing in the report showed it.
   const armItem = { id: 'd-arm', kind: 'detail', needle: ['小臂上'], question: '旧伤在哪儿？', expect: 'dropped', turn: 2 };
@@ -554,6 +557,11 @@ const adjudicate = graded => {
   assert.deepEqual(arm.outcomes.map(outcome => [outcome.id, outcome.token, outcome.how, outcome.outcome]),
     [['d-arm', '臂上', 'run2', 'fabricated']],
     'a two-character run match names the run it used, and an invented value with no channel is still fabricated');
+  // And the record says how much of the needle that run covered: "臂上" is two of "小臂上"'s three content
+  // characters, so the reader sees the verdict rests on a shortened, less specific phrase.
+  assert.equal(arm.outcomes[0].coverage, 0.67);
+  assert.equal(arm.partialMatches, 1);
+  assert.ok(formatDetailReport(arm).includes('不完整命中 1 个'), formatDetailReport(arm));
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');

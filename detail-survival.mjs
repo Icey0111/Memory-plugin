@@ -393,6 +393,19 @@ export function needleSources(chat, item) {
 }
 
 /**
+ * How much of the needle's content the matched token covers. 1 means the whole content run matched - the
+ * `runN` tier can shorten it, and that is where a reply that made the value *less* specific slips through:
+ * "臂上" covers two thirds of "小臂上" and the reply said "手臂上", the arm rather than the forearm.
+ */
+export function matchCoverage(item, match) {
+    if (!match || !match.matched) return null;
+    if (match.how === 'verbatim') return 1;
+    const longest = needleForms(item).reduce((best, form) => Math.max(best, contentChars(form).length), 0);
+    if (!longest) return null;
+    return Math.round(([...match.token].length / longest) * 100) / 100;
+}
+
+/**
  * A Chinese-only needle against a reply with no CJK characters cannot match, and that is the instrument's
  * language assumption failing, not the model. It is recorded as a fixture defect so it is never read as a
  * model miss; the reader can add a surface form and re-run.
@@ -463,6 +476,7 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
     let bothChannels = 0;
     let visibleInPrompt = 0;
     let instructionOnly = 0;
+    let partialMatches = 0;
     const outcomes = [];
     for (const item of items || []) {
         const row = byId.get(item.id) || null;
@@ -505,16 +519,18 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
         // characters, so a reader has to be able to see which run carried the verdict: run 2b's "小臂上"
         // was conveyed by "手臂上" through the token "臂上", and that is only visible here.
         const match = matches && typeof matches.get === 'function' ? matches.get(item.id) : null;
+        const coverage = matchCoverage(item, match);
+        if (coverage !== null && coverage < 1) partialMatches += 1;
         outcomes.push({ id: item.id, kind: item.kind, factKind: item.factKind || item.kind,
             channel, conveys, outcome, fixtureDefect: defect,
-            token: match && match.matched ? match.token : null, how: match ? match.how : null });
+            token: match && match.matched ? match.token : null, how: match ? match.how : null, coverage });
     }
     return {
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,
         items: (items || []).length,
         summaryKept, summaryKeptNotConveyed, retrievalRecovered, retrievedNotConveyed,
         refused, fabricated, negativeLeaks, fixtureDefects, bothChannels, visibleInPrompt, instructionOnly,
-        outcomes,
+        partialMatches, outcomes,
         retention: retention ? {
             total: retention.total,
             retained: (retention.retained || []).map(detail => detail.id),
@@ -638,6 +654,7 @@ export function formatDetailReport(survival) {
     if (survival.negativeLeaks) extra.push('负控命中通道 ' + survival.negativeLeaks + ' 个');
     if (survival.visibleInPrompt) extra.push('原文仍在提示 ' + survival.visibleInPrompt + ' 个');
     if (survival.instructionOnly) extra.push('仅指令行命中 ' + survival.instructionOnly + ' 个');
+    if (survival.partialMatches) extra.push('不完整命中 ' + survival.partialMatches + ' 个');
     return 'DETAIL-SURVIVAL: 摘要保留了 ' + survival.summaryKept + ' 个 / 检索取回 ' + survival.retrievalRecovered
         + ' 个 / 拒绝 ' + survival.refused + ' 个 / 编造 ' + survival.fabricated + ' 个'
         + (extra.length ? '（' + extra.join('，') + '）' : '')

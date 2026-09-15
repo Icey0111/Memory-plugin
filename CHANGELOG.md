@@ -15,8 +15,11 @@ belongs in Git commits and pull requests.
   been refused, so rows 21-40 were still in the prompt and the model answered `落雁驿` and `阿箬` from the
   transcript. The helper reports `known`, so a caller with no transcript keeps the ordinary reading - the first
   wiring read a missing chat as "the model never wrote it" and mislabelled a real recovery. Every outcome now
-  also carries the exact token the reply matched and how it matched (`token=臂上(run2)`), so a tolerant
-  two-character run is visible instead of hidden behind the boolean. Measured: `node run-tests.mjs` 50/50 and
+  also carries the exact token the reply matched, how it matched and how much of the needle it covered
+  (`token=臂上(run2, 67%)`), so a tolerant two-character run is visible instead of hidden behind the boolean. A
+  census over the six recorded runs found the floor carries 6 of 24 matches and every one shortens the needle; the
+  candidate rule that forbids dropping a content character was measured and rejected because it removes two true
+  positives, including that run's only retrieval recovery. Measured: `node run-tests.mjs` 50/50 and
   `node check-syntax.mjs` 99 files.
 
 - The opening greeting is hidden with the first committed summary batch instead of staying visible inside the
