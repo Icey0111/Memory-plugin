@@ -444,3 +444,22 @@ worse and 3 better. The remaining probe miss is not a window case at all: a late
 never ranks, which is the selection defect Issue #2 keeps apart from the window rule.
 
 
+### A rejected attempt: a denser second description row does not reach the row that phrases the fact
+
+The last labelled probe miss (`s_hair`: a character's hair, asked about in a later re-description) looked like a
+ranking gap a third character-channel candidate would close, since the introduction row is the same row the score
+already picks for that character. It was implemented and measured, and it is **rejected**:
+
+- The row that carries the needle ranks **8th**, fused score 0.0154, against a fifth-place 0.0217 - so a
+  character-channel nomination (+0.0098) would in fact seat it.
+- But the nomination rule ("the densest descriptor cluster other than the scored row and the introduction")
+  selected a different row (row 42, a cluster of 11), because the needle's row describes her with few of the
+  lexicon's words.
+- Nothing available at query time says which row is the one: the question's words (头发, 颜色) do not occur in
+  it, and the story says 粉色的发丝.
+
+The candidate changed no probe reading (9/10 before and after), so it was reverted and nothing shipped. What
+would reach the row is either nominating every row that mentions the name - k bidders for five slots, whose cost
+the corpus instrument can measure - or a channel that maps a question's attribute to the row that answers it.
+Both are open, and both need the same two-instrument acceptance this attempt failed.
+
