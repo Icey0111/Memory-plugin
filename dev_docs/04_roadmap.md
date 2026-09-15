@@ -167,17 +167,35 @@ are injected; and three floors were still pending at floor 40.
   without the span carrying the lock constraint, and adding the parked statements recovered the original row
   (`raw_18`). The dense query is untouched and reserved evidence seats stay rejected (`raw-history.js`).
 
-## Key-layer direction (measured, not built)
+## Key-layer direction: measured against the shipped retriever, not adopted
 
-The next structural step is a key layer ([ADR-0046](decisions/ADR-0046-a-key-layer-binds-an-attribute-to-its-subject.md)):
-the summary's relation net names subjects and attributes and retrieval becomes a key-to-span lookup. Its
-acceptance instrument is a precision ruler, not coverage, because coverage is saturable - widening took 16
-authored questions from 9/16 to 16/16 while the spans a question fires grew from 188 to 634 and the share
-carrying the needle stayed near 4%. The measured form is composite keys (`subject.attribute`) with the subject
-key pointing at the subject's canonical spans and attribute keys kept only while they appear in six rows or
-fewer: **14/16 reachable with 38 fired spans and 36.8% of them carrying the needle**, against today's 8/16 at
-188 and 4.3%. The two remaining misses are one defect - a character's later re-description is covered by no span.
-Nothing is built yet.
+[ADR-0046](decisions/ADR-0046-a-key-layer-binds-an-attribute-to-its-subject.md) records the composite-key form
+(`subject.attribute`) and its acceptance instrument, a precision ruler rather than coverage: coverage is
+saturable - widening took 16 authored questions from 9/16 to 16/16 while the spans a question fires grew from 188
+to 634 and the share carrying the needle stayed near 4%. In domain the form carries 13/16 unaided and 16/16 with
+the shipped planner's resolution, at 119 fired spans and 37.0% of them carrying the needle.
+
+Out of domain it does not hold. On a second chat the same rule reads 2/10 where the shipped retriever reads 6/10.
+A mechanical vocabulary derivation lifted it to 6-7/10, but a clean re-run on a third chat, with probes authored
+before the derivation ran, recovered only 3 of 10 needed words and reached 3/10: the earlier recovery was
+contaminated by its author having seen the probes, and six of the seven misses are words that occur in exactly
+one row, which the derivation's two-row minimum drops. Moving the choice of span from index time to retrieval
+time did not help either - the best retrieval-time point is 9/10 at 16.3% bidder precision against the index-time
+rule's 7/10 at 32.5%, and at a cut of one it is worse. The full record is in [02_development.md](02_development.md).
+
+What is left is two bounded tasks rather than an architecture:
+
+1. **Fix the shipped retriever's measured weakness.** Paired replay shows the shipped path quotes the needle's own
+   row in 8 of 10 held-out cases but trims the needle out of the quote in some of them; the five-slot competition
+   is the other measured limit. No new layer is required.
+2. **Treat the key layer as a complement for recurring entities and relations**, never as a replacement for
+   lexical and vector retrieval, and gate any such work on the frozen ruler with a no-regression floor on the
+   shipped path's reachability.
+
+External practice agrees. The adopted memory systems build a structure layer and keep hybrid retrieval
+(Zep/Graphiti, listed on the Thoughtworks Technology Radar; Microsoft GraphRAG; mem0), and the SillyTavern
+ecosystem's built-in recommendation is summary plus vector retrieval with small hand-maintained structured tables
+as a third layer. No shipping system uses a deterministic key-to-span lookup alone.
 
 ## Measured summary-input budget
 
