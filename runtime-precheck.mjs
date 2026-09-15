@@ -25,7 +25,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const WATCH = {
     'raw-history.js': ['parseAnchors', 'parseAnchorChanges', 'mergeAnchors', 'looksLikeAnchorOperation',
         'summaryRequest', 'anchorRepairRequest', 'planAnchors', 'formatAnchorPrompt', 'stateRevisionOf',
-        'validSummary', 'nextSummaryBatch', 'applyNarrativeFolds'],
+        'validSummary', 'nextSummaryBatch', 'applyNarrativeFolds',
+        'packRawEvidence', 'rankRawChunks', 'queryWindowTerms'],
     'narrative-runtime.js': ['updateNarrative', 'readNarrativeReport', 'generateNarrativeSummary'],
 };
 
