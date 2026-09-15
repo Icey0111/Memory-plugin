@@ -495,3 +495,36 @@ block need not quote, because the fact is quoted already". A future attempt shou
 should be aimed at a question whose fact is genuinely absent from the block, and there the instruments already in
 place (the ten probes' fact-level reading, the 1,289-turn corpus, and the phase-1 gate) are what measure it.
 
+### A rejected competition rule, and the key inventory that sets the next step (2026-09-15)
+
+The last two measurements of the session belong beside the three rejected selection attempts above, because they
+are the same finding read from the other side: on this pipeline a slot spent is a slot taken.
+
+**Rejected: silencing the character channel on a request turn.** The character channel is the one that knows what
+a description is, so it was the natural bidder to remove whenever the question already names its subject.
+Measured on the 16 questions (the ten labelled probes plus six descriptive references), silencing the channel on
+a request turn whose question does **not** name its subject takes the needle-inside-quote count from **12/16 to
+9/16**, and the three questions that lose are exactly the three pronoun requests (`r-scar`, `r-cloak`,
+`r-armour`), which lose row 8. That is the introduction row the channel was the only route to, because an
+unnamed reference has nothing else to match - so the channel is not a competitor to prune; it is the route for the
+questions that need it. A broader form, silencing it on every request turn, is worse still at **5/16**: four
+named probes (`w_scar`, `w_armour`, `w_cloak`, `m_speech`) also reach row 8 only through it, so the channel
+is load-bearing well beyond pronouns. Reverted, nothing shipped; the repository is at its prior state, so the
+corpus reading is unchanged by construction.
+
+**Measured: the key inventory the structural index would need.** On the same 16 questions, today's
+anchor/knowledge index has a key whose cited rows cover the needle's row for **4/16** - and all four are places
+(`p_firepit`, `p_ground`, `r-firepit`, `r-ground`). The person and object half of the net is empty: no
+existing key cites row 8 or row 6. A mechanical derivation of the same shape the channel already uses - a tracked
+name plus its densest descriptor run, keyed by the descriptor words that run carries - would cover **9/16**, but
+the question's own words fire one of those derived keys on only **7/16**. That 7 is a coarse lower bound and not
+a coverage number: a key can fire on a row that does not carry the needle, and a key the question never says can
+still be the right one (`r-scar` and `r-cloak` are covered by a derived span whose key the question does not
+use). Five derived keys would have to be authored for this sample.
+
+Read together, the two readings are the next step's brief. The index is already a real, cheap route for places;
+for people and objects it exists as a derivation that has not been keyed, and the channel that finds it today is
+the one the competition rule wanted to delete. The work therefore moves from nomination - three attempts, all
+rejected because a fifth bidder displaces an answer - to keying the span the channel already finds, so the route
+becomes deterministic instead of one more competitor for five slots.
+
