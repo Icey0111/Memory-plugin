@@ -623,3 +623,30 @@ speaker field at most as a tie-break.
 at 54 spans and 53.7% against 13/16 at 43 and 48.8% - while the ADR-0046 reference reproduces exactly in both
 (14/16 at 38 and 36.8%). Until that reference is re-established, only the reproducing row is comparable.
 
+### Phrase keys close the manner miss, and the reference was rebuilt (2026-09-15)
+
+**A phrase key, not a character key, closes `m_speech`.** A small auditable table of manner and expression
+phrases (语气, 神态, 说话风格) replaces the character key: the question's word is aliased to the manner sense and
+the span is anchored on the phrase. Ranking candidate phrases by their length rather than by how many phrases a
+span carries is decisive - the phrase that answers the question ranks first by length and fourth to sixth by
+density, so a density ranking would have produced a false "the phrase table does not work". With the specific
+table and one kept span per key, the rule reaches **15/16 at 40 fired spans and 37.5%**, against the v7 anchor's
+14/16 at 38 and 36.8%: the manner miss is closed for two extra spans and no precision cost. The character-level
+key it replaces had 100 candidate spans; the phrase key has 22. `s_hair` is not closed this way and is not the
+same defect - the question says 头发 while the needle's row says 发丝 and another row carries the question's own
+words, so the covering span ranks fifth of seven. That is a cross-row selection defect, not a vocabulary one.
+
+**The reference disagreement had a single cause.** The two scripts reading 15/16 and 13/16 for the nominally
+identical rule differ only in the *subject* canonical tie-break, and that tie-break is decisive because the
+frequency cap zeroes the primary sort key: almost every attribute term exceeds the cap, so the term count the
+canonical sorts by is uniformly zero. The scripts then disagreed about which of a subject's spans is canonical,
+and the losing choice keeps head-anchored attribute windows where the descriptor cluster - the one that covers
+the needle - used to be. Neither number was the rule's reading. The rebuilt reference draws the subject canonical
+only from non-attribute spans and ranks it by the pre-cap term count, and ranks the attribute canonical by pre-cap
+terms then proximity; under that rule both variants agree, and the attribute spans close `s_hair` at 15/16 with
+65 fired spans and 47.7%.
+
+**The two fixes were measured separately, never together.** Phrase keys close the manner miss and attribute
+spans close the hair miss, but no run combined them, so 16/16 remains unproven - and the earlier 16/16 readings
+stay artefacts of the degenerate ordering until the combination is measured on the rebuilt reference.
+
