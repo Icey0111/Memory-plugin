@@ -161,7 +161,16 @@ export function summaryGate(state, { turns = null, requireFold = true } = {}) {
     // after a batch the tail is normally waiting for the next event.
     if (!summaryChars || !covered) problems.push('没有已提交的摘要覆盖任何楼层（摘要 ' + summaryChars + ' 字符，覆盖 ' + covered + ' 块）');
     if (pendingFloors > 0 && !covered) problems.push('还有 ' + pendingFloors + ' 个楼层等待总结');
+    // A fold that hid *some* rows is not the same as one that hid the phase: two runs (ab-bound-3, ret-b) had
+    // their last batch never settle, so only the first ten floors were folded, the gate passed on `folded > 0`,
+    // and the probes then read a transcript that still showed the needles. Only the per-outcome
+    // `visible-in-prompt` classification caught it, which is after the run has been paid for.
+    const foldedWanted = 2 * completeTurns;
     if (requireFold && folded <= 0) problems.push('没有任何楼层被折叠隐藏，原文仍在可见区');
+    else if (requireFold && foldedWanted > 0 && folded < foldedWanted) {
+        problems.push('折叠只隐藏了 ' + folded + ' 行，' + completeTurns + ' 个完整楼层需要 ' + foldedWanted
+            + ' 行：有一批没有提交');
+    }
     return { ok: problems.length === 0, completeTurns, covered, folded, summaryChars, pendingFloors,
         coveragePct: completeTurns ? Math.round(covered / completeTurns * 100) / 100 : null,
         reason: problems.join('；') };

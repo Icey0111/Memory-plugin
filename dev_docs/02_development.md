@@ -1469,10 +1469,43 @@ absent for many turns and whose only relevant row is the one that introduced him
 purpose-built fixture with a second thread and a probe that names the returning character without naming the
 value it is testing.
 
-**That fixture is not written, and the runs behind this whole log ended here for an operational reason.** Mid-session
-the wider sandbox mode every live step needs - the acceptance driver creates its evidence directory outside the
-repository by design, and the deploy writes the live install - stopped being granted: the request now blocks
-until the command is killed rather than being approved or refused. So no acceptance run and no deploy can start
-until that answerer is back, and the two things this log would do next are exactly those: build the
-returning-character fixture, and measure the window's coverage.
+**That fixture is written, and it could not settle the risk, for a reason that belongs to the instrument.**
+The wider sandbox mode came back, so a two-thread fixture was built: 石原 is introduced with a copper whistle in
+the first ten floors, leaves for the whole second section, and every question that tests him names him and never
+the value, so the profile channel is the only path to those far-back rows. The first version declared four
+details; the merge kept all four in two runs of three, and the third run's second batch never settled. A second
+version declared ten, and the merge kept ten of ten in two runs and nine of ten in the third.
+
+The adaptive probe set only asks about details the committed summary **dropped**, so five of the six runs produced
+exactly one probe - the positive control - and no rescue sample at all:
+
+| run | details | retained | dropped | probes | rescue outcome |
+| --- | --- | --- | --- | --- | --- |
+| ret-a | 4 | 4 | - | 1 | none |
+| ret-b | 4 | 3 | d-place | 4 | **invalid**: folded only 21 rows |
+| ret-c | 4 | 4 | - | 1 | none |
+| ret2-a | 10 | 10 | - | 1 | none |
+| ret2-b | 10 | 9 | d-manner | 4 | **recovered** |
+| ret2-c | 10 | 10 | - | 1 | none |
+
+The one usable sample is a real rescue and it survived the bound. `d-manner` was written on floor 5, dropped by
+the merge, and the question `石原怎么检查船板有没有进水？` - naming a character absent since floor 11 - came back
+with the evidence quoting `raw_29` (floor 28) and a reply that reproduces it: 石原是用手指敲船壳听的。他走到船腰，屈起食指和中指在船壳上敲了两下. The row is 23 floors past the one that introduced the detail, so it was promoted a long way, and a rise bound of four did not stop it.
+
+**One sample is not a measurement of the risk**, and the reason is structural rather than a matter of running
+more: this acceptance can only ask about a detail the summary dropped, and this summary keeps almost everything -
+ten declared details, ten retained, twice. Testing the rescue properly needs a probe mode that asks about a
+declared detail the summary is *known* not to carry, or a fixture whose details are numerous enough that drops
+are the rule rather than the exception. That is the next instrument change, not another batch of runs.
+
+#### A fold that hid only the first batch no longer passes the gate (2026-09-16)
+
+The two invalid runs above failed the same way: the second batch's request never settled, so only the first ten
+floors were folded (`folded: 21`), the last ten stayed visible, and three probes answered from a transcript that
+still showed the needles. `summaryGate` passed both, because it only asked whether *any* row had been folded.
+The per-outcome `visible-in-prompt` classification caught them, which is after the run has been paid for.
+
+The gate now requires the fold to cover the phase - `folded >= 2 x completeTurns`, one user and one assistant row
+per finished floor - and says 有一批没有提交 when it does not. The greeting need not be folded, so a run that
+leaves it visible still passes on 40 rows for 20 floors. Two witnesses, both recorded above.
 

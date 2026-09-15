@@ -280,6 +280,13 @@ const reply = content => ({ choices: [{ message: { content }, finish_reason: 'st
         true, 'an unsummarized phase with work waiting says so');
     assert.ok(summaryGate({ ...ready, folded: 0 }, { turns: 20 }).reason.includes('原文仍在可见区'),
         'a summary nobody hid the text for is refused');
+    // The fold has to cover the phase, not merely exist: a second batch that never commits leaves the first
+    // ten floors hidden (21 rows counting the greeting) and the rest still readable.
+    const partial = summaryGate({ ...ready, folded: 21 }, { turns: 20 });
+    assert.equal(partial.ok, false, 'a fold that hid only the first batch is refused');
+    assert.ok(partial.reason.includes('有一批没有提交'), 'and it says which reading is wrong: ' + partial.reason);
+    assert.equal(summaryGate({ ...ready, folded: 39 }, { turns: 20 }).ok, false, 'one floor short is still short');
+    assert.equal(summaryGate({ ...ready, folded: 40 }, { turns: 20 }).ok, true, 'the greeting need not be folded');
 }
 
 console.log('PASS acceptance capture: both call kinds record raw bodies and elapsed, and consecutive turns keep separate injected blocks');

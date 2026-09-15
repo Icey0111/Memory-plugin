@@ -30,6 +30,13 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- The detail-survival acceptance refuses a run whose fold hid only the first summary batch. Two runs had their
+  last batch's request never settle, so `folded` was 21 rows for twenty finished floors, the last ten floors
+  stayed visible, and three probes were answered from a transcript that still showed the needles. The phase-1
+  gate passed them because it only asked whether any row had been folded; it now requires the fold to cover the
+  phase (`folded >= 2 x completeTurns`) and reports that a batch never committed. The greeting need not be
+  folded, so a run that leaves it visible still passes.
+
 - The cross-encoder rerank stage reaches providers that serve rerank on their own path instead of the
   OpenAI-compatible `/rerank`. A provider can list a rerank model and still answer `{base}/rerank` with 404:
   Aliyun's MaaS answers `{origin}/api/v1/services/rerank/text-rerank/text-rerank` for the same key and the same
