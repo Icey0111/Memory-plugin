@@ -1529,6 +1529,61 @@ export function mountNarrativeSettings(getContext, createServices) {
     return true;
 }
 
+/** How many parked records the line names before it says how many there were. */
+const PARKED_TERMS_SHOWN = 3;
+
+/** How much of a parked record the line names: enough to recognise, not the whole statement. */
+const PARKED_NAME_CHARS = 22;
+
+/** The names of parked records, so "搁置 2 条" can be acted on rather than only counted. */
+function parkedNames(list) {
+    const items = list || [];
+    const names = items.slice(0, PARKED_TERMS_SHOWN)
+        .map(item => typeof item === 'string' ? item : [item.kind, item.text].filter(Boolean).join('／'))
+        .map(name => String(name).length > PARKED_NAME_CHARS ? String(name).slice(0, PARKED_NAME_CHARS) + '…' : String(name))
+        .filter(Boolean);
+    if (!names.length) return '';
+    return '：' + names.join('、') + (items.length > names.length ? ' 等 ' + items.length + ' 项' : '');
+}
+
+/**
+ * The ledger line, as text, from the read-only report.
+ *
+ * Pure, so what the panel says can be checked offline: the panel writes into DOM nodes a headless test cannot
+ * read back, and the conditions a reader has to tell apart were recorded in the report while only some of them
+ * were on the screen. Two were missing. A parked record was a count with no names, and a name is what makes it
+ * actionable ("搁置 2 条" cannot be). And a live statement with no subject - one that exists and says nothing
+ * about what it is about, so nothing can resolve it - was counted nowhere on the panel, which left "no carrier"
+ * as the only statement-level alarm and made an unresolvable record look like a carried one.
+ */
+export function anchorPanelText(report = {}) {
+    const parts = [];
+    const ops = report.anchors_ops;
+    if (ops) parts.push('上一批锚点变更：共 ' + ops.total + ' 条（新增 ' + ops.added + '，更新 ' + ops.updated
+        + '，结束 ' + ops.ended + '，重复 ' + ops.restated
+        + (ops.reinterpreted ? '，把“更新”当“新增”用了 ' + ops.reinterpreted + ' 条' : '') + '）');
+    parts.push('锚点活值 ' + report.anchors_active + ' 条，注入 ' + report.anchors_injected + ' 条'
+        + (report.anchors_parked ? '（搁置 ' + report.anchors_parked + parkedNames(report.anchors_parked_terms) + '）' : '')
+        + '，退场记录 ' + report.anchors_superseded + ' 条（最多保留 ' + report.anchors_superseded_limit + ' 条）');
+    parts.push('知情边界 ' + report.knowledge_entries + ' 条，注入 ' + report.knowledge_injected + ' 条'
+        + (report.knowledge_parked ? '（搁置 ' + report.knowledge_parked + parkedNames(report.knowledge_parked_terms) + '）' : ''));
+    if (report.required_none) parts.push('本次注入里没有任何载体的活陈述 ' + report.required_none
+        + ' 条（共 ' + report.required_total + ' 条）');
+    if (report.anchors_without_subject) parts.push('无主体的活陈述 ' + report.anchors_without_subject
+        + ' 条（记录存在但没有主体，无法按主体解析，只能整体注入或搁置）');
+    if (report.superseded_evidence) parts.push('证据里 ' + report.superseded_evidence
+        + ' 条来自只被已取代陈述引用的原文行（历史成立、可能被当成现状用）');
+    if (report.anchors_same_subject) parts.push('同一主体多活值 ' + report.anchors_same_subject + ' 组');
+    if (report.anchor_op_errors?.length) parts.push((report.anchor_op_errors_recovered ? '上一次' : '最近一批')
+        + '锚点变更被拒绝 ' + report.anchor_op_errors.length + ' 条'
+        + (report.anchor_op_errors_recovered ? '（已恢复）' : ''));
+    let text = parts.join('；');
+    const retired = report.anchors_superseded_recent?.[0];
+    if (retired) text += '；最近退场：' + retired.kind + '／' + (retired.subject || '无主体')
+        + '（来源 ' + (retired.source || '未知') + '）';
+    return text;
+}
+
 /** One place that writes the panel, so a warning cannot be shown on one path and lost on another. */
 const SUMMARY_STATE_TEXT = { idle: '空闲', accumulating: '正常积累（未满一个批次）',
     summarizing: '正在总结', failing: '连续失败', blocked: '输入预算阻塞', backlog: '有完整批次等待总结' };
@@ -1557,30 +1612,7 @@ function renderNarrativePanel(root, ctx) {
     // applied" are different sentences, and a user who only sees the second cannot tell whether the feature
     // is working at all.
     const anchorState = root.querySelector('[data-anchors]');
-    if (anchorState) {
-        const ops = report.anchors_ops;
-        const parts = [];
-        if (ops) parts.push('上一批锚点变更：共 ' + ops.total + ' 条（新增 ' + ops.added + '，更新 ' + ops.updated
-            + '，结束 ' + ops.ended + '，重复 ' + ops.restated
-            + (ops.reinterpreted ? '，把“更新”当“新增”用了 ' + ops.reinterpreted + ' 条' : '') + '）');
-        parts.push('锚点活值 ' + report.anchors_active + ' 条，注入 ' + report.anchors_injected + ' 条'
-            + (report.anchors_parked ? '（搁置 ' + report.anchors_parked + '）' : '')
-            + '，退场记录 ' + report.anchors_superseded + ' 条（最多保留 ' + report.anchors_superseded_limit + ' 条）');
-        parts.push('知情边界 ' + report.knowledge_entries + ' 条，注入 ' + report.knowledge_injected + ' 条'
-            + (report.knowledge_parked ? '（搁置 ' + report.knowledge_parked + '）' : ''));
-        if (report.required_none) parts.push('本次注入里没有任何载体的活陈述 ' + report.required_none
-            + ' 条（共 ' + report.required_total + ' 条）');
-        if (report.superseded_evidence) parts.push('证据里 ' + report.superseded_evidence
-            + ' 条来自只被已取代陈述引用的原文行（历史成立、可能被当成现状用）');
-        if (report.anchors_same_subject) parts.push('同一主体多活值 ' + report.anchors_same_subject + ' 组');
-        if (report.anchor_op_errors?.length) parts.push((report.anchor_op_errors_recovered ? '上一次' : '最近一批')
-            + '锚点变更被拒绝 ' + report.anchor_op_errors.length + ' 条'
-            + (report.anchor_op_errors_recovered ? '（已恢复）' : ''));
-        anchorState.textContent = parts.join('；');
-        const retired = report.anchors_superseded_recent?.[0];
-        if (retired) anchorState.textContent += '；最近退场：' + retired.kind + '／' + (retired.subject || '无主体')
-            + '（来源 ' + (retired.source || '未知') + '）';
-    }
+    if (anchorState) anchorState.textContent = anchorPanelText(report);
     const notice = root.querySelector('[data-notice]');
     if (notice) {
         notice.textContent = report.notices.length ? 'ℹ ' + report.notices.join(' ') : '';

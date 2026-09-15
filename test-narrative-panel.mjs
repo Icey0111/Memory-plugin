@@ -34,7 +34,7 @@ globalThis.document = {
     addEventListener() {},
 };
 
-const { mountNarrativeSettings, readNarrativeReport, narrativeSettings } = await import('./narrative-runtime.js?panel');
+const { mountNarrativeSettings, readNarrativeReport, narrativeSettings, anchorPanelText } = await import('./narrative-runtime.js?panel');
 
 const ctx = {
     extensionSettings: { aetheriaUnifiedMemoryV54: { enabled: true, narrative_every: 7 } },
@@ -67,4 +67,33 @@ const before = parentNode.children.length;
 mountNarrativeSettings(() => ctx, services);
 assert.equal(parentNode.children.length, before, 'an existing panel is not mounted twice');
 
-console.log('PASS narrative panel: the settings panel attaches, fills from the read-only report, and mounts once');
+// 4. the ledger line names parked records and keeps "unresolvable" apart from "not carried".
+// Both conditions were recorded in the report and neither was on the panel: a count with no names cannot be
+// acted on, and a live statement with no subject is a different defect from one with no carrier - the first
+// cannot be resolved by anything, the second merely was not restated.
+{
+    const line = anchorPanelText({
+        anchors_active: 12, anchors_injected: 9, anchors_parked: 3,
+        anchors_parked_terms: [{ kind: '知道', text: '薇斯珀/知道' }, { kind: '知道', text: '灰袍老者/知道' },
+            { kind: '知道', text: '南线/知道' }, { kind: '知道', text: '第四条/知道' }],
+        anchors_superseded: 2, anchors_superseded_limit: 20,
+        knowledge_entries: 4, knowledge_injected: 2, knowledge_parked: 2,
+        knowledge_parked_terms: ['瑟拉菲娜/不知道', '灰袍老者/知道'],
+        required_none: 1, required_total: 14, anchors_without_subject: 2 });
+    assert.ok(line.includes('搁置 3：知道／薇斯珀/知道、知道／灰袍老者/知道、知道／南线/知道 等 4 项'),
+        'parked anchors are named, bounded and still counted: ' + line);
+    assert.ok(line.includes('搁置 2：瑟拉菲娜/不知道、灰袍老者/知道'), 'parked knowledge entries are named too');
+    const long = anchorPanelText({ anchors_active: 1, anchors_injected: 1, anchors_parked: 1,
+        anchors_parked_terms: [{ kind: '角色', text: '薇斯珀仍话少直接；她数夜听声、守前半夜，同意南线与炭窑洼守候' }],
+        anchors_superseded: 0, anchors_superseded_limit: 20, knowledge_entries: 0, knowledge_injected: 0 });
+    assert.ok(long.includes('角色／薇斯珀仍话少直接；她数夜听声、守前半夜…'), 'a named record is cut to a recognisable length: ' + long);
+    assert.ok(!long.includes('炭窑洼守候'), 'and the whole statement is not pasted into the line');
+    assert.ok(line.includes('无主体的活陈述 2 条'), 'an unresolvable statement is stated');
+    assert.ok(line.includes('没有任何载体的活陈述 1 条'), 'and is not confused with one that has no carrier');
+    const bare = anchorPanelText({ anchors_active: 1, anchors_injected: 1, anchors_superseded: 0,
+        anchors_superseded_limit: 20, knowledge_entries: 0, knowledge_injected: 0 });
+    assert.ok(!bare.includes('搁置'), 'nothing parked, no parked clause');
+    assert.ok(!bare.includes('无主体'), 'and no unresolvable clause');
+}
+
+console.log('PASS narrative panel: the settings panel attaches, fills from the read-only report, mounts once, and names what it parked');

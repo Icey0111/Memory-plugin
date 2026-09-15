@@ -57,6 +57,11 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
+- The settings panel now names the records it parked instead of only counting them (three per list, each cut to
+  a recognisable length), and it states a live statement that has **no subject** apart from one that merely had
+  **no carrier** - the first cannot be resolved by anything, the second was not restated. Both conditions were
+  already in the read-only report and neither was on the screen. The line is built by `anchorPanelText`, a pure
+  function, so what the panel says can be read offline (Issue #2 step 5).
 - A summary body refused for `format` or `over_budget` earns one targeted repair, recorded as `body_repair`
   with its own cost, checked against the input budget before sending, and re-evaluated against the same checks
   as the first answer; the request now also states the hard ceiling and its consequence, which it never did.
