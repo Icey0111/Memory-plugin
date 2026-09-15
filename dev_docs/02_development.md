@@ -672,3 +672,31 @@ This is still a measurement prototype. Nothing is shipped, the pipeline is untou
 calls, and the instrument reads a private chat and private needles, so only the method and the numbers are
 recorded.
 
+### The 16/16 does not survive an audit (2026-09-15)
+
+The combined rule reads 16/16 on the annotated probes. Auditing that reading changes what it means, in three ways.
+
+**False positives are real and concentrated.** Of the 74 spans the sixteen questions fire, only 36 carry the needle -
+**51.4% do not** - and 6 (8.1%) are attributed to the wrong subject, five of them on the one question whose row
+names three subjects: the rule builds an attribute window for every named subject, so a quotation of one
+character's description becomes another character's span. Every needle, however, does sit in a span that genuinely
+answers its question; no hit is a coincidental substring.
+
+**The reading is conditional on an oracle.** The question expansion appends the annotated subject to the query for
+questions that do not name it. With that step removed the same rule reads **8/16**, because the step also gates the
+subject-key route for questions that *do* name their subject. The shipped planner resolves pronouns and
+descriptions with limited accuracy, so 8/16, not 16/16, is the honest in-domain number until the route and the
+resolution are separated.
+
+**Nothing transfers.** On a second, unrelated chat with the rule unchanged, the same rule reads **2/10**. Seven of
+the eight misses need an attribute word the frozen vocabulary does not contain (six distinct words), and the two
+successes are exactly the probes whose attribute word the original sixteen already required. One miss had its word
+in the vocabulary and still failed because the question refers to the thing descriptively and never names the
+attribute - a reference problem, not a vocabulary one. Vocabulary ablation says the same from the other side: of
+the whole alias table only one entry changes any probe's reading, and no phrase-table entry does, so what the ruler
+mostly measures is "the question's own words plus the annotated subject".
+
+The honest statement is narrower than the milestone above: the derived spans do contain a genuine answer to each of
+the sixteen questions, and the composite-key form beats the flat baseline, but 16/16 is not evidence that the key
+layer retrieves them unaided.
+

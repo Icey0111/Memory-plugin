@@ -66,7 +66,10 @@ subject key's canonical span is what reaches a named subject, so the removed ter
   fan-out of a common attribute key (100 candidate spans for one key) was what blocked it. A later measurement
   the same day closed it on the ruler: attribute-anchored spans ranked by the pre-cap term count then proximity,
   plus a phrase table ranked by phrase length, reach 16/16 at 67 fired spans and 47.8%, with each miss decided by
-  a rank-1 mechanism rather than a tie. See 02_development.md.
+  a rank-1 mechanism rather than a tie. An audit the same day bounds that reading: 51.4% of the fired spans carry
+  no needle, the reading falls to 8/16 without the annotated subject in the query, and the same rule reads 2/10 on
+  an unrelated chat. The composite form is promising; the 16/16 is not evidence of unaided retrieval. See
+  02_development.md.
 - The instrument reads a private chat and private needles, so it is not committed; its method and its numbers are.
 - **A measurement defect can manufacture a design conclusion.** The first reading of the composite rules was
   taken while the ruler's subject-key route was silently inert - the canonical span set was built from pre-copy
