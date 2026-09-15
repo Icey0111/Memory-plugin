@@ -528,3 +528,43 @@ the one the competition rule wanted to delete. The work therefore moves from nom
 rejected because a fifth bidder displaces an answer - to keying the span the channel already finds, so the route
 becomes deterministic instead of one more competitor for five slots.
 
+### The key layer needs a precision ruler, not a coverage number (2026-09-15)
+
+The coverage numbers in the previous subsection are the weak metric this section replaces. The first attempt to
+measure a key layer asked "is the needle inside a derived span?" and that number is saturable: adding place
+subjects and widening the anchored window took the same 16 authored questions (ten labelled probes plus six
+descriptive references) from 9/16 to 16/16 while multiplying the spans a question fires from 188 to 634 and
+leaving the share that actually carries the needle at about 4%. Widening bought coverage by buying noise.
+
+The ruler that replaces it annotates each question with its subject, attribute and aliases, then scores four
+axes instead of one: coverage (the needle is inside some derived span), subject (that span is attributed to the
+annotated subject), route (the question names or resolves the subject, or fires the asked attribute), and
+**bidders** - every span whose key the question fires, and how many of those contain the needle. "Reachable"
+means at least one fired key points at the needle; "precise" is reachable with the hitting span attributed to
+the right subject and a legitimate route. Measured verbatim, no model call:
+
+| derived key rule | reachable | right subject | precise | bidders | bidder precision |
+| --- | --- | --- | --- | --- | --- |
+| person descriptor clusters only (today's derivation) | 8/16 | 6/16 | 5/16 | 188 | 4.3% |
+| + attribute vocabulary, aliases, name fragments and one canonical place key | 13/16 | 13/16 | 13/16 | 162 | 8.6% |
+| composite keys (`主体.属性`), with no frequency cutoff | 13/16 | 13/16 | **13/16** | **101** | **13.9%** |
+
+Three findings are worth keeping.
+
+- **What makes a key selective is the namespace, not a frequency cutoff.** A single attribute key can be both
+  correct and too common (`地` for a place question), and a document-frequency floor then drops the right key.
+  The composite form `炭窑洼.地` is specific without one. Keeping the floor on top of composite keys starves
+  them - reachability falls to 5/16 - so in that structure the floor is not merely unnecessary, it is wrong.
+- **Composite keys cut the competition below the baseline.** The 13/16 rule fires 101 spans where today's
+  derivation fires 188, and 13.9% of them carry the needle against 4.3%. The three rejected nomination attempts
+  showed that coverage bought by nominating more is paid for in the precision of what is quoted; keys bought by
+  binding subject and attribute are not.
+- **The misses are three different defects, not one.** They are the later re-description of a character that no
+  span covers (`s_hair`, `m_speech`) and a subject-only question with no attribute to bind (`p_firepit`),
+  which needs a canonical *describing* span for its subject rather than the densest one.
+
+Nothing shipped: the key layer is a measurement prototype and the pipeline is unchanged. The ruler and its
+annotation set are the instrument the next attempt has to pass, and the plan's Step 1 target changes from "key
+coverage rises" to "reachability rises with bidder precision as a floor". The instrument reads a private chat
+and private needles, so only the method and the numbers are recorded here; it is not committed.
+
