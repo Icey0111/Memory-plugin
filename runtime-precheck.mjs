@@ -28,6 +28,7 @@ export const WATCH = {
         'validSummary', 'nextSummaryBatch', 'applyNarrativeFolds',
         'packRawEvidence', 'rankRawChunks', 'queryWindowTerms'],
     'narrative-runtime.js': ['updateNarrative', 'readNarrativeReport', 'generateNarrativeSummary'],
+    'v55-rerank.js': ['requestRerank', 'rerankShortlist', 'applyRerankOrder', 'parseRerankResponse'],
 };
 
 /** A fast content hash. Exact equality of the function source is what matters, not collision resistance. */

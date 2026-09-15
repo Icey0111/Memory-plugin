@@ -60,6 +60,38 @@ export function parseRerankResponse(payload, count) {
     return order.sort((a, b) => b.score - a.score || a.index - b.index);
 }
 
+/**
+ * The path a provider may serve a rerank on when it does not serve the OpenAI-compatible one.
+ *
+ * A provider can list a rerank model in `/models` and still answer `{base}/rerank` with 404. Aliyun's MaaS does
+ * exactly that: the same key and the same model (`qwen3.7-text-rerank`) answered
+ * `{origin}/api/v1/services/rerank/text-rerank/text-rerank` with 200 while the compatible path returned 404.
+ * Without this fallback the stage fails open, records `rerank_used: false`, and the setting looks inert - which
+ * is how it was read before this was measured.
+ */
+export const NATIVE_RERANK_PATH = '/api/v1/services/rerank/text-rerank/text-rerank';
+
+/** That path hangs off the host the base URL names, not off the base URL's own path. */
+export function nativeRerankUrl(baseUrl) {
+    const base = resolveOpenAiCompatibleBaseUrl(baseUrl);
+    if (!base) return null;
+    try { return new URL(NATIVE_RERANK_PATH, new URL(base).origin).toString(); } catch (error) { return null; }
+}
+
+/** The same request in the shape that path expects: `input`/`parameters` rather than a flat body. */
+export function buildNativeRerankRequest({ model, query, documents, topN }) {
+    const body = buildRerankRequest({ model, query, documents, topN });
+    return { model: body.model, input: { query: body.query, documents: body.documents },
+        parameters: { top_n: body.top_n } };
+}
+
+/** Its response, validated by the same rules: `output.results` rather than `results`. */
+export function parseNativeRerankResponse(payload, count) {
+    const results = payload && payload.output ? payload.output.results : null;
+    if (!Array.isArray(results)) throw new Error('重排返回格式无效：缺少 output.results 数组。');
+    return parseRerankResponse({ results }, count);
+}
+
 export async function requestRerank({ baseUrl, apiKey, model, query, documents, topN, fetchImpl }) {
     const base = resolveOpenAiCompatibleBaseUrl(baseUrl);
     if (!base) throw new Error('重排地址未配置。');
@@ -69,17 +101,31 @@ export async function requestRerank({ baseUrl, apiKey, model, query, documents, 
     const send = fetchImpl || globalThis.fetch?.bind(globalThis);
     if (typeof send !== 'function') throw new Error('重排传输不可用。');
     const started = performance.now();
-    const response = await send(base + '/rerank', { method: 'POST', signal: AbortSignal.timeout(60000),
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + key },
-        body: JSON.stringify(body) });
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + key };
+    const post = (url, payload) => send(url, { method: 'POST', signal: AbortSignal.timeout(60000),
+        headers, body: JSON.stringify(payload) });
+    let response = await post(base + '/rerank', body);
+    let transport = 'compatible';
+    // 404 is "no such endpoint", the one status that says the request was addressed to the wrong path. A
+    // 401/429/5xx is a refusal at the right one, so those are reported rather than retried somewhere else.
+    if (response.status === 404) {
+        const url = nativeRerankUrl(base);
+        if (url) {
+            const retry = await post(url, buildNativeRerankRequest({ model, query, documents, topN }));
+            if (retry.ok) { response = retry; transport = 'native'; }
+            else if (retry.status !== 404) { response = retry; }
+        }
+    }
     if (!response.ok) {
         const detail = await response.text().catch(() => '');
         throw new Error('重排请求失败：HTTP ' + response.status + (detail ? ' · ' + detail.slice(0, 300) : ''));
     }
     const payload = await response.json().catch(() => null);
-    const order = parseRerankResponse(payload, body.documents.length);
+    const order = transport === 'native' ? parseNativeRerankResponse(payload, body.documents.length)
+        : parseRerankResponse(payload, body.documents.length);
     Object.defineProperty(order, 'metrics', { value: { elapsed_ms: Math.round(performance.now() - started),
-        documents: body.documents.length, input_tokens_estimated: estimateTokens([query, ...documents].join('\n')),
+        documents: body.documents.length, transport,
+        input_tokens_estimated: estimateTokens([query, ...body.documents].join('\n')),
         provider_tokens: payload?.usage?.total_tokens ?? null } });
     return order;
 }

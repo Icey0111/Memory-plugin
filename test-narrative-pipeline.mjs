@@ -18,7 +18,8 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig,
     summarizeEvidenceCandidates, summarizeEvidenceTrace, EVIDENCE_TRACE_LIMIT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
-import { buildRerankRequest, parseRerankResponse, requestRerank } from './v55-rerank.js';
+import { buildRerankRequest, parseRerankResponse, requestRerank,
+    buildNativeRerankRequest, parseNativeRerankResponse, nativeRerankUrl } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
 import { estimateTokens } from './v55-tokenizer.js';
@@ -839,6 +840,31 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     await assert.rejects(() => requestRerank({ baseUrl: 'https://x', apiKey: '', model: 'm', query: 'q', documents: ['a'] }), /API Key/);
     await assert.rejects(() => requestRerank({ baseUrl: 'https://x', apiKey: 'k', model: 'm', query: 'q', documents: ['a'],
         fetchImpl: async () => ({ ok: false, status: 429, text: async () => 'slow down' }) }), /HTTP 429/);
+    // A provider can list a rerank model in /models and still answer the compatible path with 404 - Aliyun's
+    // MaaS does - so the stage retries on the provider's own path instead of failing open. Read as inert is
+    // exactly how a working reranker looked before this: the setting was filled in, no call reached it, and
+    // nothing in the panel said so.
+    const tried = [];
+    const fell = await requestRerank({ baseUrl: 'https://ws-x.aliyuncs.com/compatible-mode/v1', apiKey: 'k',
+        model: 'qwen3.7-text-rerank', query: 'q', documents: ['甲', '乙'],
+        fetchImpl: async (url, init) => {
+            tried.push({ url, body: JSON.parse(init.body) });
+            if (tried.length === 1) return { ok: false, status: 404, text: async () => 'not found' };
+            return { ok: true, json: async () => ({ output: { results: [{ index: 1, relevance_score: 0.9 },
+                { index: 0, relevance_score: 0.2 }] } }) };
+        } });
+    assert.equal(tried[0].url, 'https://ws-x.aliyuncs.com/compatible-mode/v1/rerank', 'the compatible path is tried first');
+    assert.equal(tried[1].url, 'https://ws-x.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank',
+        'and the native path only after a 404 on it');
+    assert.deepEqual(tried[1].body, { model: 'qwen3.7-text-rerank', input: { query: 'q', documents: ['甲', '乙'] },
+        parameters: { top_n: 2 } }, 'the native body is the shape that path expects');
+    assert.deepEqual(fell.map(row => row.index), [1, 0], 'the native response passes the same validation');
+    assert.equal(fell.metrics.transport, 'native', 'and the record says which path answered');
+    assert.deepEqual(parseNativeRerankResponse({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }, 1),
+        [{ index: 0, score: 0.5 }]);
+    assert.throws(() => parseNativeRerankResponse({ results: [] }, 1), /output\.results/);
+    assert.equal(nativeRerankUrl('https://ws-x.aliyuncs.com/compatible-mode/v1'),
+        'https://ws-x.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank');
 
     // Through the pipeline: a failing reranker must leave the fused order, and it must say so.
     const host = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600 } });

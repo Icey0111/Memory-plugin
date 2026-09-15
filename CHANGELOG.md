@@ -7,6 +7,15 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- The cross-encoder rerank stage reaches providers that serve rerank on their own path instead of the
+  OpenAI-compatible `/rerank`. A provider can list a rerank model and still answer `{base}/rerank` with 404:
+  Aliyun's MaaS answers `{origin}/api/v1/services/rerank/text-rerank/text-rerank` for the same key and the same
+  model (`qwen3.7-text-rerank`), with `input`/`parameters` in and `output.results` out. The stage retried
+  nothing, failed open, and recorded `rerank_used: false`, so a configured reranker read as inert - which is how
+  the optional stage was judged here. Only a 404 triggers the retry; a 401/429/5xx is a refusal at the right path
+  and is reported rather than re-addressed. The diagnostic `rerank_cost.transport` names which path answered.
+  Verified end to end against the live provider: 330 ms, 276 provider tokens.
+
 - A quoted evidence source now records the candidate's own extent (`spanStart`/`spanEnd`) and the channel
   regions the window was allowed to follow (`seats`). Measured on the 2026-09-15 runs: ten needle occurrences fell
   63-207 characters outside the span quoted for the row that carries them, and a full sentence-end extension

@@ -1175,3 +1175,11 @@ contamination the quoted-slot audit measured (6 of 6 identity probes quote it). 
 needle's own row moves from third to first and the reading is **still** a miss, because the window quotes the wrong
 200 characters of it. **Rerank attacks selection, and selection is only half the wall.**
 
+The transport was then made to reach the path that answers: on a 404 from `{base}/rerank` it retries
+`{origin}/api/v1/services/rerank/text-rerank/text-rerank` with that path's body and response shape, and reports
+which one answered in `rerank_cost.transport`. Only 404 triggers the retry - 401/429/5xx are refusals at the
+right path and are reported rather than re-addressed, and a test pins that a 429 is answered once. Verified end to
+end through the shipped `requestRerank` against the live provider: `transport: native`, a scored order,
+330 ms and 276 provider tokens for three documents. The stage stays off until a model is named, so this changes
+nothing for an install that never configured one.
+
