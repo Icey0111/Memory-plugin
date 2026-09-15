@@ -36,15 +36,18 @@ Three mechanisms, each measured alone and together before any of them shipped.
    modifies it rather than following it ("一个穿灰袍、拄藤杖的老头" answers "最显眼的穿着是什么"). A
    character's own name is never an anchor, because the describing sentences come *before* the name and
    anchoring on the name cuts the paragraph off behind it - found by the synthetic fixture, not by reasoning.
-3. **A character's introduction is a candidate of its own.** For each named character the earliest hidden
-   chunk that mentions the name becomes a second target of the character channel, with the densest run of
-   that row (within 200 characters of the mention) as its region - unless another candidate name is mentioned
-   earlier in that same row, which makes it *that* character's row and their target. The qualification is
-   measured, not guessed: see the 43-name table below. The score cannot find that row: the
-   describing sentences name nobody, so no mention sits near the words, and the name is common enough that
-   the rare-term channel drops it as prose. The descriptor lexicon also gained the words those sentences
-   actually use (`斗篷`, `皮甲`, `短刃`, `刀鞘`, `颧骨`, `目光`, `语气`, ...); the original list was
-   body parts and weapons, which is the vocabulary of an action beat.
+3. **A character's introduction is a candidate of its own, for a character the knowledge block tracks.**
+   For each named character the earliest hidden chunk that mentions the name becomes a second target of the
+   character channel, with the densest run of that row (within 200 characters of the mention) as its region -
+   unless another candidate name is mentioned earlier in that same row, which makes it *that* character's row
+   and their target. The score cannot find that row: the describing sentences name nobody, so no mention sits
+   near the words, and the name is common enough that the rare-term channel drops it as prose. Two
+   qualifications, both measured: the candidate is a second bidder for the same five slots, so it is granted
+   only for names the knowledge block tracks (see the corpus section below for what un gated costs); and the
+   descriptor vocabulary is split in two - the scoring list stays the one measured before, while a wider list
+   of clothing and face words (`斗篷`, `皮甲`, `短刃`, `刀鞘`, `颧骨`, `目光`, `语气`, ...) only decides
+   *where* in a row the description sits. Adding those words to the score instead changed which chunk wins
+   and cost four description readings over 1,258 corpus turns.
 
 The run that decides a description is the *densest* run, not the count within a wide window: a 240-character
 window that starts at a row's opening scene accumulates the scene's words as well as the description's and
@@ -136,7 +139,7 @@ is the live reading this ADR was otherwise missing:
   `斯珀的` survives), so a question about a character is structurally reported as unrecalled however well the
   turn goes. The reading that matched this turn is `profile_terms.detailed`.
 
-## The corpus check, which is not flattering
+## The corpus check, and what it corrected
 
 The natural track replays every real user message in the corpus through `planRetrievalQuery` and scores the
 evidence that was actually packed: 73 chats, **1,258 turns** (903 request, 355 continuation), lexical only, the
@@ -144,22 +147,34 @@ same chats on both sides.
 
 | proxy | before | after |
 | --- | --- | --- |
-| situation-term recall | 85.0% (3974/4673) | 85.3% (3988/4673) |
-| asked-thing recall | 64.6% (3047/4718) | 64.9% (3060/4718) |
-| character described (profile `detailed`) | 26.6% (101/380) | 25.5% (97/380) |
-| the same, Chinese chats only | 77.0% (57/74) | 75.7% (56/74) |
+| situation-term recall | 85.0% (3974/4673) | 85.5% (3996/4673) |
+| asked-thing recall | 64.6% (3047/4718) | 65.0% (3067/4718) |
+| character described (profile `detailed`) | 26.6% (101/380) | 27.4% (104/380) |
+| the same, Chinese chats only | 77.0% (57/74) | 81.1% (60/74) |
 
-Two things belong in the record rather than out of it. The profile proxy is only meaningful on the Chinese
-chats: it asks whether a quoted row carries a descriptor word near the name, the lexicon is Chinese, and the 306
-non-Chinese name-readings can essentially never pass (14.4% before, 13.4% after) while dominating the aggregate.
-And the replay derives its character names from the row `name` fields, not from the knowledge block, so it does
-not exercise the case this ADR fixes - on the real turn the name came from the knowledge block
-(`profile_names = ["薇斯珀"]`). What the corpus does measure is the cost: the introduction candidate is a
-second candidate competing for the same five slots, available on 290 of those turns and inside the fused top five
-on 68, and on this corpus that cost is a few description readings bought for nothing.
+The first reading of this instrument was **worse than the baseline** - 25.5% (97/380) - and finding out why was
+worth the afternoon. A paired per-turn diff (the same plan scored by the before and after modules in one process)
+found 6 turns where a character stopped being reported as described against 2 where it started; reading those six
+ruled out both suspects. It was not the window and not the new candidate: the **lexicon extension had changed
+which chunk the channel picks**, and a pick that moves off the describing row takes that row's evidence slot with
+it. Splitting the vocabulary - the scoring list stays the one measured before, the wider clothing-and-face list
+only decides *where* the description is inside a row - kept every pick and still placed the window. The same
+paired diff is now **0 turns worse and 3 better**, which is the version in the table above.
 
-That is the next measured step: gate the introduction candidate on a name the knowledge block tracks - which is
-where the real failure lives - or give it a reserved seat, and re-run both instruments.
+The introduction candidate needed its own measurement, because it is a second bidder for the same five slots.
+Gated on the names the knowledge block tracks it exists on 33 of the 43 hand-judged rows and yields **14
+candidates, every one of them a row that introduces or describes its name** (ungated: 15; the one the gate
+removes belongs to a chat with no knowledge entries at all). The eight rows once read as *not* introducing their
+name are removed by the earlier rule rather than by this one - a name whose first mention is a passing clause
+inside another character's introduction is that character's row - and the gate is what stops the candidate from
+being granted to every name in the scene. The survivors do not need a reserved seat: 13 of the 14 sit inside the
+fused top five and 13 of the 14 are quoted, measured rather than assumed, so the gate is enough.
+
+Two readings still have to be read carefully. The profile proxy is only meaningful on the Chinese chats: it asks
+whether a quoted row carries a descriptor word near the name, the lexicon is Chinese, and the 306 non-Chinese
+name-readings can essentially never pass (14.4%) while dominating the aggregate. And the replay takes its
+character names from the row `name` fields rather than the knowledge block, which is why the gate had to be
+measured on the hand-judged table instead - in the replay it removes the candidates rather than selecting them.
 
 ## Decision
 

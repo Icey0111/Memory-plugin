@@ -124,11 +124,21 @@ export const PROFILE_TERMS = [
     '年纪', '岁', '声音', '嗓音', '口音', '腔', '手', '指', '缺', '脚', '腿', '背', '肩',
     '衣', '袍', '衫', '褂', '帽', '鞋', '靴', '佩', '刀', '剑', '杖',
     '沉默', '寡言', '话少', '多话', '急躁', '暴躁', '温和', '冷淡', '耿直', '谨慎', '咳嗽', '口吃', '习惯', '一向', '总先',
-    // Added after measuring the first set on a real chat: the words that were missing were the ones the
-    // describing sentences actually use. The original list was body parts and weapons enough for an action
-    // beat, and it read the paragraph that introduces a character as mostly clothing-free because "皮甲",
-    // "斗篷", "刀鞘", "颧骨" and "目光" were not words it knew. Measured on the labelled probes, the wider
-    // list moves the densest run of that paragraph onto the paragraph. See ADR-0045.
+];
+
+/**
+ * The wider vocabulary that decides *where* a person is described, kept apart from the list that decides
+ * *which chunk* wins.
+ *
+ * The describing sentences use clothing and face words the scoring list did not know ("皮甲", "斗篷",
+ * "刀鞘", "颧骨", "目光"), and adding them to the score changed which chunk the channel picks: over 1,258
+ * corpus turns that moved the pick on a handful of turns and cost four description readings, because a pick
+ * that moves off the describing row takes the row's evidence slot with it. Adding them only to the region
+ * keeps every pick and still puts the window on the paragraph. Two lists, two jobs: a chunk is *chosen* by
+ * mentions and the words near them, and the window inside it is *placed* by the densest run of anything that
+ * describes a person. See ADR-0045.
+ */
+const PROFILE_REGION_TERMS = [...PROFILE_TERMS,
     '斗篷', '披风', '皮甲', '短刃', '刀鞘', '剑鞘', '藤杖', '裙摆', '长袍', '罩袍', '灰袍', '腰',
     '颧骨', '鬓角', '嘴角', '轮廓', '睫毛', '下颌', '脖子', '手腕', '掌心', '目光', '眼神', '胡须', '胡子',
     '语气', '神情', '性子', '脾气', '沉稳', '利落', '戒备', '打量',
@@ -171,7 +181,7 @@ function describesName(text, name, term) {
  */
 export function descriptorCluster(text, near = null) {
     const spots = [];
-    for (const term of PROFILE_TERMS) {
+    for (const term of PROFILE_REGION_TERMS) {
         for (let at = text.indexOf(term); at >= 0; at = text.indexOf(term, at + 1)) spots.push({ at, end: at + term.length });
     }
     if (!spots.length) return null;
@@ -205,10 +215,12 @@ export function descriptorCluster(text, near = null) {
  * rather than about the person. This picks the chunk with the most mentions of the name and the most
  * descriptor words said near it, which is the one a reader would call "where this character is described".
  */
-export function profileTargets(chunks, names, { visibleSources = new Set(), limit = PROFILE_LIMIT } = {}) {
+export function profileTargets(chunks, names, { visibleSources = new Set(), limit = PROFILE_LIMIT,
+    introductionFor = null } = {}) {
     const wanted = [...new Set((names || []).map(name => String(name || '').trim()))]
         .filter(name => name.length >= 2 && name.length <= 12);
     const out = [];
+    const allowed = introductionFor == null ? null : new Set([...introductionFor].map(name => String(name || '').trim()));
     const regionOf = (chunk, name) => {
         const at = chunk.text.indexOf(name);
         return descriptorCluster(chunk.text, at < 0 ? null : at);
@@ -239,6 +251,13 @@ export function profileTargets(chunks, names, { visibleSources = new Set(), limi
         // paragraph to quote. The score above cannot see it: those sentences name nobody, so no mention
         // sits near the words. That is the failure this second candidate exists for. Measured: the name is
         // common enough that the rare-term channel drops it as prose, so nothing else reaches the row.
+        //
+        // Who gets it is a decision, not a default. Ungated, this candidate is a second bidder for the same
+        // five slots on behalf of every name in the scene: measured over 1,258 corpus turns it was available
+        // on 290 of them, inside the fused top five on 68, and cost four description readings on a corpus
+        // whose names are not knowledge subjects - a diffuse cost for a concentrated benefit. The runtime
+        // passes the names the knowledge block tracks, which is where the failure lives. See ADR-0045.
+        if (allowed && !allowed.has(name)) continue;
         const first = chunks.filter(chunk => !visibleSources.has(chunk.source) && chunk.text.includes(name))
             .sort((a, b) => a.index - b.index)[0];
         // ...but the earliest mention of a name is not always where that name is introduced: it can be a
@@ -461,7 +480,8 @@ export function rankRawChunks(chunks, query, dense = [], options = {}) {
     // cannot carry - it says who they are, not what they look like - so the chunk that describes them gets a
     // vote of its own instead of competing with whatever else matches the last three messages.
     if (options.profile !== false && names.length) {
-        for (const target of profileTargets(chunks, names, { visibleSources, limit: profileLimit })) {
+        for (const target of profileTargets(chunks, names, { visibleSources, limit: profileLimit,
+            introductionFor: options.trackedNames })) {
             add(target.chunk, 0, 'profile', target.descriptors, profileWeight, target.region
                 ? { start: target.chunk.start + target.region.start, end: target.chunk.start + target.region.end } : null);
         }

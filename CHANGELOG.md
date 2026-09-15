@@ -18,7 +18,11 @@ belongs in Git commits and pull requests.
   was re-measured by hand (43 rows reproduced exactly; 3 moved, none better or worse). A row that mentions
   another candidate character earlier than the name it would introduce is that character's row and no longer
   counts as this one's introduction - that qualification removed 9 of 25 introduction candidates, all of them a
-  passing reference inside somebody else's introduction, at the cost of one row that introduces two names.
+  passing reference inside somebody else's introduction, at the cost of one row that introduces two names. The
+  candidate is granted only for names the knowledge block tracks, and the wider clothing-and-face vocabulary
+  places the window without scoring: scoring with it changed which chunk the channel picks and cost four
+  description readings over 1,258 corpus turns. Over that corpus the recall proxies end at situation-term 85.5%,
+  asked-thing 65.0% and character-described 27.4% (Chinese chats 81.1%), against 85.0% / 64.6% / 26.6% before.
 - The evidence window rule (ADR-0037) was inert in every shipped prompt: the runtime called `packRawEvidence`
   without `query`, so the term list was empty and the rule returned immediately, while both harnesses that
   accepted the change passed the query themselves. The runtime passes it now and a runtime-level test through

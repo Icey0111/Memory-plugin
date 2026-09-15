@@ -243,7 +243,19 @@ the same shape (a name whose first mention is a passing clause inside another ch
 that mentions another candidate name earlier than this one is that character's row, and requiring it removes all
 eight plus a ninth of the same shape, at the cost of one row that introduces two names at once: 15 candidates
 remain, every one of them a describing or introducing row, and the real chat's 薇斯珀 still reaches `raw_9` row
-8. The two misses left are named in
+8.
+
+Two more measurements came out of that. The corpus itself (the natural track: 73 chats, 1,258 real-query turns)
+first read **worse** than the baseline - the character-described proxy 26.6% -> 25.5% - and a paired per-turn diff
+traced it to the *lexicon*, not to the window and not to the new candidate: adding clothing words to the scoring
+list changed which chunk the channel picks, and a pick that moves off the describing row takes the row's evidence
+slot with it. Splitting the vocabulary (the scoring list unchanged; the wider list only places the window) fixed
+it: the same diff is now 0 turns worse and 3 better, and the corpus ends at situation-term 85.5%, asked-thing
+65.0%, character-described 27.4% (Chinese chats 81.1%) against 85.0% / 64.6% / 26.6%. Second, the introduction
+candidate is a second bidder for the same five slots, so it is now granted only to names the knowledge block
+tracks: on the 43-row table that is 14 candidates, every one a row that introduces or describes its name, and 13
+of the 14 are inside the fused top five - so it needs no reserved seat. The 8 rows once read as *not* introducing
+their name are removed by the passing-reference rule, not by the gate. The two misses left are named in
 the ADR - one is a ranking defect (`s_hair`: the row never ranks) and one a window-boundary case (`g_robe`:
 the window starts three characters after the modifier phrase that answers the question), which is the shape
 ADR-0044's second rule is about.

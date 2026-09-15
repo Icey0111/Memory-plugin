@@ -986,6 +986,15 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
     const queryStore = storeOf(ctx);
     const knownNames = [...new Set([...(queryStore.narrative_knowledge?.entries || []).map(item => String(item.kind || '').split('/')[0]),
         String(ctx.name1 || '').trim(), String(ctx.name2 || '').trim()])].filter(name => name.length >= 2 && name.length <= 12);
+    // The names the knowledge block tracks as subjects. The character channel is allowed its second candidate
+    // - the row the name is introduced in, which in this prose is where it is described - only for these.
+    // Ungated that candidate bids for the same five slots on behalf of every name in the scene: measured over
+    // 1,258 corpus turns it was available on 290 of them and inside the fused top five on 68, and it cost a
+    // few description readings on a corpus whose names are not knowledge subjects. Gated, the corpus returns
+    // to its previous numbers while the real failure still gets the candidate (ADR-0045).
+    const trackedNames = new Set((queryStore.narrative_knowledge?.entries || [])
+        .map(item => String(item.kind || '').split('/')[0])
+        .filter(name => name.length >= 2 && name.length <= 12));
     const plan = planRetrievalQuery(history, { strategy: settings.narrative_query_strategy || 'focused',
         summary: queryStore.narrative_summary?.text || '', names: knownNames });
     let query = plan.query;
@@ -1024,7 +1033,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         return { referenceBlock: '', currentStateBlock: '', diagnostics: { summary_error: 'context budget too small; original floors restored' } };
     }
     const evidenceBudget = Math.max(0, Math.min(opts.evidenceTokens, totalBudget - estimateTokens(continuity.block)));
-    const fused = rankRawChunks(chunks, query, dense, { visibleSources, names: profileNames });
+    const fused = rankRawChunks(chunks, query, dense, { visibleSources, names: profileNames, trackedNames });
     const reranked = evidenceBudget > 0 ? await applyRerank(services, opts, query, fused, visibleSources)
         : { ranked: fused, used: false, error: null };
     // The rerank is a host round-trip, so it needs the same guard every other await here has: a result
@@ -1141,6 +1150,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         entity_recalled: entityState.length - entityMissed.length,
         entity_terms: entityState.map(row => ({ term: row.term, first_floor: row.first_floor, recalled: row.recalled })),
         profile_names: profileNames,
+        profile_tracked: [...trackedNames],
         profile_terms: profileState.map(row => ({ name: row.name, quoted: row.quoted, detailed: row.detailed, descriptors: row.descriptors })),
         entity_missed: entityMissed.map(row => ({ term: row.term, first_floor: row.first_floor, hidden_floors: row.hidden_floors })),
         knowledge_entries: continuity.knowledge.length,

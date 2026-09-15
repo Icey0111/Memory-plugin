@@ -106,3 +106,23 @@ const quotedText = (history, packed) => packed.sources
     assert.equal(nothing.quoted, false);
     assert.equal(nothing.detailed, false, 'quoting nothing about her is not a description');
 }
+
+// --- 5. the introduction candidate belongs to a name the knowledge block tracks -------------------------
+// It is a second bidder for the same five slots, so who gets it is a decision: measured over 1,258 corpus
+// turns it was available on 290 of them and inside the fused top five on 68, costing a few description
+// readings on a corpus whose names are not knowledge subjects. The runtime passes the names the knowledge
+// block tracks. The scored candidate is never gated - only the second one.
+{
+    const { history, chunks } = build();
+    const run = options => packRawEvidence(rankRawChunks(chunks, QUESTION, [], options), history,
+        { maxTokens: 1000, query: QUESTION });
+    const quoted = packed => quotedText(history, packed).some(text => text.includes(NEEDLE));
+    assert.ok(quoted(run({ names: ['薇斯珀'] })), 'a name with no gate at all still reaches its description');
+    assert.ok(quoted(run({ names: ['薇斯珀'], trackedNames: ['薇斯珀'] })), 'a tracked name gets the second candidate');
+    assert.ok(!quoted(run({ names: ['薇斯珀'], trackedNames: [] })),
+        'an untracked name does not: ' + JSON.stringify(run({ names: ['薇斯珀'], trackedNames: [] }).sources));
+    assert.equal(profileTargets(chunks, ['薇斯珀'], { introductionFor: [] }).length, 1,
+        'the scored candidate is never gated, only the introduction');
+    assert.equal(profileTargets(chunks, ['薇斯珀'], { introductionFor: ['别人'] }).length, 1,
+        'and the gate is per name');
+}

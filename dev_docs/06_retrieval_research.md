@@ -60,13 +60,16 @@ lexicon extension the describing sentences need), each mechanism measured alone 
 window-boundary case, both named in the ADR.
 
 The same change was checked against the natural track over the whole corpus (73 chats, 1,258 real-query turns,
-lexical only, the same chats on both sides): situation-term recall 85.0% -> 85.3% (3988/4673), asked-thing
-64.6% -> 64.9% (3060/4718), and the character-described proxy 26.6% -> 25.5% (97/380). That last number is only
-meaningful on the Chinese chats, where it reads 77.0% -> 75.7% (56/74): the proxy wants a descriptor word near
+lexical only, the same chats on both sides): situation-term recall 85.0% -> 85.5% (3996/4673), asked-thing
+64.6% -> 65.0% (3067/4718), and the character-described proxy 26.6% -> 27.4% (104/380). That last number is only
+meaningful on the Chinese chats, where it reads 77.0% -> 81.1% (60/74): the proxy wants a descriptor word near
 the name and the lexicon is Chinese, so the 306 non-Chinese readings cannot pass and dominate the aggregate. The
-corpus replay also takes its character names from the row `name` fields rather than the knowledge block, so it
-does not exercise the case the change fixes; what it does measure is the cost of the extra candidate, which is a
-few description readings on this corpus. Both instruments and the caveats are in ADR-0045.
+first reading of the instrument was `worse` than the baseline (25.5%), and a paired per-turn diff traced it to
+the descriptor lexicon changing which chunk the channel picks; splitting the vocabulary - the scoring list
+unchanged, the wider clothing-and-face list only placing the window - is what the table above measures. The
+introduction candidate is granted only to names the knowledge block tracks; gated, the 43-row table yields 14
+candidates, all of them describing or introducing rows, and 13 of the 14 are inside the fused top five. Both
+instruments and the caveats are in ADR-0045.
 
 The change was also measured against ADR-0044's hand-judged 43-name table. The baseline reproduced exactly
 (43/43), 3 of 43 top picks moved and none of them improves or regresses (both rows of each pair read as before),

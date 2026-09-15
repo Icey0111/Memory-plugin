@@ -81,10 +81,10 @@ export function planNaturalTurns(messages, { cadence = NATURAL_CADENCE, strategy
  * empty list is a lexical turn only when the run declared no dense channel.
  */
 export function scoreNaturalTurn(plan, { scorer = 'bm25', denseWeight = 0, packPolicy = 'greedy',
-    dense = [], evidenceTokens = 1000, entries = null, spanCost = false } = {}) {
+    dense = [], evidenceTokens = 1000, entries = null, spanCost = false, trackedNames } = {}) {
     const query = plan.plan.query;
     const ranked = rankRawChunks(plan.chunks, query, dense, { scorer, denseWeight,
-        visibleSources: plan.visible, names: plan.plan.profileNames });
+        visibleSources: plan.visible, names: plan.plan.profileNames, trackedNames });
     const packed = packRawEvidence(ranked, plan.history, { maxTokens: evidenceTokens, maxEntries: entries,
         visibleSources: plan.visible, policy: packPolicy, query, spanCost });
     const entities = entityRecall(plan.chunks, plan.history, { query, visibleSources: plan.visible,
