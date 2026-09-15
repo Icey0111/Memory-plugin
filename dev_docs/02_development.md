@@ -1140,3 +1140,38 @@ The placement question therefore stays open, and what it has to answer is narrow
 channel produced a descriptor or a rare-term region already gets a seat, and the rows that still miss are the ones
 neither a channel nor a content term can place. That is a coverage problem, not a placement rule.
 
+#### Rerank: the lever exists, the transport cannot reach it, and the effect is measured (2026-09-15)
+
+ADR-0016 measured a cross-encoder over the fused top 24 on 52 authored questions: 69% -> 87% answer-in-context,
+v3 gaining ten and losing one (p=0.012). It ships optional and off, and `narrative_rerank_model` is empty in this
+install, so **every run reported above was taken with rerank off**. Before deciding anything, the call itself was
+checked, and it is not the call the plugin makes:
+
+```
+POST {base}/rerank                                          -> 404
+POST {host}/api/v1/services/rerank/text-rerank/text-rerank  -> 200
+```
+
+The transport builds `resolveOpenAiCompatibleBaseUrl(base) + '/rerank'`, which this provider does not serve; the
+same key and the same model (`qwen3.7-text-rerank`) answer on Aliyun's native path with a different body and
+response shape (`input.query`/`input.documents` -> `output.results[].relevance_score`). Flipping the setting here
+would therefore fail open and record `rerank_used: false` - the fused order unchanged, and no visible error.
+
+Measured offline on the six held-out descriptive probes, through the shipped `rerankShortlist` and
+`applyRerankOrder`, with the lexical-only ranker so the comparison stays inside one setup:
+
+| run | needle | baseline | + rerank | top rows before -> after |
+| --- | --- | --- | --- | --- |
+| 1 | 跺一下脚上的雪 | miss | miss | [1,2,10] -> [2,16,4] |
+| 2 | 用指节敲两下 | tolerant | tolerant | [1,2,4] -> [2,4,16] |
+| 3 | 青瓷灯座 | strict | strict | [1,2,6] -> [6,28,20] |
+| 4 | 缺了一角的笠沿 | miss | miss | [1,24,18] -> [26,28,1] |
+| 5 | 门牙缺了一颗 | miss | **tolerant** | [1,32,8] -> [4,18,14] |
+| 2b | 小臂上 | miss | miss | [1,12,40] -> [4,14,16] |
+
+**strict 1/6 unchanged, tolerant 2/6 -> 3/6: one gain, no loss, one of six readings changed.** Two things the count
+does not show. The opening instruction row is pushed out of the top three in every single case, which is the slot
+contamination the quoted-slot audit measured (6 of 6 identity probes quote it). And run 2b is the residual: the
+needle's own row moves from third to first and the reading is **still** a miss, because the window quotes the wrong
+200 characters of it. **Rerank attacks selection, and selection is only half the wall.**
+
