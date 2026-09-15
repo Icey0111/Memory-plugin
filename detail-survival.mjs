@@ -155,6 +155,11 @@ const cleanId = value => String(value == null ? '' : value).trim();
  * The question names the subject and the needle is the value that proves the answer; a question that
  * contains its own needle is refused. Supply every surface form the reply might use (a Chinese term and its
  * English rendering), because a needle bound to one language cannot match a reply in another.
+ *
+ * An identity needle is also the name the turn's own instruction declares, and the archived instruction row is
+ * quotable: all six identity probes in the 2026-09-15 runs spent one of their five slots on it, against one of
+ * eight other probes. Keep the name out of the instruction, or read that probe as a control for the continuity
+ * channel only - it cannot separate memory from the prompt it was asked with.
  */
 export function parseTurnsFile(raw) {
     const errors = [];

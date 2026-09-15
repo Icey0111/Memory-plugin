@@ -1014,3 +1014,31 @@ artifact of the acceptance fixtures - a real user rarely writes such an instruct
 out-of-character instruction gets the same competition, and run 1's `d-place` was answered from that row earlier
 the same day. It is recorded as a lead, not as a finding: the next measurement is selection, not the window rule.
 
+#### The quoted slots, measured on the runs' own injection blocks (2026-09-15)
+
+The blocks the fourteen probe turns actually saw - the runtime's dense, rerank and window path, not an offline
+replay - hold 70 quoted sections. Seven of them (10%) are user rows, and all seven are the same row: floor 1, the
+opening instruction. Their appearance is conditioned on the question.
+
+| probe kind | probes | quoted the instruction row |
+| --- | --- | --- |
+| identity (`d-name`) | 6 | **6** |
+| every other detail | 8 | **1** |
+
+The identity probe is the one that reads its answer out of the user's own turn: the instruction
+("让一个新人物登场——石原，替人修船的男人") states the name, the archived row is quotable, and every identity
+probe spends one of its five slots there. That does not by itself make the probe unreadable - assistant rows carry
+the name too, which is why `instruction-only` never fired - but the probe cannot separate memory from the
+instruction it was asked with. The one non-identity case is run 5's `d-shoe`, where the instruction row took a
+slot while none of the rows carrying 门牙缺了一颗 was quoted: a real, if small, wasted slot (1 of 8).
+
+This corrects the offline held-out table above, which quoted row 1 in all six chats. That replay ran the ranker
+and packer without the dense channel, and the name boost then ranked the instruction row first; on the runtime
+path it does not. The offline numbers stand for the *window* question they were taken for, and were too strong
+for the slot question.
+
+No packer change follows. Ten percent of slots on driver-authored instructions is mostly an artifact of these
+fixtures - a real user row is in-character evidence and belongs in the pool - and a single non-identity case is not
+a population. What follows is a fixture rule, now in the schema: an identity needle is the name the instruction
+declares, so keep the name out of the instruction or read that probe as a channel control only.
+
