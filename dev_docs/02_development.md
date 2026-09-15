@@ -1196,3 +1196,42 @@ fetch-shaped adapter parses that number out and returns it, and an unnamed failu
 guess. `requestRerank` now prefers that shim whenever the host offers one. Live confirmation needs the next run:
 the wiring is proven at the shim (the probe above) and in the unit tests, not yet in a generation.
 
+#### Rerank reaches the provider in a real generation, and the floor-1 slot comes free (2026-09-15, run 2e)
+
+Run 2e is the `石原` fixture on a fresh chat (`turns-shiyuan.json`, `--detail-survival`, perTurn, 20 phase-1
+turns), taken with `narrative_rerank_model = qwen3.7-text-rerank` and `narrative_rerank_candidates = 24`. It is
+the first run in this log in which the rerank stage reached a provider.
+
+| snapshot | rerank_used | transport | documents | elapsed | provider tokens |
+| --- | --- | --- | --- | --- | --- |
+| turn 10 | false | - | - | - | - (`rerank_cost: null`) |
+| turn 20 | true | native | 14 | 110-119 ms | ~3.1k |
+| turn 21 (probe) / final | true | native | 23 | 175 ms | 10,454 |
+
+`rerank_error` is null throughout. Turn 10 recording no call is the stage's own guard rather than a failure: with
+every floor still unfolded there are fewer than two candidates the prompt does not already show, so the shortlist
+is empty and no request is spent - the shape the code comment already recorded from an earlier live run. The later
+snapshots give the real cost: one native call per generation once the first fold lands, 3.1k-10.5k provider tokens
+depending on the shortlist, so the ~10k figure quoted for this stage is the upper end and not the average.
+
+The same run re-read the quoted-slot audit with only the stage changed:
+
+| run | rerank | probe turns | quoted sections | user rows quoted |
+| --- | --- | --- | --- | --- |
+| 2c | off | 1 | 5 | 1 (floor 1) |
+| 2d | wired, CORS-blocked | 3 | 15 | 3 (floor 1 in each) |
+| 2e | on, native | 1 | 5 | 0 |
+
+In 2e the probe whose needle is the character's own name - the needle that sits literally inside floor 1's
+instruction text (`开场：让一个新人物登场——石原，替人修船的男人`) - quoted five assistant rows and no user row,
+against 1/1 and 3/3 with the stage off or blocked. That is the effect the offline held-out table predicted (the
+instruction row out of the top three in 6/6), now observed once inside a generation. **It is one live case, not a
+rate**, and run-to-run variance is not separated by it.
+
+The run cannot measure retrieval, and the cause is the acceptance's own adaptive probe set: the committed summary
+retained 6 of 6 declared details, so `buildProbeItems` had no dropped detail to ask about and probed the positive
+control alone. The rest of the reading is still clean - fold 21 then 41, both batches committed, fact survival 5/5
+then 6/6, no must-keep lost in a merge, gate PASS (20/20 floors, 42 chunks covered), one probe `summary-kept`
+`token=石原(verbatim, 100%)`, 0 refusals and 0 fabrications - but a live retrieval reading with the stage on needs
+a run whose merge drops something.
+
