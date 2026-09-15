@@ -904,3 +904,16 @@ run 2's real `d-tool` recovery as instruction-only. Measured: `node run-tests.mj
 no-transcript case. Re-read offline against the five runs' phase-1 rows, run 1's single `fabricated` and both of
 its `summary-kept` false readings become `visible-in-prompt`, and nothing else moves.
 
+Confirmed live the same day. A sixth run (`石原`, the same frozen fixture as run 2, sha256 `63fafbc2`) played on
+the fixed code: folded 21 then 41, both batches committed, and the record's `sources` block carries `known: true`
+with the full hit list for every declared item. Neither new reading fired - every phase-1 row was folded - and the
+run kept a genuine `fabricated`: the dropped `d-arm` was answered with "手臂上" plus an invented scar history
+("十五年前那场湖心解体、船主溺亡"), on `channel=none`.
+
+That reply also exposed the last invisible step. The tolerant reading accepted the run "臂上" for the needle
+"小臂上", so `conveys=true` rested on two characters of a phrase the reply had made *less* specific ("手臂上" is
+the arm, not the forearm). The token was already computed and thrown away. `summarizeDetailSurvival` now carries
+`token` and `how` on every outcome and the driver prints them (`token=臂上(run2)`), so a reader sees which run
+carried the verdict instead of trusting the boolean. The matcher is unchanged: ADR-0035's two-character floor is
+what recovers "缺角" for "缺了一角", and tightening it is a measured change, not a drive-by.
+

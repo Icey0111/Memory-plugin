@@ -511,11 +511,13 @@ const adjudicate = graded => {
     { id: 'd-real', kind: 'detail', needle: ['藤篓'], question: '他背着什么？', expect: 'dropped', turn: 2 },
   ];
   const reference = '谷口石上一片青苔；名字是白先生；他背着藤篓。';
-  const rows = adjudicate(items.map(item => gradeProbeItem(item,
+  const graded = items.map(item => gradeProbeItem(item,
     { injection: { current_state: null, reference },
-      replyText: '1. 青苔。2. 白先生。3. 藤篓。', questionText: buildProbeQuestion(items).text })));
+      replyText: '1. 青苔。2. 白先生。3. 藤篓。', questionText: buildProbeQuestion(items).text }));
+  const rows = adjudicate(graded);
+  const matches = new Map(graded.map(row => [row.id, row.replyMatch]));
   const sources = new Map(items.map(item => [item.id, needleSources(chat, item)]));
-  const survival = summarizeDetailSurvival({ rows, retention: null, items, sources });
+  const survival = summarizeDetailSurvival({ rows, retention: null, items, sources, matches });
   const outcomeOf = id => survival.outcomes.find(outcome => outcome.id === id).outcome;
   assert.equal(outcomeOf('d-visible'), 'visible-in-prompt', 'the transcript, not the memory, answered it');
   assert.equal(outcomeOf('d-name'), 'instruction-only', 'the evidence matched the user instruction row');
@@ -539,6 +541,19 @@ const adjudicate = graded => {
   assert.equal(unread.instructionOnly, 0);
   assert.equal(unread.visibleInPrompt, 0);
   assert.equal(unread.retrievalRecovered, 3, 'an unknown transcript keeps the ordinary reading');
+  assert.equal(survival.outcomes.find(outcome => outcome.id === 'd-visible').token, '青苔',
+    'the substring that carried the verdict is exposed');
+  // Run 2b showed why it has to be: the tolerant reading accepted "臂上" for the needle "小臂上" out of a
+  // reply that said "手臂上" and went on to invent the scar's history, and nothing in the report showed it.
+  const armItem = { id: 'd-arm', kind: 'detail', needle: ['小臂上'], question: '旧伤在哪儿？', expect: 'dropped', turn: 2 };
+  const armGraded = [gradeProbeItem(armItem, { injection: { current_state: null, reference: null },
+    replyText: '手臂上有一道旧疤，是十五年前那场湖心解体留下的。', questionText: '旧伤在哪儿？' })];
+  assert.equal(armGraded[0].replyMatch.token, '臂上');
+  const arm = summarizeDetailSurvival({ rows: adjudicate(armGraded), items: [armItem],
+    matches: new Map(armGraded.map(row => [row.id, row.replyMatch])) });
+  assert.deepEqual(arm.outcomes.map(outcome => [outcome.id, outcome.token, outcome.how, outcome.outcome]),
+    [['d-arm', '臂上', 'run2', 'fabricated']],
+    'a two-character run match names the run it used, and an invented value with no channel is still fabricated');
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');

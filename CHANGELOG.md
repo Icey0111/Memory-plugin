@@ -14,8 +14,10 @@ belongs in Git commits and pull requests.
   2026-09-15 runs this removes run 1's single fabrication and both of its `summary-kept` reads: its second batch had
   been refused, so rows 21-40 were still in the prompt and the model answered `落雁驿` and `阿箬` from the
   transcript. The helper reports `known`, so a caller with no transcript keeps the ordinary reading - the first
-  wiring read a missing chat as "the model never wrote it" and mislabelled a real recovery. Measured:
-  `node run-tests.mjs` 50/50 and `node check-syntax.mjs` 99 files.
+  wiring read a missing chat as "the model never wrote it" and mislabelled a real recovery. Every outcome now
+  also carries the exact token the reply matched and how it matched (`token=臂上(run2)`), so a tolerant
+  two-character run is visible instead of hidden behind the boolean. Measured: `node run-tests.mjs` 50/50 and
+  `node check-syntax.mjs` 99 files.
 
 - The opening greeting is hidden with the first committed summary batch instead of staying visible inside the
   hidden block. A chat's first row is the character's greeting, which no user turn contains; coverage is a prefix

@@ -449,7 +449,8 @@ export function gradeProbeItem(item, { injection = null, replyText = '', questio
  * it and the reply did not) and `summaryKeptNotConveyed`. `negativeLeaks` names a negative control whose
  * fabricated value turned up in a captured channel, which is a defective fixture rather than a model result.
  */
-export function summarizeDetailSurvival({ rows = [], retention = null, items = [], sources = null } = {}) {
+export function summarizeDetailSurvival({ rows = [], retention = null, items = [], sources = null,
+    matches = null } = {}) {
     const byId = new Map((rows || []).map(row => [row.id, row]));
     let summaryKept = 0;
     let summaryKeptNotConveyed = 0;
@@ -500,8 +501,13 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
         if (outcome === 'summary-kept') summaryKept += 1;
         if (outcome === 'refused') refused += 1;
         if (outcome === 'fabricated') fabricated += 1;
+        // The exact substring the reply matched. The tolerant reading accepts a run of two content
+        // characters, so a reader has to be able to see which run carried the verdict: run 2b's "小臂上"
+        // was conveyed by "手臂上" through the token "臂上", and that is only visible here.
+        const match = matches && typeof matches.get === 'function' ? matches.get(item.id) : null;
         outcomes.push({ id: item.id, kind: item.kind, factKind: item.factKind || item.kind,
-            channel, conveys, outcome, fixtureDefect: defect });
+            channel, conveys, outcome, fixtureDefect: defect,
+            token: match && match.matched ? match.token : null, how: match ? match.how : null });
     }
     return {
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,

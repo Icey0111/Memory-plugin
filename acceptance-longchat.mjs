@@ -392,7 +392,9 @@ if (detailMode) {
     }
     const adjudication = parseAdjudicationJsonl(graded.map(row => JSON.stringify(row.mechanical)).join('\n'));
     const adjudicationSummary = summarizeAdjudication(adjudication.rows);
-    const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items, sources: sourceRows });
+    const probeMatches = new Map(graded.map(row => [row.id, row.replyMatch]));
+    const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items,
+      sources: sourceRows, matches: probeMatches });
     const detailEvidence = buildDetailEvidence({ at: nowIso(), probeTurns: probes.map(probe => probe.turn),
       phase1Last, retention, positive, items, probes, adjudicationErrors: adjudication.errors,
       adjudicationSummary, survival, probeMode: parsedTurns.probeMode,
@@ -412,6 +414,7 @@ if (detailMode) {
     for (const outcome of survival.outcomes) {
       console.log('  probe ' + outcome.id + ' kind=' + outcome.kind + ' fact=' + outcome.factKind + ' channel=' + outcome.channel
         + ' conveys=' + outcome.conveys + ' -> ' + outcome.outcome
+        + (outcome.token ? ' token=' + outcome.token + '(' + outcome.how + ')' : '')
         + (outcome.fixtureDefect ? ' [fixture-defect]' : ''));
     }
     console.log('DETAIL-SURVIVAL evidence: ' + path.join(outDir, 'detail-survival.json'));
