@@ -888,10 +888,10 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     // nothing about the order, so none of them could say whether the prompt had moved at all.
     const rows = [{ chunk: { source: 'raw_2', index: 2 } }, { chunk: { source: 'raw_9', index: 9 } }];
     assert.deepEqual(rerankMoveMetrics(rows, [{ index: 0, score: 0.1 }, { index: 1, score: 0.9 }]),
-        { shortlist: 2, moved: 2, max_drop: 1, top1_changed: true,
+        { shortlist: 2, moved: 2, max_drop: 1, max_rise: 1, top1_changed: true,
             top_before: ['raw_2', 'raw_9'], top_after: ['raw_9', 'raw_2'] });
     assert.deepEqual(rerankMoveMetrics(rows, [{ index: 0, score: 0.9 }, { index: 1, score: 0.1 }]),
-        { shortlist: 2, moved: 0, max_drop: 0, top1_changed: false,
+        { shortlist: 2, moved: 0, max_drop: 0, max_rise: 0, top1_changed: false,
             top_before: ['raw_2', 'raw_9'], top_after: ['raw_2', 'raw_9'] },
         'a provider that agrees with the fusion records no movement');
     assert.equal(rerankHead(rows, [{ index: 0, score: 0.9 }, { index: 1, score: 0.1 }])[0].chunk.source, 'raw_2');
@@ -911,15 +911,26 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const six = ['a', 'b', 'c', 'd', 'e', 'f'].map((source, index) => ({ chunk: { source, index } }));
     const reversed = six.map((_, index) => ({ index, score: index }));
     const sourcesOf = rows => rows.map(row => row.chunk.source);
-    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity)), ['f', 'e', 'd', 'c', 'b', 'a']);
-    assert.deepEqual(sourcesOf(rerankHead(six, reversed, 1)), ['f', 'a', 'b', 'c', 'd', 'e'], 'the fused head may fall one place');
-    assert.deepEqual(sourcesOf(rerankHead(six, reversed, 2)), ['f', 'e', 'a', 'b', 'c', 'd']);
-    assert.deepEqual(sourcesOf(rerankHead(six, reversed, 5)), sourcesOf(rerankHead(six, reversed, Infinity)),
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, Infinity)), ['f', 'e', 'd', 'c', 'b', 'a']);
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed)), ['e', 'f', 'd', 'c', 'b', 'a'], 'the shipped default bounds the rise at four and leaves the drop alone');
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, 1, Infinity)), ['f', 'a', 'b', 'c', 'd', 'e'], 'the fused head may fall one place');
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, 2, Infinity)), ['f', 'e', 'a', 'b', 'c', 'd']);
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, 5, Infinity)), sourcesOf(rerankHead(six, reversed, Infinity, Infinity)),
         'a bound past the end of the shortlist is the unbounded stage');
-    assert.deepEqual(sourcesOf(rerankHead(six, reversed)), ['f', 'e', 'd', 'c', 'b', 'a'], 'the default is unbounded');
-    assert.equal(rerankMoveMetrics(six, reversed).max_drop, 5, 'unbounded, the fused head falls the whole way');
-    assert.equal(rerankMoveMetrics(six, reversed, 4).max_drop, 4, 'bounded, and the record says the bound was reached');
-    assert.equal(rerankMoveMetrics(six, reversed, 2).max_drop, 2);
+    // The complementary bound, which is the one the shipped default applies: promotion is capped, demotion is not.
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, 0)), ['a', 'b', 'c', 'd', 'e', 'f'], 'no rise is the fused order');
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, 1)), ['b', 'c', 'd', 'e', 'f', 'a']);
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, 2)), ['c', 'd', 'e', 'f', 'b', 'a']);
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, 3)), ['d', 'e', 'f', 'c', 'b', 'a']);
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, 5)), sourcesOf(rerankHead(six, reversed, Infinity, Infinity)),
+        'a rise bound past the end of the shortlist is the unbounded stage');
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, 4)), ['e', 'f', 'd', 'c', 'b', 'a'], 'the shipped rise bound is four');
+    assert.equal(rerankMoveMetrics(six, reversed, Infinity, Infinity).max_drop, 5, 'unbounded, the fused head falls the whole way');
+    assert.equal(rerankMoveMetrics(six, reversed, 4, Infinity).max_drop, 4, 'bounded, and the record says the bound was reached');
+    assert.equal(rerankMoveMetrics(six, reversed, 2, Infinity).max_drop, 2);
+    const risen = rerankMoveMetrics(six, reversed, Infinity, 4);
+    assert.equal(risen.max_rise, 4, 'the rise bound is reported, not only the drop');
+    assert.equal(risen.max_drop, 5, 'and demotion is still unbounded, so the fused head can fall the whole way');
     assert.equal(used.diagnostics.rerank_cost.moved, 0, 'the working reranker above agreed with the fusion');
     assert.equal(failed.diagnostics.rerank_cost.moved, 0, 'and a failed call records that nothing moved');
     const off = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });

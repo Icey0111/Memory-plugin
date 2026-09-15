@@ -52,7 +52,7 @@ if(phase==='prepare') {
         const failed=rerank&&(!response||response.error);
         // Unbounded on purpose: this experiment measures the provider's own order against the fusion, which
         // is how the offline tables in dev_docs were measured. The shipped stage bounds how far it may demote.
-        const ranked=rerank&&!failed?applyRerankOrder(s.ranked,pick,response.rows,Infinity):s.ranked;
+        const ranked=rerank&&!failed?applyRerankOrder(s.ranked,pick,response.rows,Infinity,Infinity):s.ranked;
         const packed=packRawEvidence(ranked,data.history,{maxTokens:1000,visibleSources:visible});
         results.push({id:s.id,strategy:s.strategy,dense:s.dense,rerank,failed:Boolean(failed),
             hit:packed.text.includes(s.needle),tokens:packed.tokens,slots:packed.sources.length,

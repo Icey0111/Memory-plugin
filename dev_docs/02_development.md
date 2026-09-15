@@ -1406,3 +1406,45 @@ committed still passed the "phase 1 is summarized and its original rows are hidd
 per-outcome `visible-in-prompt` classification caught it - the gate should refuse on the fold state as well. And
 `ab-bound-2`'s `d-manner` is credited through the three-character run `指节敲`.
 
+#### The rise bound is the variant that keeps both properties (2026-09-16, runs ab-rise-1..3)
+
+Bounding the drop failed because the instruction row has to be demoted *a long way*. The same machinery pointed
+the other way does not have that problem: cap how far a candidate may **rise** and demotion stays free, so the
+opening instruction row still leaves the head while the head itself is still drawn from the fusion's own leaders
+instead of being filled by whatever the provider liked at position twenty.
+
+`rerankHead(pick, order, maxDrop, maxRise)` implements both, and they compose: a candidate is placed no earlier
+than its release (`from - maxRise`) and no later than its deadline (`from + maxDrop`). A forced candidate is
+always released, because the release is at most `from` and the deadline is at least `from`, so the two bounds
+cannot deadlock. `maxRise = 0` is the fused order exactly, either bound at `pick.length - 1` or more stops
+bounding that direction, and `(Infinity, Infinity)` is the stage as it was first shipped. `rerank_cost` reports
+`max_rise` next to `max_drop`.
+
+Four arms, three runs each, the same `path2-shiyuan` fixture, each run on its own fresh chat:
+
+| arm | runs | probes | dropped details probed | recovered | retrieved-not-conveyed | user-row slots (of which `raw_2`) | fused #1 kept the head |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| off | 3 | 13 | 4 | 2 | 2 | 6 (6) | n/a |
+| on, unbounded | 3 | 13 | 4 | 2 | 2 | 4 (0) | 0 of 22 captures |
+| on, drop <= 4 | 2 | 10 | 4 | 3 | 1 | 5 (4) | 4 of 39 |
+| on, rise <= 4 | 3 | 14 | 5 | 5 | 0 | 1 (1) | 14 of 37 |
+
+(`ab-bound-3` is excluded from the drop arm - its second batch never committed. "Captures" counts the diagnostics
+objects the snapshots carry, including the duplicated state each snapshot pair writes.)
+
+**The rise bound is exact**: `max_rise: 4` in all 23 captures of the three runs, never more, while `max_drop`
+runs free at 9-20. It is the only arm that keeps the instruction row out of the evidence **and** gives the fused
+head back its place: `raw_2` was quoted once in fourteen probes, and the fused first candidate kept the head in
+14 of 37 captures against none of 22 when unbounded.
+
+It is also the only arm with no `retrieved-not-conveyed` at all, and it recovered all five dropped details it
+probed - `d-manner` through `用指节敲`, `d-arm` through `小臂上`, and `d-promise` through a **verbatim**
+`三天内补齐船底`. **That is five samples, not a rate**, and it is the reason to keep measuring rather than to
+declare the stage fixed.
+
+So the shipped default is `maxRise = 4` with `maxDrop` unbounded. One interaction is unmeasured and is recorded
+here as the open risk: the situation channel's late-ranked rescue - the returning character whose introduction the
+fusion ranked low, which `RERANK_ENTITY_EXTRA` exists to seat - now has its rise bounded too, so a row the fusion
+put at twenty can no longer be lifted to the head. None of these probes covers that case; a returning-character
+fixture would.
+

@@ -12,8 +12,21 @@ belongs in Git commits and pull requests.
   candidate sources before and after the reorder; a failed call records `moved: 0` rather than leaving the
   reader to infer it from the error. Ten live runs recorded `rerank_used` and its cost and nothing about the
   order, so none of them could say whether a configured reranker had reordered the prompt at all. The metric is
-  a pure function of the two orders, so it adds no provider cost. `max_drop` reports the furthest any candidate
-  fell from its fused position.
+  a pure function of the two orders, so it adds no provider cost. `max_drop` and `max_rise` report the furthest
+  any candidate fell below, and rose above, its fused position.
+
+### Changed
+
+- The cross-encoder rerank stage may no longer lift a candidate more than four places above where the fusion
+  ranked it; demotion stays unbounded. Measured on 22 live captures, the stage was replacing essentially the
+  whole shortlist and the fused first candidate lost the head in every single one, while the answer-level on/off
+  comparison over the same fixture came out even. Bounding the *fall* was implemented and measured first and is
+  not what ships: it held exactly (`max_drop: 4` in all 39 captures) but it handed the opening-instruction row
+  back into the evidence slots - three of four probes in one run, against one of 44 probes unbounded - because
+  clearing that row out of the head needs a large demotion. Bounding the rise keeps both properties: the fused
+  first candidate kept the head in 14 of 37 captures against none of 22, and the instruction row stayed out.
+  Promotion of a row the fusion ranked far down is now limited, which also limits the situation channel's
+  late-ranked rescue; that interaction is not yet measured.
 
 ### Fixed
 
