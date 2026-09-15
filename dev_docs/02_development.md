@@ -813,3 +813,26 @@ recalls lost** (4,006 -> 3,921), and two offline window tests fail - `test-evide
 `test-profile-window`, whose fixtures assert exact starts. Rejected and reverted, and the assertions were not
 adjusted to fit the change. The first shape - a row that never ranks - is the five-slot competition again.
 
+### A covered greeting is hidden with its first batch (2026-09-15)
+
+The live transcript of a committed ten-turn batch showed two visible mismatches at once. Rows 1-20 were folded,
+but the character's greeting (row 0) stayed fully visible inside the hidden block; and the host's single "context
+starts here" line - SillyTavern/TauriTavern's `.lastInContext`, `border-top: 3px dotted` placed at
+`chat.length - openai_messages_count` - sat on row 20, the last *hidden* row, instead of row 21. One line cannot
+represent a hidden set that is not a contiguous prefix, so the faded block appeared to be in context and the
+visible greeting above the line appeared hidden. Folding is also what makes a covered row quotable (N7), so the
+greeting was the one summarized row retrieval was forbidden to quote.
+
+`applyNarrativeFolds` named only complete user turns, so `completeTurnRanges` never mentioned the greeting even
+though the summary's coverage is a prefix that starts there. The greeting now falls under the same
+every-chunk-covered rule, gated on at least one complete turn being covered so a claim that names nothing but the
+greeting hides nothing (ADR-0047, which supersedes the greeting clause of ADR-0023). Measured: `node run-tests.mjs`
+50/50 and `node check-syntax.mjs` 99 files; the natural track already excluded the greeting from its simulated
+`visible` set, so the 1,296-turn corpus paired check is unchanged by construction - the runtime now agrees with
+the instrument rather than the instrument moving.
+
+The same live run left the second batch uncommitted: `pending_floors` 10 and `summary_failures` 2, both refusals
+at the `over_budget` stage (a body past the ceiling, and its one body repair also over). That is why floors 21-40
+stayed visible in that transcript - nothing hides a row until an accepted summary covers it. It is a
+summary-commit reliability problem, separate from the fold projection, and it stays open.
+
