@@ -372,7 +372,14 @@ export function attributeChannel(injection, item) {
     const evidence = matchNeedle(injection && injection.reference, item.needle);
     const channel = continuity.matched && evidence.matched ? 'both'
         : continuity.matched ? 'continuity' : evidence.matched ? 'evidence' : 'none';
+    // Two readings of the same channel, because they answer different questions. The summary is a derived
+    // paraphrase, so the tolerant match is right for it; the evidence block is a *quotation* of the original,
+    // and a quotation either contains the detail or does not. Measured over the 37 recorded runs: 73 of 82
+    // positive probes had the evidence channel matched, but only 53 of those were the needle itself - 20 were
+    // a partial run, and 12 of the 28 recorded "retrieval recoveries" rest on one. `evidenceFull` is the
+    // reading a quotation has to earn, and both are recorded so the split is visible rather than assumed.
     return { channel, continuity: continuity.matched, evidence: evidence.matched,
+        evidenceFull: evidence.matched && evidence.how === 'verbatim',
         continuityMatch: continuity, evidenceMatch: evidence };
 }
 
@@ -438,7 +445,7 @@ export function looksLikeLanguageMismatch(item, replyText) {
  * evidence carried but the reply missed is `model-error`.
  */
 export function gradeProbeItem(item, { injection = null, replyText = '', questionText = '', probeFailed = false } = {}) {
-    const { channel, continuity, evidence, continuityMatch, evidenceMatch } = attributeChannel(injection, item);
+    const { channel, continuity, evidence, evidenceFull, continuityMatch, evidenceMatch } = attributeChannel(injection, item);
     const replyMatch = matchNeedle(replyText, item.needle);
     const needleInReply = replyMatch.matched;
     // The leak check stays strict: a question that contains the needle verbatim gives its own answer away.
@@ -454,10 +461,10 @@ export function gradeProbeItem(item, { injection = null, replyText = '', questio
         languageMismatch ? 'needle-language-mismatch' : null,
         failed ? 'probe-turn-error' : null].filter(Boolean).join('; ');
     return {
-        id: item.id, kind: item.kind, channel, continuity, evidence, needleInReply, leaked, languageMismatch,
+        id: item.id, kind: item.kind, channel, continuity, evidence, evidenceFull, needleInReply, leaked, languageMismatch,
         continuityMatch, evidenceMatch, replyMatch,
         mechanical: {
-            id: item.id, machineVerdict: needleInReply ? 'hit' : 'miss',
+            id: item.id, machineVerdict: needleInReply ? 'hit' : 'miss', evidenceFull,
             promptEvidence: channel === 'none' ? 'missing' : 'sufficient',
             replyConveys: needleInReply, fixtureDefect, carrier: channel, note,
         },
@@ -475,12 +482,13 @@ export function gradeProbeItem(item, { injection = null, replyText = '', questio
  * fabricated value turned up in a captured channel, which is a defective fixture rather than a model result.
  */
 export function summarizeDetailSurvival({ rows = [], retention = null, items = [], sources = null,
-    matches = null } = {}) {
+    matches = null, quotations = null } = {}) {
     const byId = new Map((rows || []).map(row => [row.id, row]));
     let summaryKept = 0;
     let summaryKeptNotConveyed = 0;
     let retrievalRecovered = 0;
     let retrievedNotConveyed = 0;
+    let recoveredFullNeedle = 0;
     let refused = 0;
     let fabricated = 0;
     let negativeLeaks = 0;
@@ -497,6 +505,10 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
         const defect = row ? row.fixtureDefect === true : false;
         if (defect) fixtureDefects += 1;
         const source = sources && typeof sources.get === 'function' ? sources.get(item.id) : null;
+        // Whether the quote held the needle itself. It travels beside the adjudication rows rather than inside
+        // them: the adjudication schema is a fixed shape and the grader is not the place for a quotation test.
+        const quote = quotations && typeof quotations.get === 'function' ? quotations.get(item.id) : null;
+        const fullQuote = quote === true;
         const sourceKnown = Boolean(source && source.known === true);
         const sourceVisible = sourceKnown && source.visible === true;
         const writtenByModel = !sourceKnown || source.writtenByModel !== false;
@@ -520,7 +532,10 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
             if (!conveys) summaryKeptNotConveyed += 1;
         } else if (channel === 'evidence') {
             outcome = conveys ? 'retrieval-recovered' : 'retrieved-not-conveyed';
-            if (conveys) retrievalRecovered += 1; else retrievedNotConveyed += 1;
+            if (conveys) {
+                retrievalRecovered += 1;
+                if (fullQuote) recoveredFullNeedle += 1;
+            } else retrievedNotConveyed += 1;
         } else {
             outcome = conveys ? 'fabricated' : 'refused';
         }
@@ -534,13 +549,14 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
         const coverage = matchCoverage(item, match);
         if (coverage !== null && coverage < 1) partialMatches += 1;
         outcomes.push({ id: item.id, kind: item.kind, factKind: item.factKind || item.kind,
-            channel, conveys, outcome, fixtureDefect: defect,
+            channel, conveys, outcome, fixtureDefect: defect, evidenceFull: fullQuote,
             token: match && match.matched ? match.token : null, how: match ? match.how : null, coverage });
     }
     return {
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,
         items: (items || []).length,
         summaryKept, summaryKeptNotConveyed, retrievalRecovered, retrievedNotConveyed,
+        recoveredFullNeedle, recoveredPartialOnly: retrievalRecovered - recoveredFullNeedle,
         refused, fabricated, negativeLeaks, fixtureDefects, bothChannels, visibleInPrompt, instructionOnly,
         partialMatches, outcomes,
         retention: retention ? {
@@ -667,6 +683,11 @@ export function formatDetailReport(survival) {
     if (survival.visibleInPrompt) extra.push('原文仍在提示 ' + survival.visibleInPrompt + ' 个');
     if (survival.instructionOnly) extra.push('仅指令行命中 ' + survival.instructionOnly + ' 个');
     if (survival.partialMatches) extra.push('不完整命中 ' + survival.partialMatches + ' 个');
+    // The quotation test, next to the tolerant one: a recovery whose quote held a two-character run is not the
+    // same reading as one whose quote held the detail.
+    if (survival.retrievalRecovered) {
+        extra.push('其中原文含完整 needle ' + survival.recoveredFullNeedle + ' 个');
+    }
     return 'DETAIL-SURVIVAL: 摘要保留了 ' + survival.summaryKept + ' 个 / 检索取回 ' + survival.retrievalRecovered
         + ' 个 / 拒绝 ' + survival.refused + ' 个 / 编造 ' + survival.fabricated + ' 个'
         + (extra.length ? '（' + extra.join('，') + '）' : '')

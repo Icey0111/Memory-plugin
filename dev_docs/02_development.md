@@ -1540,3 +1540,41 @@ reached the evidence in **six of eighteen probes** (every one `raw_2`), against 
 five-slot budget. The instruction-slot benefit the rise bound was chosen for is therefore real but
 fixture-dependent, and the dense fixture is the harder case.
 
+#### The window is not the failing stage (2026-09-16)
+
+The next change was going to be window placement. The log's own trim geometry (2026-09-15) had counted ten needle
+occurrences 63-207 characters outside the span quoted for the row that carries them, and two live misses -
+`path2-a`'s refusal and `2f`'s decline - read as "the right row, the wrong region". Before writing a rule, the
+whole recorded corpus was re-read against the needle each probe was actually asking about: 37 runs, 92 probes
+with a quoted block, looking up the needle's own row in that run's snapshot and asking whether the needle lies
+inside the span quoted for that row.
+
+| reading | count |
+| --- | --- |
+| probes with a quoted evidence block | 92 |
+| ... a needle-carrying row was quoted, needle inside its span | 36 |
+| ... a needle-carrying row was quoted, needle outside its span | **0** |
+| positive probes with no channel at all | 3, every one a selection miss |
+
+**Zero window misses.** Whenever a row carrying the needle was quoted, the quote contained the needle. The
+2026-09-15 geometry predates the seat and placement work, and it counted every declared needle against every
+quoted row rather than the needle the probe was asking about - a row quoted for another reason can hold a
+*different* needle outside its span, which costs nothing. The three retrieval failures in the whole corpus are
+selection: the detail's own rows were never quoted at all (`ret3-b`'s `d-voice`, `ret3-c`'s `d-hollow` and
+`d-belt`). **The window rule planned for this change was therefore not written**, and the query-term coverage
+signal that would have driven it separates the correct window from the quoted one in only 5 of 80 near-misses -
+none of them the cause of a wrong answer.
+
+#### A quotation is now read as a quotation (2026-09-16)
+
+The re-read turned up the reading that does need fixing. Over the same 37 runs, **73 of 82 positive probes had the
+evidence channel matched, but only 53 were the needle itself**; the other 20 were a partial run (8 `run2`, 8
+`run3`, 4 `run4`). Of the 28 recorded `retrieval-recovered` outcomes, **12 rested on a partial run** - the quote
+did not contain the detail, so the model could not have copied it and the recovery claim is not the one the
+number looks like. The summary is a derived paraphrase and the tolerant match is right for it; the evidence block
+is a *quotation* of the original, and a quotation either contains the detail or it does not.
+
+`attributeChannel` now returns `evidenceFull` (the needle itself) beside `evidence` (the tolerant tier), the
+driver carries it into the summary, and the report prints 其中原文含完整 needle N 个 next to 检索取回 N 个. The
+classification is unchanged, so the split is visible without re-reading the old numbers as new.
+

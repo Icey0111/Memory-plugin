@@ -393,8 +393,11 @@ if (detailMode) {
     const adjudication = parseAdjudicationJsonl(graded.map(row => JSON.stringify(row.mechanical)).join('\n'));
     const adjudicationSummary = summarizeAdjudication(adjudication.rows);
     const probeMatches = new Map(graded.map(row => [row.id, row.replyMatch]));
+    // The quotation reading, kept beside the adjudication rows: a recovery whose quote held a run of the
+    // needle is a different claim from one whose quote held the detail.
+    const probeQuotes = new Map(graded.map(row => [row.id, row.evidenceFull === true]));
     const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items,
-      sources: sourceRows, matches: probeMatches });
+      sources: sourceRows, matches: probeMatches, quotations: probeQuotes });
     const detailEvidence = buildDetailEvidence({ at: nowIso(), probeTurns: probes.map(probe => probe.turn),
       phase1Last, retention, positive, items, probes, adjudicationErrors: adjudication.errors,
       adjudicationSummary, survival, probeMode: parsedTurns.probeMode,

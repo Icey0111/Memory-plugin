@@ -139,6 +139,14 @@ const adjudicate = graded => {
   assert.equal(attributeChannel({ current_state: '托林·瓦什', reference: '水囊上有三块皮子。' }, item).channel, 'evidence');
   assert.equal(attributeChannel({ current_state: '摘要说三块皮子。', reference: null }, item).channel, 'continuity');
   assert.equal(attributeChannel({ current_state: '三块皮子', reference: '三块皮子' }, item).channel, 'both');
+  // The quotation reading is strict where the channel reading is not: the evidence block is a quote of the
+  // original, so a run of the needle in it is not the needle. Measured over 37 recorded runs, 20 of the 73
+  // evidence-channel matches were a partial run, and 12 of the 28 recorded recoveries rested on one.
+  const phrase = { id: 'd', kind: 'detail', needle: ['用指节敲两下'] };
+  assert.equal(attributeChannel({ current_state: '', reference: '他抬起手指，用指节敲两下身旁的树干。' }, phrase).evidenceFull, true);
+  const partialQuote = attributeChannel({ current_state: '', reference: '他用指节在门框上叩了叩。' }, phrase);
+  assert.equal(partialQuote.evidence, true, 'the tolerant tier still matches a run of the needle');
+  assert.equal(partialQuote.evidenceFull, false, 'the quotation reading does not');
   // thisTurn is the block this generation set; before is the previous turn's block.
   const injection = { thisTurn: { current_state: null, reference: '水囊上有三块皮子。' },
     before: { current_state: '三块皮子', reference: null } };
@@ -206,10 +214,15 @@ const adjudicate = graded => {
   const replyText = '1. 三块皮子。2. 一个铜环。3. 打的是死结。4. 刃口豁了口。5. 托林·瓦什。6. 我不记得工具袋的颜色。';
   const injection = { current_state: '托林·瓦什住在断桅渡；他用一种胶修补湿木头。',
     reference: '水囊上是三块皮子；耳垂上有铜环；靴带打的是死结；斧刃豁了口。' };
-  const rows = adjudicate(items.map(item => gradeProbeItem(item, { injection, replyText, questionText: question.text })));
-  const survival = summarizeDetailSurvival({ rows, retention, items });
+  const graded = items.map(item => gradeProbeItem(item, { injection, replyText, questionText: question.text }));
+  const rows = adjudicate(graded);
+  const survival = summarizeDetailSurvival({ rows, retention, items,
+    quotations: new Map(graded.map(row => [row.id, row.evidenceFull === true])) });
   assert.equal(survival.summaryKept, 1, 'the positive control came from continuity');
   assert.equal(survival.retrievalRecovered, 4, 'all four dropped details came back from evidence and were used');
+  assert.equal(survival.recoveredFullNeedle, 4, 'and the quote held each needle itself, not just a run of it');
+  assert.equal(survival.recoveredPartialOnly, 0);
+  assert.equal(survival.recoveredFullNeedle + survival.recoveredPartialOnly, survival.retrievalRecovered);
   assert.equal(survival.refused, 1, 'the never-written value was refused rather than invented');
   assert.equal(survival.fabricated, 0);
   assert.equal(survival.retrievedNotConveyed, 0);

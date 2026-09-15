@@ -7,6 +7,13 @@ belongs in Git commits and pull requests.
 
 ### Added
 
+- The detail-survival acceptance reports whether the evidence quotation contained the detail itself, not only
+  whether a run of it matched. Over the 37 recorded runs, 73 of 82 positive probes had the evidence channel
+  matched but only 53 were the needle itself - 20 were a two- to four-character run - and 12 of the 28 recorded
+  `retrieval-recovered` outcomes rested on one of those. The summary is a derived paraphrase, so the tolerant
+  match stays right for it; the evidence block is a quotation of the original, and `evidenceFull` is that
+  reading. The report prints it beside the recovery count.
+
 - The rerank diagnostics record what the stage changed, not only that it ran. `rerank_cost` now carries
   `shortlist`, `moved` (shortlist positions whose occupant changed), `top1_changed`, and the first three
   candidate sources before and after the reorder; a failed call records `moved: 0` rather than leaving the
