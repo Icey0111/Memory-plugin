@@ -462,4 +462,18 @@ The candidate changed no probe reading (9/10 before and after), so it was revert
 would reach the row is either nominating every row that mentions the name - k bidders for five slots, whose cost
 the corpus instrument can measure - or a channel that maps a question's attribute to the row that answers it.
 Both are open, and both need the same two-instrument acceptance this attempt failed.
+### A second rejected attempt: nominating every row that mentions the name
+
+The open path above - nominate every hidden row that mentions the character, so the row that phrases a fact is
+always among the candidates - was implemented with a bound of six further rows per character and measured. It is
+**rejected**: the labelled probes fall from **9/10 to 7/10**, because six more nominations at the character
+channel's weight are six more bidders for the same five slots, and the extra weight displaces the rows that were
+carrying the answers (two questions answered from the introduction row lose it). Two tests fail for the same
+reason and their assertions were not adjusted to fit it.
+
+That is the product contract's own warning in its general form: coverage bought by nominating more is paid for in
+the precision of what is quoted. Reaching the row that *answers* a question therefore needs a targeted mechanism -
+a question attribute mapped to the row that answers it, or a nomination that does not compete at the same weight
+as the rows already chosen - rather than more candidates at the same weight. The change is reverted and nothing
+shipped.
 
