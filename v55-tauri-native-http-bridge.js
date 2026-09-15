@@ -99,13 +99,18 @@ export function resolveNativeRequestBudgetMs(body, overrideMs = null) {
     return Math.min(NATIVE_REQUEST_BUDGET_MAX_MS, NATIVE_REQUEST_BUDGET_BASE_MS + extra);
 }
 
-export async function requestEmbeddingJsonViaTauriNative({ endpoint, apiKey, body, timeoutMs = null }) {
+/**
+ * One host-native JSON round trip, shared by every caller of the shim.
+ *
+ * `label` keeps each caller's error text intact while the transport mechanics - the readiness wait, the
+ * bounded wait, the "not an object" check - live in one place.
+ */
+async function invokeNativeJson({ request, body, timeoutMs = null, label }) {
     const host = getHost();
     if (!host) throw new Error('TauriTavern Host ABI 不可用。');
     try { await (host.ready ?? globalThis.window?.__TAURITAVERN_MAIN_READY__ ?? Promise.resolve()); } catch {}
     const safeInvoke = getTauriSafeInvoke();
     if (!safeInvoke) throw new Error('TauriTavern native invoke broker 不可用。');
-    const request = buildTauriEmbeddingInvoke({ endpoint, apiKey, body });
     const budgetMs = resolveNativeRequestBudgetMs(body, timeoutMs);
     let timer = null;
     try {
@@ -127,10 +132,80 @@ export async function requestEmbeddingJsonViaTauriNative({ endpoint, apiKey, bod
     } catch (error) {
         const message = String(error?.message || error || 'unknown native transport error');
         const timedOut = error?.code === NATIVE_TIMEOUT_MARK || /timed out|timeout|time-out/i.test(message);
-        throw new Error(`TauriTavern Native HTTP Embedding 请求失败：${message}${timedOut ? NATIVE_TIMEOUT_HINT : ''}`);
+        throw new Error(`${label}失败：${message}${timedOut ? NATIVE_TIMEOUT_HINT : ''}`);
     } finally {
         if (timer) clearTimeout(timer);
     }
+}
+
+export async function requestEmbeddingJsonViaTauriNative({ endpoint, apiKey, body, timeoutMs = null }) {
+    return await invokeNativeJson({ request: buildTauriEmbeddingInvoke({ endpoint, apiKey, body }), body,
+        timeoutMs, label: 'TauriTavern Native HTTP Embedding 请求' });
+}
+
+/**
+ * The same shim for a body that is not an embedding.
+ *
+ * `buildTauriEmbeddingInvoke` validates the embedding shape because that is the only body it was written for;
+ * the shim itself carries any JSON. A rerank body is not an embedding, and a rerank that keeps using the
+ * WebView's `fetch` never reaches the provider at all - measured on the install this was written for, where
+ * the stage failed with "Failed to fetch" in 34 ms while the embedding path, which left the WebView behind for
+ * this shim, worked.
+ */
+export function buildTauriJsonInvoke({ endpoint, apiKey, body }) {
+    const url = clean(endpoint, 4000).replace(/\/+$/, '');
+    const key = clean(apiKey, 20000);
+    const payload = body && typeof body === 'object' && !Array.isArray(body) ? structuredClone(body) : null;
+    if (!url || !/^https?:\/\//i.test(url)) throw new Error('原生 HTTP endpoint 无效。');
+    if (!key) throw new Error('原生 HTTP API Key 为空。');
+    if (!payload) throw new Error('原生 HTTP 请求体无效。');
+    return {
+        command: 'generate_chat_completion',
+        args: {
+            requestId: requestId().replace('aumemb-', 'aumjson-'),
+            dto: {
+                chat_completion_source: 'custom',
+                custom_api_format: 'openai_compat',
+                reverse_proxy: `${url}?`,
+                proxy_password: key,
+                model: clean(payload.model || 'aetheria-native-http', 1000),
+                messages: [{ role: 'user', content: 'Aetheria native JSON transport shim.' }],
+                custom_include_body: payload,
+                custom_exclude_body: ['messages', 'prompt'],
+                custom_include_headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+            },
+        },
+        effectiveUrl: `${url}?/chat/completions`,
+    };
+}
+
+export async function requestJsonViaTauriNative({ endpoint, apiKey, body, timeoutMs = null }) {
+    return await invokeNativeJson({ request: buildTauriJsonInvoke({ endpoint, apiKey, body }), body,
+        timeoutMs, label: 'TauriTavern Native HTTP 请求' });
+}
+
+/**
+ * A `fetch`-shaped adapter over that shim, so existing callers need no new shape.
+ *
+ * The host reports a provider failure as a thrown error that names the status ("Custom OpenAI endpoint failed
+ * with status 404"), because the ABI has no response object. A caller that decides by status - the rerank
+ * transport retries the provider's own path on exactly a 404 - needs that number back, so it is parsed out and
+ * returned as a response that is not ok. A failure the message does not name becomes 502 rather than a guess.
+ */
+export function tauriNativeFetch(apiKey) {
+    return async (url, init = {}) => {
+        let body = null;
+        try { body = init && init.body ? JSON.parse(String(init.body)) : null; } catch { body = null; }
+        try {
+            const payload = await requestJsonViaTauriNative({ endpoint: String(url), apiKey, body });
+            return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+        } catch (error) {
+            const message = String(error?.message || error);
+            const named = /status\s+(\d{3})/i.exec(message);
+            const status = named ? Number(named[1]) : 502;
+            return { ok: false, status, json: async () => null, text: async () => message };
+        }
+    };
 }
 
 // Requests leaving through the host native stack inherit the host's own connect/read budget and

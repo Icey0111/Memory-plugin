@@ -1183,3 +1183,16 @@ end through the shipped `requestRerank` against the live provider: `transport: n
 330 ms and 276 provider tokens for three documents. The stage stays off until a model is named, so this changes
 nothing for an install that never configured one.
 
+Turning it on then found the last gap, which no offline test could show. With `narrative_rerank_model` set, the
+live run recorded `rerank_used: false`, `rerank_error: "Failed to fetch"`, `documents: 20`, `ms: 34` - the
+stage ran, and the provider was never reached. The WebView's `fetch` is blocked by CORS for provider traffic;
+the embedding path had left it behind for the host's native HTTP invoke shim long ago (`v55-tauri-native-http-bridge.js`,
+"TauriTavern WebView fetch() can be blocked by browser CORS even though the native Rust backend can reach the same
+provider"), and the rerank transport had not. The shim was probed first and does carry a rerank body: a direct
+`generate_chat_completion` with the native path answered `output.results` plus usage. It also reports a provider
+failure as a thrown error that *names* the status ("Custom OpenAI endpoint failed with status 404"), because the
+ABI has no response object, while the compatible path it must fall back from is decided by status - so the new
+fetch-shaped adapter parses that number out and returns it, and an unnamed failure becomes 502 rather than a
+guess. `requestRerank` now prefers that shim whenever the host offers one. Live confirmation needs the next run:
+the wiring is proven at the shim (the probe above) and in the unit tests, not yet in a generation.
+

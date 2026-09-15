@@ -14,7 +14,12 @@ belongs in Git commits and pull requests.
   nothing, failed open, and recorded `rerank_used: false`, so a configured reranker read as inert - which is how
   the optional stage was judged here. Only a 404 triggers the retry; a 401/429/5xx is a refusal at the right path
   and is reported rather than re-addressed. The diagnostic `rerank_cost.transport` names which path answered.
-  Verified end to end against the live provider: 330 ms, 276 provider tokens.
+  Verified end to end against the live provider: 330 ms, 276 provider tokens. The same stage now leaves the
+  WebView's `fetch` behind for the host's native HTTP shim, as the embedding path already does: a provider
+  request from the WebView is blocked by CORS, and the live run showed the stage failing with "Failed to fetch"
+  in 34 ms without reaching any provider. The shim reports a provider failure as a thrown error naming the
+  status, so the adapter returns that number as the response status and only a named 404 can trigger the path
+  retry; an unnamed failure is reported as 502 rather than guessed.
 
 - A quoted evidence source now records the candidate's own extent (`spanStart`/`spanEnd`) and the channel
   regions the window was allowed to follow (`seats`). Measured on the 2026-09-15 runs: ten needle occurrences fell

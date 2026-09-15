@@ -8,6 +8,7 @@
 
 import { resolveOpenAiCompatibleBaseUrl } from './v55-tauri-vector-backend.js';
 import { estimateTokens } from './v55-tokenizer.js';
+import { hasTauriNativeHttpBridge, tauriNativeFetch } from './v55-tauri-native-http-bridge.js';
 
 export const RERANK_CANDIDATES = 24;
 
@@ -98,7 +99,10 @@ export async function requestRerank({ baseUrl, apiKey, model, query, documents, 
     const key = String(apiKey || '').trim();
     if (!key) throw new Error('重排 API Key 未配置。');
     const body = buildRerankRequest({ model, query, documents, topN });
-    const send = fetchImpl || globalThis.fetch?.bind(globalThis);
+    // The WebView's fetch is blocked by CORS for provider traffic - the embedding path left it behind for the
+    // host's native HTTP shim for exactly that reason - so a rerank that keeps using it fails with "Failed to
+    // fetch" without reaching any provider. Measured on the install this was written for: 34 ms, no call.
+    const send = fetchImpl || (hasTauriNativeHttpBridge() ? tauriNativeFetch(key) : globalThis.fetch?.bind(globalThis));
     if (typeof send !== 'function') throw new Error('重排传输不可用。');
     const started = performance.now();
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + key };

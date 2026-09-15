@@ -5,6 +5,7 @@ import {
   buildTauriEmbeddingInvoke,
   requestEmbeddingJsonViaTauriNative,
   resolveNativeRequestBudgetMs,
+  tauriNativeFetch,
 } from './v55-tauri-native-http-bridge.js';
 
 const body = {
@@ -105,6 +106,35 @@ await assert.rejects(
   },
 );
 assert.ok(Date.now() - startedAt < 10_000, 'the bounded wait must not fall through to the host budget');
+
+// The shim carries any JSON body, not only an embedding, and a provider failure comes back as a thrown
+// error that names the status because the ABI has no response object. The rerank transport decides by
+// status - it retries the provider's own path on exactly a 404 - so the fetch-shaped adapter has to give
+// that number back. Without it a rerank over this bridge could never fall back.
+{
+  const respond = safeInvoke => { globalThis.__TAURITAVERN__ = { ready: Promise.resolve(), invoke: { safeInvoke } }; };
+  respond(async (command, args) => {
+    assert.equal(command, 'generate_chat_completion');
+    assert.deepEqual(args.dto.custom_include_body, { model: 'm', input: { query: 'q', documents: ['a'] } });
+    assert.equal(args.dto.reverse_proxy, 'https://x/api/v1/services/rerank/text-rerank/text-rerank?');
+    return { output: { results: [{ index: 0, relevance_score: 0.9 }] } };
+  });
+  const good = await tauriNativeFetch('k')('https://x/api/v1/services/rerank/text-rerank/text-rerank',
+    { method: 'POST', body: JSON.stringify({ model: 'm', input: { query: 'q', documents: ['a'] } }) });
+  assert.equal(good.ok, true);
+  assert.equal(good.status, 200);
+  assert.deepEqual(await good.json(), { output: { results: [{ index: 0, relevance_score: 0.9 }] } });
+
+  respond(async () => { throw new Error('Internal server error: Custom OpenAI endpoint failed with status 404: Generation request failed'); });
+  const missing = await tauriNativeFetch('k')('https://x/v1/rerank', { method: 'POST', body: JSON.stringify({ model: 'm' }) });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.status, 404, 'a named 404 comes back as a status, which is what the retry rule reads');
+
+  respond(async () => { throw new Error('boom'); });
+  const opaque = await tauriNativeFetch('k')('https://x/v1/rerank', { method: 'POST', body: JSON.stringify({ model: 'm' }) });
+  assert.equal(opaque.status, 502, 'an unnamed failure is reported, not guessed into a status');
+  delete globalThis.__TAURITAVERN__;
+}
 delete globalThis.__TAURITAVERN__;
 
 console.log('PASS v5.5 Tauri native HTTP bridge: native invoke + query-suffix path preservation + request-local credential + no host status ABI + bounded wait + timeout guidance');
