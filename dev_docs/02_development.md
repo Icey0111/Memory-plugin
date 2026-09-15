@@ -1081,3 +1081,34 @@ region pointed at the head" look identical in the record. Every quoted source no
 and `test-narrative-pipeline` pins them on a case where the window has to move. The next placement change is
 measurable from a run's own record instead of a guess.
 
+#### The placement record answers the question (2026-09-15)
+
+Run 2c (the same frozen 石原 fixture) is the first run whose quoted sources carry `spanStart`/`spanEnd` and
+`seats`. Its probe turn quoted five rows, and the record separates the two cases the geometry could not.
+
+| source | candidate | quote | trimmed | anchored | seats |
+| --- | --- | --- | --- | --- | --- |
+| raw_5 | [0,526) | [0,214) | yes | true | profile @14 |
+| raw_2 | [0,42) | [0,42) | no | true | entity @16 |
+| raw_19 | [0,461) | [0,235) | yes | true | profile @95 |
+| raw_3 | [0,421) | [33,247) | yes | true | entity @81 |
+| raw_33 | [0,443) | [0,226) | yes | false | **none** |
+
+Four of the five had a region to sit on and the window covers it. The fifth had none: `seats` is empty and
+`anchored` is false, so the head window is a fallback with no signal in it. That is the miss shape the held-out
+geometry showed - a window at one end of a long row while the answer sits 63-207 characters away - and it is now
+attributable: it happens when no channel produced a region, not when a region pointed at the head.
+
+Run 2c's other numbers: both batches committed, folded 21 then 41, the phase-1 gate passed with 20/20 floors and a
+944-character summary, and retention kept all six declared details, so phase 2 asked only the positive control -
+`d-name`, `summary-kept`, `token=石原(verbatim, 100%)`, which shows the token reading printing in a live run.
+
+#### The next candidate: give a window with no region a signal (direction)
+
+A trimmed window with an empty `seats` list sits at the head because nothing tells it where else to go. The
+lexical channel is what ranked that row, and the term positions behind its score are never recorded as regions, so
+the one signal that could place the window is discarded before `fitEvidenceSpan` runs. The candidate is to carry
+the lexical channel's own best term position as a seat and let the existing rule use it. It is a direction, not a
+result: the ranker has to carry term positions first, and it must be measured against the labelled probes and the
+corpus before it is believed.
+
