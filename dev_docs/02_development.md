@@ -1112,3 +1112,31 @@ the lexical channel's own best term position as a seat and let the existing rule
 result: the ranker has to carry term positions first, and it must be measured against the labelled probes and the
 corpus before it is believed.
 
+**Measured the same day, and rejected.** The candidate was tested before any code changed, on the six held-out
+probes, under the rule the code actually applies: the head window is the incumbent and a seat displaces it only
+when the window there covers strictly more of the question's terms. Long rows carrying a needle and a lexical
+seat: **20 stay inert** - the seat never beats the head's coverage - and **9 would move, with 2 gains and 4
+losses**, three of the nine going from one miss to another.
+
+| run | row | needle@ | head | seat | result |
+| --- | --- | --- | --- | --- | --- |
+| 2 | row16 | 147 | HIT | 那个@365 | miss |
+| 2 | row20 | 69 | HIT | 的男@377 | miss |
+| 2 | row24 | 314 | miss | 什么@223 | HIT |
+| 3 | row20 | 54 | HIT | 盏灯@236 | miss |
+| 3 | row28 | 235 | miss | 那盏灯@193 | HIT |
+| 5 | row4 | 38 | HIT | 守寨@247 | miss |
+| 5 | row6 | 275 | miss | 年轻@331 | miss |
+| 5 | row16 | 227 | miss | 的年轻@472 | miss |
+| 5 | row40 | 326 | miss | 寨的@90 | miss |
+
+The seat is the *rarest* matching term, and in a row that matches the question only through filler the rarest
+match is itself filler: `那个`, `什么`, `的男`, `的年轻`. Adding the entity channel's frequency cap to the
+choice changes nothing - in a 42-chunk chat that cap is 11 chunks, and every one of those terms is under it. The
+signal is not "where the row is about", it is "where the row happens to share two characters with the question",
+and the head is the better incumbent. **Nothing shipped; no run was spent.**
+
+The placement question therefore stays open, and what it has to answer is narrower than this candidate. A row whose
+channel produced a descriptor or a rare-term region already gets a seat, and the rows that still miss are the ones
+neither a channel nor a content term can place. That is a coverage problem, not a placement rule.
+
