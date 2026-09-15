@@ -794,3 +794,22 @@ same held-out control loses one probe (`h_hair`) - with every row quotable the g
 have reached that needle - and that is recorded because it is the honest cost, not because the runtime path uses
 that variant.
 
+### A real detail check, and one rejected window candidate (2026-09-15)
+
+A user played a 23-row chat and then a branch of it, asking six detail questions one per turn. Every answer is in
+the original text and none of them is in the summary, the anchors or the knowledge block: a character's eye
+colour, her coat and cuff, her blade's handle, the pines on the walk to the mill, the mill's broken stairs, and
+the light under the guardian's palm. **All six failed to come back.** The replies did not invent them - the model
+reported that those details had not been written and asked the user to decide - so this is a retrieval recall
+failure with no fabrication. The recorded block for the last of the six quoted five rows, and the row holding its
+answer was not among them. On the others the replies show the boundary inside the sentence that carries the
+detail: the coat was quoted and the cuff, a few characters later in the same sentence, was not; the sheath was
+quoted and the handle in the same sentence was not.
+
+That second shape produced the rejected candidate: when a truncated window ends in the middle of a sentence, end
+it where the sentence ends instead. Measured on the current corpus directory (**1,296 turns**, the two new chats
+included): the labelled gate is unchanged at 9/10, but the paired check is **1 turn worse with 85 situation-term
+recalls lost** (4,006 -> 3,921), and two offline window tests fail - `test-evidence-window` and
+`test-profile-window`, whose fixtures assert exact starts. Rejected and reverted, and the assertions were not
+adjusted to fit the change. The first shape - a row that never ranks - is the five-slot competition again.
+
