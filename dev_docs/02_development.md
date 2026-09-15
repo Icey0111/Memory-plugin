@@ -1509,3 +1509,34 @@ The gate now requires the fold to cover the phase - `folded >= 2 x completeTurns
 per finished floor - and says 有一批没有提交 when it does not. The greeting need not be folded, so a run that
 leaves it visible still passes on 40 rows for 20 floors. Two witnesses, both recorded above.
 
+#### The density lever settles the rescue question (2026-09-16, runs ret3-a..c)
+
+The instrument change the section above asked for was not needed. The reason five runs produced no rescue sample
+was the number of declared details, not the probe mode: the merge keeps ten of ten, but it cannot keep
+twenty-one. Naming **two needles in each of the first ten turns** takes the same fixture to 21 declared details,
+and the merge then drops two to four of them per run:
+
+| run | retained | dropped | probes | rescue probes (question names the absent 石原) |
+| --- | --- | --- | --- | --- |
+| ret3-a | 18/21 | d-polish, d-manner, d-hollow | 6 | 3 recovered |
+| ret3-b | 19/21 | d-polish, d-voice | 5 | 1 recovered, 1 asserted-with-no-channel |
+| ret3-c | 17/21 | d-polish, d-manner, d-hollow, d-belt | 7 | 2 recovered, 1 refused, 1 asserted-with-no-channel |
+
+**Six of nine rescue probes recovered**, and `d-polish` - written on floor 1, about a character absent since
+floor 11 - came back in **all three runs**, verbatim in two of them. With `ret2-b`'s floor-28 rescue that is
+**ten rescue probes and seven recovered**, and the three failures are answer-level: one refusal, one confusion,
+and one wording gap. **None of them is "the row was ranked too low".** The rise bound is not the failure mode
+here, and the open risk recorded above is closed as not observed.
+
+Two of those failures are worth keeping. `ret3-b`'s `d-voice` reply says 哨子哑了……吹不出声 while the needle is
+`吹不响`: the prompt carried the fact under other words, so the channel matched nothing and the instrument
+counted it as asserted-with-no-channel. That is a **false positive of the needle-based channel test**, the same
+tolerance gap this log has recorded elsewhere. `ret3-c`'s `d-belt` is the real thing: asked what the belt is
+made of, the reply moves the reed-weaving from the straw shoes onto the belt and keeps the brass buckle.
+
+One reading from this fixture qualifies an earlier result. In the dense fixture the opening instruction row
+reached the evidence in **six of eighteen probes** (every one `raw_2`), against one of fourteen on
+`path2-shiyuan`. Every needle there is named inside an instruction, so the demoted row can still sit inside a
+five-slot budget. The instruction-slot benefit the rise bound was chosen for is therefore real but
+fixture-dependent, and the dense fixture is the harder case.
+
