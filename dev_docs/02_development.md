@@ -844,3 +844,44 @@ before the reload, and after the reload the same chat reads `folded 41` (rows 0-
 41-42 visible) - the boundary the host will draw on the next generation sits at row 41, below floor 40. A gate is
 only as wide as the functions it watches.
 
+A gate is only as wide as the functions it watches.
+
+### Five sequential live acceptance runs (2026-09-15)
+
+Five fresh chats, twenty turns each, `acceptance-longchat.mjs --detail-survival` in `perTurn` mode, against the
+deployed plugin. Runs 1-2 executed the fold rule before ADR-0047 (the host had not been reloaded); runs 3-5
+executed it. Every run's phase-1 gate passed with 20/20 complete floors.
+
+| run | chat | folded @10 / @20 | batches | declared -> retained | probe outcomes |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 阿箬 / 落雁驿 | 20 / 20 | 1 of 2 | 9 -> 7 | kept 1, retrieved-not-conveyed 1, fabricated 1 |
+| 2 | 石原 / 断桥渡 | 20 / 40 | 2 of 2 | 6 -> 4 | kept 1, retrieval-recovered 1, retrieved-not-conveyed 1 |
+| 3 | 柳娘 / 望江楼 | **21 / 41** | 2 of 2 | 5 -> 5 | kept 1 (not conveyed) |
+| 4 | 白先生 / 药王谷 | **21 / 41** | 2 of 2 | 9 -> 8 | kept 1, retrieval-recovered 1 |
+| 5 | 铁蛋 / 黑风寨 | **21 / 41** | 2 of 2 | 9 -> 7 | kept 1, refused 2 |
+
+- **The fold change is confirmed live.** Runs 3-5 fold 21 rows at the first commit and 41 at the second, and the
+  host's boundary line lands on row 41 in each - below floor 40, not on floor 40.
+- **The batch refusal did not recur.** Eight of nine batch attempts committed; the only refusal is run 1's second
+  batch (`over_budget`, twice including the one body repair). Four later batches needed that repair and committed
+  from it (runs 2, 3, 5 second batch; run 4 first batch), so the repair path works and the run-1 refusal was the
+  model answering over the ceiling, not a systematic blocker.
+- **The summary seldom drops a declared incidental detail.** 38 declared, 31 retained. Phase 2 therefore usually
+  probes only the positive control, so these runs carry little evidence about the retrieval channel.
+- **The probe labels assume the source is not in the prompt, and that assumption broke twice.**
+  - A dropped detail can still sit in an unfolded row. Run 1's `d-place` was answered correctly from the visible
+    row 22 (`落雁驿` plus the crooked tree) and labelled `fabricated` with `channel=none`; the model did not need
+    the memory, so the label measures the harness, not fabrication.
+  - An identity needle also occurs in the user's instruction row. Run 4's `d-name` evidence block quotes
+    `[raw_2:0-41 | floor 1 | User] 开场：让一个新人物登场——白先生…`, so its `retrieval-recovered` came from the
+    user's own prompt rather than the story.
+- **A transliteration is not a loss.** Run 4's only "dropped" needle is `白先生` against a summary that wrote
+  `Bai`; the summary kept the fact, the matcher could not see it.
+- **Refusal was truthful, not fabricated.** Run 5 dropped `d-teeth` and `d-shoe`, retrieval returned
+  `channel=none` for both, and the model answered "不记得" twice.
+
+Across the five runs the probe set reads: 5 summary-kept, 2 retrieval-recovered, 2 retrieved-not-conveyed,
+2 refused, 1 fabricated. Only one of those is a real retrieval recovery (`d-tool`, run 2); the rest are summary
+retention, refusal, a harness artifact, or the instruction-row confound. The instrument to trust for retrieval
+remains the labelled probe set and the corpus, not this phase-2 probe on a chat whose summary drops almost nothing.
+
