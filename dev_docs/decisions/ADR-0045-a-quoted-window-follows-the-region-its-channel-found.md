@@ -136,6 +136,31 @@ is the live reading this ADR was otherwise missing:
   `斯珀的` survives), so a question about a character is structurally reported as unrecalled however well the
   turn goes. The reading that matched this turn is `profile_terms.detailed`.
 
+## The corpus check, which is not flattering
+
+The natural track replays every real user message in the corpus through `planRetrievalQuery` and scores the
+evidence that was actually packed: 73 chats, **1,258 turns** (903 request, 355 continuation), lexical only, the
+same chats on both sides.
+
+| proxy | before | after |
+| --- | --- | --- |
+| situation-term recall | 85.0% (3974/4673) | 85.3% (3988/4673) |
+| asked-thing recall | 64.6% (3047/4718) | 64.9% (3060/4718) |
+| character described (profile `detailed`) | 26.6% (101/380) | 25.5% (97/380) |
+| the same, Chinese chats only | 77.0% (57/74) | 75.7% (56/74) |
+
+Two things belong in the record rather than out of it. The profile proxy is only meaningful on the Chinese
+chats: it asks whether a quoted row carries a descriptor word near the name, the lexicon is Chinese, and the 306
+non-Chinese name-readings can essentially never pass (14.4% before, 13.4% after) while dominating the aggregate.
+And the replay derives its character names from the row `name` fields, not from the knowledge block, so it does
+not exercise the case this ADR fixes - on the real turn the name came from the knowledge block
+(`profile_names = ["薇斯珀"]`). What the corpus does measure is the cost: the introduction candidate is a
+second candidate competing for the same five slots, available on 290 of those turns and inside the fused top five
+on 68, and on this corpus that cost is a few description readings bought for nothing.
+
+That is the next measured step: gate the introduction candidate on a name the knowledge block tracks - which is
+where the real failure lives - or give it a reserved seat, and re-run both instruments.
+
 ## Decision
 
 Shipped. It ships as the window rule, not as a new score: the character channel's ranking score is unchanged

@@ -59,6 +59,15 @@ lexicon extension the describing sentences need), each mechanism measured alone 
 (ADR-0045). The two misses are one ranking defect - a row the channel never speaks for - and one
 window-boundary case, both named in the ADR.
 
+The same change was checked against the natural track over the whole corpus (73 chats, 1,258 real-query turns,
+lexical only, the same chats on both sides): situation-term recall 85.0% -> 85.3% (3988/4673), asked-thing
+64.6% -> 64.9% (3060/4718), and the character-described proxy 26.6% -> 25.5% (97/380). That last number is only
+meaningful on the Chinese chats, where it reads 77.0% -> 75.7% (56/74): the proxy wants a descriptor word near
+the name and the lexicon is Chinese, so the 306 non-Chinese readings cannot pass and dominate the aggregate. The
+corpus replay also takes its character names from the row `name` fields rather than the knowledge block, so it
+does not exercise the case the change fixes; what it does measure is the cost of the extra candidate, which is a
+few description readings on this corpus. Both instruments and the caveats are in ADR-0045.
+
 The change was also measured against ADR-0044's hand-judged 43-name table. The baseline reproduced exactly
 (43/43), 3 of 43 top picks moved and none of them improves or regresses (both rows of each pair read as before),
 so the totals stay 23 not-a-description / 20 a description: the ranking score is unchanged and only the lexicon
