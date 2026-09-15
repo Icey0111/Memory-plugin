@@ -17,7 +17,7 @@ import {
   attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival,
   formatDetailReport, buildDetailEvidence, matchNeedle, FACT_KINDS, DEFAULT_FACT_KIND, isMustKeep,
   summarizeFactSurvival, formatFactSurvival, leaksNeedle, freezeTurnsFixture, TURNS_FIXTURE_SCHEMA_VERSION,
-  probeIndependence, channelAttribution,
+  probeIndependence, channelAttribution, detailsDueAt,
 } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
@@ -452,6 +452,34 @@ const adjudicate = graded => {
   assert.equal(channelAttribution({ foldedRows: 20, summaryCommitted: true }).meaningful, true);
   assert.equal(channelAttribution({ foldedRows: 0, summaryCommitted: true }).meaningful, false);
   assert.equal(channelAttribution({ foldedRows: 20, summaryCommitted: false }).meaningful, false);
+}
+
+// --- 15. a batch is scored against the details that exist when it runs ---------------------------------
+// Measured on the 2026-09-15 acceptance: the turn-10 observation scored all 18 declarations, so the eleven
+// declared in turns 11-20 read as dropped - and because the two must-keep facts it named were exactly the two
+// declared after turn 10, the table reported "must-keep lost in a merge, by model" for facts that were in the
+// merged summary, the anchors and the knowledge block. A loss that cannot have happened is not evidence.
+{
+  const details = [{ id: 'a', turn: 3, needle: ['芦花荡'] }, { id: 'b', turn: 15, needle: ['第二盏灯'] },
+    { id: 'c', turn: 20, needle: ['枯菱'] }, { id: 'd', needle: ['未知轮次'] }];
+  assert.equal(detailsDueAt(details, 10).map(row => row.id).join(','), 'a,d',
+    'a turn-10 batch cannot have kept a fact declared in turn 15');
+  assert.equal(detailsDueAt(details, 15).map(row => row.id).join(','), 'a,b,d');
+  assert.equal(detailsDueAt(details, 20).length, 4, 'by the last batch everything is due');
+  assert.equal(detailsDueAt(details).length, 4, 'no turn given means nothing is excluded');
+  assert.equal(detailsDueAt([], 10).length, 0);
+  // The authoritative reading is inside the summary: a fact declared after a batch is not read at that batch,
+  // so it cannot be a merge loss, while a fact declared before both batches and kept only at the first is one.
+  const observations = [
+    { batchTurn: 10, committed: true, retained: ['early'], rawResponse: '早年的那条还在' },
+    { batchTurn: 20, committed: true, retained: ['late'], rawResponse: '后来的那条还在' }];
+  const facts = summarizeFactSurvival([
+    { id: 'early', turn: 3, kind: 'place', needle: ['早年的那条'] },
+    { id: 'late', turn: 15, kind: 'place', needle: ['后来的那条'] }], observations);
+  assert.deepEqual(facts.mustKeepLostInAMerge, ['early'],
+    'the early fact really was lost between the two merges, and the later one is not accused of a loss it cannot have');
+  assert.deepEqual(facts.mustKeepLostByModel, ['early']);
+  assert.equal(facts.mustKeepTotal, 2);
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');

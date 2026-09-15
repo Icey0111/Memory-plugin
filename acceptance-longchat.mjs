@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest, summaryGate } from './acceptance-capture.js';
 import { parseTurnsFile, continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems,
   buildProbeQuestion, gradeProbeItem, summarizeDetailSurvival, formatDetailReport, buildDetailEvidence,
-  summarizeFactSurvival, formatFactSurvival, freezeTurnsFixture } from './detail-survival.mjs';
+  summarizeFactSurvival, formatFactSurvival, freezeTurnsFixture, detailsDueAt } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
 const args = process.argv.slice(2);
@@ -286,7 +286,10 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
     // are in the merged summary text, in the anchors and in the knowledge block, and the model's own merge
     // response contains them. Until the observation is re-read after the commit settles, read "lost in a merge"
     // as "absent from the status this turn was built with", not as a model loss.
-    const split = splitDetailsByRetention(parsedTurns.details, continuityBag(post));
+    // Only the details this batch could have kept: one declared later cannot be in its summary, and scoring it
+    // here records a loss the run never had (see detailsDueAt).
+    const due = detailsDueAt(parsedTurns.details, turnNo);
+    const split = splitDetailsByRetention(due, continuityBag(post));
     // The raw summary output, so a loss can be attributed to the model or to the pipeline.
     const rawResponse = (newCalls || []).map(call => {
       try { return call.response.choices[0].message.content || ''; } catch (error) { return ''; }
@@ -294,7 +297,7 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
     factObservations.push({ batchTurn: turnNo, retained: split.retained.map(item => item.id),
       dropped: split.dropped.map(item => item.id), rawResponse,
       committed: Boolean(waitRes && waitRes.reason === 'committed') });
-    console.log('FACT-SURVIVAL batch ' + turnNo + ': kept ' + split.retained.length + '/' + parsedTurns.details.length
+    console.log('FACT-SURVIVAL batch ' + turnNo + ': kept ' + split.retained.length + '/' + due.length
       + (split.dropped.length ? ' dropped ' + split.dropped.map(item => item.id).join(',') : ''));
   }
 }

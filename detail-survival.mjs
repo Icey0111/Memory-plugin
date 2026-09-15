@@ -256,6 +256,25 @@ export function freezeTurnsFixture(parsed, { sourcePath = null, sha256 = null, b
  * knowledge boundaries. Selection uses the committed store, so a detail the summary dropped is found in
  * none of the three. The injected block is read separately, at grading time.
  */
+/**
+ * The declared details a batch at this turn can possibly have kept.
+ *
+ * A detail declared in turn 15 cannot be in the summary a batch ending at turn 10 committed, so scoring it
+ * there records a loss the run never had. Measured on the 2026-09-15 acceptance: the turn-10 observation
+ * evaluated all 18 declarations, and the eleven declared in turns 11-20 - which include both must-keep facts
+ * of the second half - read as dropped, so the fact-survival table reported "must-keep lost in a merge 2/4,
+ * by model" for facts that were in the merged summary, the anchors and the knowledge block. The two must-keep
+ * facts it named were exactly the two declared after turn 10.
+ */
+export function detailsDueAt(details, turn) {
+    const at = Number(turn);
+    if (!Number.isFinite(at)) return (details || []).slice();
+    return (details || []).filter(detail => {
+        const declared = Number(detail && detail.turn);
+        return !Number.isFinite(declared) || declared <= at;
+    });
+}
+
 export function continuityBag(state) {
     const parts = [];
     const summary = state && state.summary;
@@ -460,6 +479,12 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
  * `observations` are the committed-summary readings in batch order: [{ batchTurn, retained: [ids] }]. A fact
  * kept at the first merge and absent from the second was **lost in a merge** - the case the product contract
  * cares about - while a fact absent from the first merge was never carried at all.
+ *
+ * A fact is only read at batches that came after it was declared: a batch ending at turn 10 cannot have kept a
+ * fact the story has not written yet, and a reading that counts it there records a loss the run never had.
+ * Measured on the 2026-09-15 acceptance, where that reading named exactly the two must-keep facts declared
+ * after turn 10 (`d-place`, `d-rule`) as "lost in a merge, by model" although the merged summary, the anchors
+ * and the knowledge block all carried them.
  */
 export function summarizeFactSurvival(details = [], observations = []) {
     // A batch that was blocked or failed merged nothing: its reading is the previous committed state, and
@@ -472,21 +497,24 @@ export function summarizeFactSurvival(details = [], observations = []) {
     const batches = usable.map(observation => observation.batchTurn);
     observations = usable;
     const facts = (details || []).map(detail => {
+        const declared = Number(detail.turn);
+        const dueAt = turn => !Number.isFinite(declared) || declared <= Number(turn);
         const retainedAt = {};
         const writtenAt = {};
         for (const observation of observations) {
-            retainedAt[observation.batchTurn] = (observation.retained || []).includes(detail.id);
+            const due = dueAt(observation.batchTurn);
+            retainedAt[observation.batchTurn] = due && (observation.retained || []).includes(detail.id);
             // What the model actually wrote this batch, before parsing and merging. A fact present here but
             // absent from the committed bag was lost by the pipeline; one absent from both was omitted by
             // the model itself. The two stages need different fixes.
-            writtenAt[observation.batchTurn] = observation.rawResponse
+            writtenAt[observation.batchTurn] = observation.rawResponse && due
                 ? matchNeedle(observation.rawResponse, detail.needle).matched : null;
         }
         let lostAt = null;
-        for (const turn of batches) if (retainedAt[turn] !== true) { lostAt = turn; break; }
-        const everRetained = batches.some(turn => retainedAt[turn] === true);
-        const everWritten = batches.some(turn => writtenAt[turn] === true);
-        const writtenNotRetained = batches.some(turn => writtenAt[turn] === true && retainedAt[turn] !== true);
+        for (const turn of batches) { if (!dueAt(turn)) continue; if (retainedAt[turn] !== true) { lostAt = turn; break; } }
+        const everRetained = batches.some(turn => dueAt(turn) && retainedAt[turn] === true);
+        const everWritten = batches.some(turn => dueAt(turn) && writtenAt[turn] === true);
+        const writtenNotRetained = batches.some(turn => dueAt(turn) && writtenAt[turn] === true && retainedAt[turn] !== true);
         // Which stage lost it: the model did not write it in the batch that dropped it, or it wrote it and
         // the pipeline failed to carry it. 'unknown' means no raw response was captured for that batch.
         const lostBy = lostAt === null ? null
