@@ -15,9 +15,9 @@ belongs in Git commits and pull requests.
   the optional stage was judged here. Only a 404 triggers the retry; a 401/429/5xx is a refusal at the right path
   and is reported rather than re-addressed. The diagnostic `rerank_cost.transport` names which path answered.
   Verified end to end against the live provider: 330 ms, 276 provider tokens, and then confirmed inside a
-  generation (2026-09-15, run 2e): `rerank_used: true`, `transport: native`, 14-23 documents, 3.1k-10.5k provider
-  tokens per call - one call per generation, and none at all until at least two candidates the prompt does not
-  already show exist. The same stage now leaves the WebView's `fetch` behind for the host's native HTTP shim, as
+  generation (2026-09-15, runs 2e and 2f): `rerank_used: true`, `transport: native`, `rerank_error: null`,
+  14-23 documents and 2.7k-10.5k provider tokens per call - one call per generation, and none at all until at least
+  two candidates the prompt does not already show exist. The same stage now leaves the WebView's `fetch` behind for the host's native HTTP shim, as
   the embedding path already does: a provider request from the WebView is blocked by CORS, and the live run showed
   the stage failing with "Failed to fetch" in 34 ms without reaching any provider. The shim reports a provider
   failure as a thrown error naming the status, so the adapter returns that number as the response status and only a

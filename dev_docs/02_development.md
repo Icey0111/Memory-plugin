@@ -1196,42 +1196,62 @@ fetch-shaped adapter parses that number out and returns it, and an unnamed failu
 guess. `requestRerank` now prefers that shim whenever the host offers one. Live confirmation needs the next run:
 the wiring is proven at the shim (the probe above) and in the unit tests, not yet in a generation.
 
-#### Rerank reaches the provider in a real generation, and the floor-1 slot comes free (2026-09-15, run 2e)
+#### Rerank reaches the provider in a real generation, and the floor-1 slot comes free (2026-09-15, runs 2e and 2f)
 
-Run 2e is the `石原` fixture on a fresh chat (`turns-shiyuan.json`, `--detail-survival`, perTurn, 20 phase-1
-turns), taken with `narrative_rerank_model = qwen3.7-text-rerank` and `narrative_rerank_candidates = 24`. It is
-the first run in this log in which the rerank stage reached a provider.
+Runs 2e and 2f are the `石原` fixture on fresh chats (`turns-shiyuan.json`, `--detail-survival`, perTurn, 20
+phase-1 turns each), taken with `narrative_rerank_model = qwen3.7-text-rerank` and
+`narrative_rerank_candidates = 24`. They are the first runs in this log in which the rerank stage reached a
+provider.
 
-| snapshot | rerank_used | transport | documents | elapsed | provider tokens |
-| --- | --- | --- | --- | --- | --- |
-| turn 10 | false | - | - | - | - (`rerank_cost: null`) |
-| turn 20 | true | native | 14 | 110-119 ms | ~3.1k |
-| turn 21 (probe) / final | true | native | 23 | 175 ms | 10,454 |
+| run | snapshot | rerank_used | transport | documents | elapsed | provider tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2e | turn 10 | false | - | - | - | - (`rerank_cost: null`) |
+| 2e | turn 20 | true | native | 14 | 110-119 ms | ~3.1k |
+| 2e | final | true | native | 23 | 175 ms | 10,454 |
+| 2f | turn 10 | false | - | - | - | - |
+| 2f | turn 20 | true | native | 14, 15 | 115, 129 ms | 2,760, 3,135 |
+| 2f | final | true | native | 23 | 172 ms | 9,457 |
 
-`rerank_error` is null throughout. Turn 10 recording no call is the stage's own guard rather than a failure: with
-every floor still unfolded there are fewer than two candidates the prompt does not already show, so the shortlist
-is empty and no request is spent - the shape the code comment already recorded from an earlier live run. The later
-snapshots give the real cost: one native call per generation once the first fold lands, 3.1k-10.5k provider tokens
-depending on the shortlist, so the ~10k figure quoted for this stage is the upper end and not the average.
+Every captured diagnostics object in both runs has `rerank_error: null`: the stage neither failed nor fell back.
+Turn 10 recording no call is the stage's own guard rather than a failure - with every floor still unfolded there
+are fewer than two candidates the prompt does not already show, so the shortlist is empty and no request is spent,
+the shape the code comment already recorded from an earlier live run. The cost is therefore one native call per
+generation once the first fold lands, 2.7k-10.5k provider tokens by shortlist size, so the ~10k figure quoted for
+this stage is the upper end and not the average.
 
-The same run re-read the quoted-slot audit with only the stage changed:
+Both runs re-read the quoted-slot audit with only the stage changed:
 
 | run | rerank | probe turns | quoted sections | user rows quoted |
 | --- | --- | --- | --- | --- |
 | 2c | off | 1 | 5 | 1 (floor 1) |
 | 2d | wired, CORS-blocked | 3 | 15 | 3 (floor 1 in each) |
 | 2e | on, native | 1 | 5 | 0 |
+| 2f | on, native | 2 | 10 | 0 |
 
-In 2e the probe whose needle is the character's own name - the needle that sits literally inside floor 1's
-instruction text (`开场：让一个新人物登场——石原，替人修船的男人`) - quoted five assistant rows and no user row,
-against 1/1 and 3/3 with the stage off or blocked. That is the effect the offline held-out table predicted (the
-instruction row out of the top three in 6/6), now observed once inside a generation. **It is one live case, not a
-rate**, and run-to-run variance is not separated by it.
+With the stage reaching the provider, none of three probes quoted a user row at all - including the probes whose
+needle is the character's own name, the needle that sits literally inside floor 1's instruction text
+(`开场：让一个新人物登场——石原，替人修船的男人`). With the stage off or blocked, four of four probes quoted it.
+That is the effect the offline held-out table predicted (the instruction row out of the top three in 6/6), now
+observed three times inside a generation. **Three live cases with no counter-example is still not a rate**, and
+run-to-run variance is not separated by it.
 
-The run cannot measure retrieval, and the cause is the acceptance's own adaptive probe set: the committed summary
-retained 6 of 6 declared details, so `buildProbeItems` had no dropped detail to ask about and probed the positive
-control alone. The rest of the reading is still clean - fold 21 then 41, both batches committed, fact survival 5/5
-then 6/6, no must-keep lost in a merge, gate PASS (20/20 floors, 42 chunks covered), one probe `summary-kept`
-`token=石原(verbatim, 100%)`, 0 refusals and 0 fabrications - but a live retrieval reading with the stage on needs
-a run whose merge drops something.
+Run 2f also produced the first live retrieval recovery recorded with the stage on, and it is the reading that
+needs the most restraint: `d-manner` (`用指节敲两下`) was dropped by the second merge, quoted back at floor 8,
+and graded `retrieval-recovered`. The reply reads:
+
+> 1. 不记得有明确写定的"开口前固定动作"。我确实记得他敲船头侧板两下（"咚、咚"）、以及收黄铜卷尺在掌心一磕这类动作，但我不能确认那就是他每次开口前的固定动作，所以按"不记得"算。
+
+The needle reached the reply - `evidenceMatch` is `verbatim` on the full `用指节敲两下` - but the reply match is
+a two-character run (`token=两下(run2, 33%)`) and the model **declined the relation the question tested** while
+reporting the concrete action it could confirm. The instrument counts that as a recovery; read by hand it is
+retrieval delivering the evidence and the reply declining the stronger claim. The `summary-kept` positive control
+(`d-name`) is unambiguous in the same run.
+
+The adaptive probe set is what makes the two runs different: 2e's summary retained 6 of 6 declared details, so
+there was nothing dropped to ask about and only the positive control was probed; 2f dropped `d-manner`. Both runs
+are otherwise clean - fold 21 then 41, both batches committed in each, fact survival 5/5 then 6/6 (2e) and 5/5
+then 5/6 (2f), no must-keep lost in a merge, gate PASS in both (20/20 floors, 42 chunks covered), 0 refusals and 0
+fabrications in both, and 2f's adjudication is `confirmed-pass: 2`, `memoryAttributed: 2`,
+`ungroundedPasses: 0`. The one retrieval reading above carries `partialMatches: 1`, which is the tolerance floor
+this instrument has already been measured at.
 
