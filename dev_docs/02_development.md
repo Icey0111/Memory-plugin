@@ -852,7 +852,7 @@ Five fresh chats, twenty turns each, `acceptance-longchat.mjs --detail-survival`
 deployed plugin. Runs 1-2 executed the fold rule before ADR-0047 (the host had not been reloaded); runs 3-5
 executed it. Every run's phase-1 gate passed with 20/20 complete floors.
 
-| run | chat | folded @10 / @20 | batches | declared -> retained | probe outcomes |
+| run | chat | folded @10 / @20 | batches | declared -> retained | probe outcomes (as printed) |
 | --- | --- | --- | --- | --- | --- |
 | 1 | 阿箬 / 落雁驿 | 20 / 20 | 1 of 2 | 9 -> 7 | kept 1, retrieved-not-conveyed 1, fabricated 1 |
 | 2 | 石原 / 断桥渡 | 20 / 40 | 2 of 2 | 6 -> 4 | kept 1, retrieval-recovered 1, retrieved-not-conveyed 1 |
@@ -868,20 +868,39 @@ executed it. Every run's phase-1 gate passed with 20/20 complete floors.
   model answering over the ceiling, not a systematic blocker.
 - **The summary seldom drops a declared incidental detail.** 38 declared, 31 retained. Phase 2 therefore usually
   probes only the positive control, so these runs carry little evidence about the retrieval channel.
-- **The probe labels assume the source is not in the prompt, and that assumption broke twice.**
-  - A dropped detail can still sit in an unfolded row. Run 1's `d-place` was answered correctly from the visible
-    row 22 (`落雁驿` plus the crooked tree) and labelled `fabricated` with `channel=none`; the model did not need
-    the memory, so the label measures the harness, not fabrication.
-  - An identity needle also occurs in the user's instruction row. Run 4's `d-name` evidence block quotes
-    `[raw_2:0-41 | floor 1 | User] 开场：让一个新人物登场——白先生…`, so its `retrieval-recovered` came from the
-    user's own prompt rather than the story.
-- **A transliteration is not a loss.** Run 4's only "dropped" needle is `白先生` against a summary that wrote
-  `Bai`; the summary kept the fact, the matcher could not see it.
+- **The probe label assumed the source is not in the prompt, and that assumption was wrong.** Run 1's second
+  batch was refused, so rows 21-40 were still in the prompt. The model answered `落雁驿` (`d-place`) and `阿箬`
+  (`d-name`) from the transcript, and the report counted the first as `fabricated` with `channel=none` and the
+  second as `summary-kept`. Neither was a memory outcome.
+- **A transliteration is not a loss.** Run 4's only "dropped" needle is `白先生` against a summary *response* that
+  wrote `Bai`; the story itself carries the name in an assistant row on floor 28, which is what the probe then
+  recovered.
 - **Refusal was truthful, not fabricated.** Run 5 dropped `d-teeth` and `d-shoe`, retrieval returned
   `channel=none` for both, and the model answered "不记得" twice.
 
-Across the five runs the probe set reads: 5 summary-kept, 2 retrieval-recovered, 2 retrieved-not-conveyed,
-2 refused, 1 fabricated. Only one of those is a real retrieval recovery (`d-tool`, run 2); the rest are summary
-retention, refusal, a harness artifact, or the instruction-row confound. The instrument to trust for retrieval
-remains the labelled probe set and the corpus, not this phase-2 probe on a chat whose summary drops almost nothing.
+Read against the phase-1 rows instead of the whole chat, the same five recorded runs give **4 summary-kept,
+2 retrieval-recovered, 2 retrieved-not-conveyed, 2 refused, 0 fabricated, 2 visible-in-prompt**: both new readings
+land on run 1, and run 4's `d-name` survives as a real recovery. The instrument to trust for retrieval remains the
+labelled probe set and the corpus, not this phase-2 probe on a chat whose summary drops almost nothing.
+
+### A detail-survival probe reads the transcript before it reads the memory (2026-09-15)
+
+The five runs above exposed a missing reading rather than a model result. A probe can only be evidence about
+memory while the answer is not already in the prompt, and the grader had no way to know either way. `needleSources`
+now answers both questions against the phase-1 snapshot the probe is asked against: is a declared needle still in
+an **unfolded** row, and does any **model-written** row carry it at all. `summarizeDetailSurvival` turns those into
+two readings instead of counting them as memory:
+
+- `visible-in-prompt` - the needle's own row is still visible, so the reply can copy the transcript (run 1's
+  `d-place` and `d-name`).
+- `instruction-only` - the evidence matched, but no model-written row carries the needle, so the quote came from a
+  user row. It did not fire in these five runs; run 4's `d-name` has an assistant row as well, so that recovery
+  stands.
+
+The helper reports `known`, and the summarizer only applies the two readings when a transcript was actually handed
+in. That guard is not decoration: the first wiring read a missing chat as "the model never wrote it" and relabelled
+run 2's real `d-tool` recovery as instruction-only. Measured: `node run-tests.mjs` 50/50 and
+`node check-syntax.mjs` 99 files; test-detail-survival section 16 pins all three readings, including the
+no-transcript case. Re-read offline against the five runs' phase-1 rows, run 1's single `fabricated` and both of
+its `summary-kept` false readings become `visible-in-prompt`, and nothing else moves.
 

@@ -40,7 +40,8 @@ import { fileURLToPath } from 'node:url';
 import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest, summaryGate } from './acceptance-capture.js';
 import { parseTurnsFile, continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems,
   buildProbeQuestion, gradeProbeItem, summarizeDetailSurvival, formatDetailReport, buildDetailEvidence,
-  summarizeFactSurvival, formatFactSurvival, freezeTurnsFixture, detailsDueAt } from './detail-survival.mjs';
+  summarizeFactSurvival, formatFactSurvival, freezeTurnsFixture, detailsDueAt,
+  needleSources } from './detail-survival.mjs';
 import { parseAdjudicationJsonl, summarizeAdjudication } from './answer-adjudication.mjs';
 
 const args = process.argv.slice(2);
@@ -312,6 +313,17 @@ if (detailMode) {
   const bag = continuityBag(committed);
   const retention = splitDetailsByRetention(parsedTurns.details, bag);
   const positive = choosePositive(retention.retained);
+  // What the transcript the probe is asked against still shows for each declared needle, and who wrote it.
+  // A probe reads memory only while the answer is not already in the prompt: a needle in an unfolded row
+  // can be copied from the transcript, and one only a user row carries was never written into the story.
+  const sourceRows = new Map(parsedTurns.details.concat(parsedTurns.negatives)
+    .map(detail => [detail.id, needleSources(committed.chat, detail)]));
+  const visibleSources = [...sourceRows].filter(([, source]) => source.visible).map(([id]) => id);
+  const instructionOnly = [...sourceRows].filter(([, source]) => !source.visible && source.writtenByModel === false).map(([id]) => id);
+  if (visibleSources.length) {
+    console.log('DETAIL-SURVIVAL notice: 这些细节的原文行仍在提示里，回答可以照抄原文而不必用记忆：'
+      + visibleSources.join(', '));
+  }
   const items = buildProbeItems({ dropped: retention.dropped, positive, negatives: parsedTurns.negatives });
   console.log('DETAIL-SURVIVAL retention: 已声明 ' + retention.total + ' 个细节，摘要保留 ' + retention.retained.length
     + ' 个，丢弃 ' + retention.dropped.length + ' 个；预期不符 ' + retention.expectationMismatches.length
@@ -380,12 +392,13 @@ if (detailMode) {
     }
     const adjudication = parseAdjudicationJsonl(graded.map(row => JSON.stringify(row.mechanical)).join('\n'));
     const adjudicationSummary = summarizeAdjudication(adjudication.rows);
-    const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items });
+    const survival = summarizeDetailSurvival({ rows: adjudication.rows, retention, items, sources: sourceRows });
     const detailEvidence = buildDetailEvidence({ at: nowIso(), probeTurns: probes.map(probe => probe.turn),
       phase1Last, retention, positive, items, probes, adjudicationErrors: adjudication.errors,
       adjudicationSummary, survival, probeMode: parsedTurns.probeMode,
       foldedRows: Array.isArray(committed.folded) ? committed.folded : Number(committed.folded) || 0,
-      summaryCommitted: Boolean(committed.summary && committed.summary.text) });
+      summaryCommitted: Boolean(committed.summary && committed.summary.text),
+      sources: Object.fromEntries(sourceRows) });
     fs.writeFileSync(path.join(outDir, 'detail-survival.json'), JSON.stringify(detailEvidence, null, 2));
     fs.writeFileSync(path.join(outDir, 'detail-survival.adjudication.jsonl'),
       adjudication.rows.map(row => JSON.stringify(row)).join('\n') + '\n');

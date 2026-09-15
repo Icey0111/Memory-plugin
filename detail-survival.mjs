@@ -365,6 +365,34 @@ export function attributeChannel(injection, item) {
 }
 
 /**
+ * Where a needle actually lives in the transcript, and who wrote it.
+ *
+ * A probe can read memory only while the answer is not already in the prompt. A needle still present in an
+ * unfolded row can be copied from the transcript, and a needle that appears only in a user row was never
+ * written into the story by the model at all - for a declared detail that row is the user's own instruction.
+ * `chat` is the phase-1 snapshot the probe is asked against, so the fold state is the one the probe saw.
+ */
+export function needleSources(chat, item) {
+    // `known` is the difference between "the model never wrote this" and "no transcript was handed in".
+    // Without it a caller that passed no chat would read every evidence match as instruction-only, which
+    // is how this helper first mislabelled a real recovery.
+    const known = Array.isArray(chat);
+    const hits = [];
+    if (known) chat.forEach((row, index) => {
+        if (!row || typeof row.mes !== 'string') return;
+        if (matchNeedle(row.mes, item.needle).matched) {
+            hits.push({ index, isUser: row.is_user === true, hidden: row.is_system === true });
+        }
+    });
+    return {
+        known,
+        visible: hits.some(hit => !hit.hidden),
+        writtenByModel: hits.some(hit => !hit.isUser),
+        rows: hits,
+    };
+}
+
+/**
  * A Chinese-only needle against a reply with no CJK characters cannot match, and that is the instrument's
  * language assumption failing, not the model. It is recorded as a fixture defect so it is never read as a
  * model miss; the reader can add a surface form and re-run.
@@ -421,7 +449,7 @@ export function gradeProbeItem(item, { injection = null, replyText = '', questio
  * it and the reply did not) and `summaryKeptNotConveyed`. `negativeLeaks` names a negative control whose
  * fabricated value turned up in a captured channel, which is a defective fixture rather than a model result.
  */
-export function summarizeDetailSurvival({ rows = [], retention = null, items = [] } = {}) {
+export function summarizeDetailSurvival({ rows = [], retention = null, items = [], sources = null } = {}) {
     const byId = new Map((rows || []).map(row => [row.id, row]));
     let summaryKept = 0;
     let summaryKeptNotConveyed = 0;
@@ -432,6 +460,8 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
     let negativeLeaks = 0;
     let fixtureDefects = 0;
     let bothChannels = 0;
+    let visibleInPrompt = 0;
+    let instructionOnly = 0;
     const outcomes = [];
     for (const item of items || []) {
         const row = byId.get(item.id) || null;
@@ -439,10 +469,24 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
         const conveys = row ? row.replyConveys === true : false;
         const defect = row ? row.fixtureDefect === true : false;
         if (defect) fixtureDefects += 1;
+        const source = sources && typeof sources.get === 'function' ? sources.get(item.id) : null;
+        const sourceKnown = Boolean(source && source.known === true);
+        const sourceVisible = sourceKnown && source.visible === true;
+        const writtenByModel = !sourceKnown || source.writtenByModel !== false;
         let outcome = null;
         if (item.kind === 'negative') {
             if (channel !== 'none' && channel !== 'unknown') negativeLeaks += 1;
             outcome = conveys ? 'fabricated' : 'refused';
+        } else if (sourceVisible) {
+            // The needle's own row is still in the prompt. The reply can copy it from the transcript, so
+            // "conveyed with no channel" measures the harness, not the memory (run 1's d-place).
+            outcome = 'visible-in-prompt';
+            visibleInPrompt += 1;
+        } else if (sourceKnown && channel === 'evidence' && !writtenByModel) {
+            // No row the model wrote carries the needle, yet the evidence block matched it: the quote came
+            // from a user row - for a declared detail, the instruction that named it (run 4's d-name).
+            outcome = 'instruction-only';
+            instructionOnly += 1;
         } else if (channel === 'continuity' || channel === 'both') {
             if (channel === 'both') bothChannels += 1;
             outcome = 'summary-kept';
@@ -463,7 +507,8 @@ export function summarizeDetailSurvival({ rows = [], retention = null, items = [
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,
         items: (items || []).length,
         summaryKept, summaryKeptNotConveyed, retrievalRecovered, retrievedNotConveyed,
-        refused, fabricated, negativeLeaks, fixtureDefects, bothChannels, outcomes,
+        refused, fabricated, negativeLeaks, fixtureDefects, bothChannels, visibleInPrompt, instructionOnly,
+        outcomes,
         retention: retention ? {
             total: retention.total,
             retained: (retention.retained || []).map(detail => detail.id),
@@ -585,6 +630,8 @@ export function formatDetailReport(survival) {
     if (survival.retrievedNotConveyed) extra.push('检索到但未答 ' + survival.retrievedNotConveyed + ' 个');
     if (survival.summaryKeptNotConveyed) extra.push('摘要留下但未答 ' + survival.summaryKeptNotConveyed + ' 个');
     if (survival.negativeLeaks) extra.push('负控命中通道 ' + survival.negativeLeaks + ' 个');
+    if (survival.visibleInPrompt) extra.push('原文仍在提示 ' + survival.visibleInPrompt + ' 个');
+    if (survival.instructionOnly) extra.push('仅指令行命中 ' + survival.instructionOnly + ' 个');
     return 'DETAIL-SURVIVAL: 摘要保留了 ' + survival.summaryKept + ' 个 / 检索取回 ' + survival.retrievalRecovered
         + ' 个 / 拒绝 ' + survival.refused + ' 个 / 编造 ' + survival.fabricated + ' 个'
         + (extra.length ? '（' + extra.join('，') + '）' : '')
@@ -632,7 +679,7 @@ export function channelAttribution({ foldedRows = 0, summaryCommitted = false } 
 /** The run record written outside the repository, with the block and reply it was read from. */
 export function buildDetailEvidence({ at, probeTurns = [], phase1Last = null, retention = null, positive = null,
     items = [], probes = [], adjudicationErrors = [], adjudicationSummary = null, survival = null,
-    probeMode = 'single', foldedRows = 0, summaryCommitted = false } = {}) {
+    probeMode = 'single', foldedRows = 0, summaryCommitted = false, sources = null } = {}) {
     return {
         schemaVersion: DETAIL_SURVIVAL_SCHEMA_VERSION,
         at, phase1Last,
@@ -655,6 +702,7 @@ export function buildDetailEvidence({ at, probeTurns = [], phase1Last = null, re
             injection: probe.injection ? { continuity: probe.injection.current_state || null,
                 evidence: probe.injection.reference || null } : null })),
         graded: (probes || []).flatMap(probe => probe.graded || []),
+        sources: sources || null,
         adjudicationErrors,
         adjudicationSummary,
         survival,

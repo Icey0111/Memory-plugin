@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import {
   DETAIL_CHANNELS, DETAIL_EXPECTATIONS, normalizeText, needleForms, containsAny, parseTurnsFile,
   continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems, buildProbeQuestion,
-  attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival,
+  attributeChannel, looksLikeLanguageMismatch, gradeProbeItem, summarizeDetailSurvival, needleSources,
   formatDetailReport, buildDetailEvidence, matchNeedle, FACT_KINDS, DEFAULT_FACT_KIND, isMustKeep,
   summarizeFactSurvival, formatFactSurvival, leaksNeedle, freezeTurnsFixture, TURNS_FIXTURE_SCHEMA_VERSION,
   probeIndependence, channelAttribution, detailsDueAt,
@@ -480,6 +480,65 @@ const adjudicate = graded => {
     'the early fact really was lost between the two merges, and the later one is not accused of a loss it cannot have');
   assert.deepEqual(facts.mustKeepLostByModel, ['early']);
   assert.equal(facts.mustKeepTotal, 2);
+}
+
+// --- 16. a probe reads memory only while the answer is not already in the prompt ----------------------
+// Two live runs exposed the missing readings. Run 1 asked about a detail whose source row was still
+// unfolded (its second batch had been refused), the model answered from the transcript, and the report
+// called it fabricated. Run 4 asked about a name the model never wrote in its own prose; the evidence
+// block had matched it inside the user's instruction row. Neither is a memory outcome.
+{
+  const chat = [
+    { is_user: true, mes: '开场：让一个新人物登场——白先生，采药的老人。', is_system: true },
+    { is_user: false, mes: '老人背着藤篓走进谷口。', is_system: true },
+    { is_user: false, mes: '药王谷在背阴面，石上青苔很厚。', is_system: false },
+  ];
+  assert.deepEqual(needleSources(chat, { needle: ['藤篓'] }),
+    { known: true, visible: false, writtenByModel: true, rows: [{ index: 1, isUser: false, hidden: true }] },
+    'a folded row the model wrote is not in the prompt');
+  assert.equal(needleSources(undefined, { needle: ['藤篓'] }).known, false,
+    'no transcript handed in is not the same reading as "the model never wrote it"');
+  assert.equal(needleSources(chat, { needle: ['青苔'] }).visible, true,
+    'a needle in an unfolded row can be copied from the transcript');
+  const name = needleSources(chat, { needle: ['白先生'] });
+  assert.equal(name.visible, false);
+  assert.equal(name.writtenByModel, false, 'only the user instruction row carries the name');
+  assert.equal(needleSources(chat, { needle: ['不存在的东西'] }).rows.length, 0);
+
+  const items = [
+    { id: 'd-visible', kind: 'detail', needle: ['青苔'], question: '谷口覆盖着什么？', expect: 'dropped', turn: 11 },
+    { id: 'd-name', kind: 'detail', needle: ['白先生'], question: '他叫什么？', expect: 'dropped', turn: 1 },
+    { id: 'd-real', kind: 'detail', needle: ['藤篓'], question: '他背着什么？', expect: 'dropped', turn: 2 },
+  ];
+  const reference = '谷口石上一片青苔；名字是白先生；他背着藤篓。';
+  const rows = adjudicate(items.map(item => gradeProbeItem(item,
+    { injection: { current_state: null, reference },
+      replyText: '1. 青苔。2. 白先生。3. 藤篓。', questionText: buildProbeQuestion(items).text })));
+  const sources = new Map(items.map(item => [item.id, needleSources(chat, item)]));
+  const survival = summarizeDetailSurvival({ rows, retention: null, items, sources });
+  const outcomeOf = id => survival.outcomes.find(outcome => outcome.id === id).outcome;
+  assert.equal(outcomeOf('d-visible'), 'visible-in-prompt', 'the transcript, not the memory, answered it');
+  assert.equal(outcomeOf('d-name'), 'instruction-only', 'the evidence matched the user instruction row');
+  assert.equal(outcomeOf('d-real'), 'retrieval-recovered', 'a folded model-written row reached by evidence is real');
+  assert.equal(survival.visibleInPrompt, 1);
+  assert.equal(survival.instructionOnly, 1);
+  assert.equal(survival.retrievalRecovered, 1);
+  assert.equal(survival.fabricated, 0, 'neither new reading is a fabrication');
+  assert.equal(survival.refused, 0);
+  const line = formatDetailReport(survival);
+  assert.ok(line.includes('原文仍在提示 1 个'), line);
+  assert.ok(line.includes('仅指令行命中 1 个'), line);
+  // Without the source map the old reading stands, so an older caller is not silently reclassified.
+  const bare = summarizeDetailSurvival({ rows, retention: null, items });
+  assert.equal(bare.visibleInPrompt, 0);
+  assert.equal(bare.retrievalRecovered, 3);
+  // A caller that passes a source map built from no transcript must keep that reading too: reading "no
+  // chat" as "the model never wrote it" is what first turned a real recovery into instruction-only.
+  const unknown = new Map(items.map(item => [item.id, needleSources(undefined, item)]));
+  const unread = summarizeDetailSurvival({ rows, retention: null, items, sources: unknown });
+  assert.equal(unread.instructionOnly, 0);
+  assert.equal(unread.visibleInPrompt, 0);
+  assert.equal(unread.retrievalRecovered, 3, 'an unknown transcript keeps the ordinary reading');
 }
 
 console.log('PASS detail survival: adaptive retention, per-channel recovery, refusal and fabrication, read from the probe turn block');
