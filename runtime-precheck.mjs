@@ -24,7 +24,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 /** The functions that carry the anchor protocol and the summary commit path. */
 export const WATCH = {
     'raw-history.js': ['parseAnchors', 'parseAnchorChanges', 'mergeAnchors', 'looksLikeAnchorOperation',
-        'summaryRequest', 'anchorRepairRequest', 'planAnchors', 'formatAnchorPrompt', 'stateRevisionOf'],
+        'summaryRequest', 'anchorRepairRequest', 'planAnchors', 'formatAnchorPrompt', 'stateRevisionOf',
+        'validSummary', 'nextSummaryBatch', 'applyNarrativeFolds'],
     'narrative-runtime.js': ['updateNarrative', 'readNarrativeReport', 'generateNarrativeSummary'],
 };
 

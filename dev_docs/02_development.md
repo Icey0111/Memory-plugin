@@ -836,3 +836,11 @@ at the `over_budget` stage (a body past the ceiling, and its one body repair als
 stayed visible in that transcript - nothing hides a row until an accepted summary covers it. It is a
 summary-commit reliability problem, separate from the fold projection, and it stays open.
 
+The first live run after the deploy still folded 40 rows, because the host page had not been reloaded and was
+executing the previous `raw-history.js`. `runtime-precheck.mjs` reported PASS anyway: its WATCH list named the
+anchor and commit-path functions but not `applyNarrativeFolds`, so the one function this change altered was
+invisible to the gate. The fold functions are now watched. The precheck rightly reported the stale loaded module
+before the reload, and after the reload the same chat reads `folded 41` (rows 0-40, greeting included, probe rows
+41-42 visible) - the boundary the host will draw on the next generation sits at row 41, below floor 40. A gate is
+only as wide as the functions it watches.
+

@@ -39,6 +39,14 @@ the one summarized row the retriever was forbidden to quote.
 - The natural track already excluded the greeting from `visible` when it simulates a fold, so the 1,296-turn
   corpus reading is unchanged by construction: this change makes the runtime agree with the instrument, it does
   not move the instrument.
+- **Live confirmation after a host reload.** The run-2 acceptance chat ends at `folded 41` (rows 0-40) with the
+  greeting hidden and the two probe rows 41-42 visible, so the host's next boundary lands at row 41 - below
+  floor 40 - instead of row 40.
+- **The precheck could not see this change.** `applyNarrativeFolds` was not in `runtime-precheck.mjs`'s WATCH
+  list, so the deploy followed by the already-open page reported PASS while the page still executed the previous
+  fold rule: the first live run after the deploy folded 40 rows, not 41. The fold functions (`validSummary`,
+  `nextSummaryBatch`, `applyNarrativeFolds`) are now watched; the same precheck reports the stale loaded module
+  before a reload and PASS after it. A gate is only as wide as the functions it watches.
 
 ## Consequences and limits
 
