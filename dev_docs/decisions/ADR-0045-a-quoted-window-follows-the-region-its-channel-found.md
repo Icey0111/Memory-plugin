@@ -100,6 +100,17 @@ chunk id, row index, occurrence count, descriptor count and score identical).
   real chat the top pick is still the action beat, and the introduction candidate is `raw_9:0:691` row 8 -
   "她比我矮半个头…穿着深绿色的皮甲…她叫薇斯珀，是这片林子里的巡林人".
 
+## The shipped path, on the turn that failed
+
+The probes each pass their own question as the query, which is not how the runtime works: the runtime plans the
+query from the pending user turn and supplies the character names from the knowledge block. Replaying the real
+chat's actual memory-check turn through `planRetrievalQuery` (focused strategy, 44-character query,
+`profileNames = ["薇斯珀"]`) and then the shipped ranker and packer: the evidence block quotes rows 41, 30,
+**8**, 23 and 24, and row 8's window is `[146, 352]`, anchored on the descriptor region and carrying **all
+five** of the row's appearance and clothing details (左颧骨, 深绿色的皮甲, 藤条编成, 刀鞘上刻着, 像刀子一样直).
+Before this change the same turn quoted neither row 8 nor those details anywhere. That is the production
+query, not a probe question, and it is the reading the probes were a proxy for.
+
 ## Decision
 
 Shipped. It ships as the window rule, not as a new score: the character channel's ranking score is unchanged
