@@ -413,3 +413,22 @@ statement (`anchors_without_subject`, now stated apart from "no carrier": the fi
 anything, the second was not restated). The ledger line is built by the pure `anchorPanelText`, so what the
 panel says can be read offline; rendering it against the real branch chat is what caught the wall of text.
 
+### A correction: the batch observation is one revision behind its own commit
+
+The 20-turn acceptance (a fresh chat, ten turns introducing a character and ten a scene) completed on
+2026-09-15: both batches committed, the phase-1 gate passed (20/20 floors, a 602-character summary covering 42
+chunks, 40 rows folded), and five questions were asked from a restored phase-1 state. The memory check read
+**summary-kept 1 / retrieval-recovered 2 / refused 2 / fabricated 0**, no negative-control leak and no fixture
+defect - the two recovered details came back through the evidence channel and the third was truthfully refused.
+
+That same run's `fact-survival` classification reported `must-keep lost in a merge: 2/4 (d-place, d-rule)`,
+attributed to the model, and it was reported as a reproducible defect. **It is a measurement artefact.** The
+merge call's own request and response contain both facts, and the committed store after the run keeps them in
+the summary text, in the anchors and in the knowledge block. The observation is taken from the batch turn's own
+status, which is the state one revision *behind* the commit that batch just made, so a fact introduced in that
+batch reads as absent. The site carries the limitation in a comment until the observation is re-read after the
+commit settles. A wrong fact-survival verdict is worse than no verdict: it argues for a pipeline change the
+state does not need, and this one would have added a protection clause to the merge request for a loss that
+never happened.
+
+

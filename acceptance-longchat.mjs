@@ -280,6 +280,12 @@ for (let turnNo = startAt; turnNo <= last; turnNo += 1) {
     + ' anchors=' + (state.anchorsActive != null ? state.anchorsActive : '?') + ' pending=' + (state.pendingFloors != null ? state.pendingFloors : '?')
     + ' fails=' + (state.summaryFailures != null ? state.summaryFailures : '?') + ' injRev=' + (state.injected ? state.injected.state_revision : '?'));
   if (detailMode && isBatch && parsedTurns.details.length) {
+    // Measured limitation, found on the 2026-09-15 acceptance: this observation reads the batch turn's own
+    // status, which is one revision behind the commit that same batch just made. The committed store after the
+    // run kept both of the facts this classified as "lost in a merge ... by model": 芦花荡 and 天黑后不能点第二盏灯
+    // are in the merged summary text, in the anchors and in the knowledge block, and the model's own merge
+    // response contains them. Until the observation is re-read after the commit settles, read "lost in a merge"
+    // as "absent from the status this turn was built with", not as a model loss.
     const split = splitDetailsByRetention(parsedTurns.details, continuityBag(post));
     // The raw summary output, so a loss can be attributed to the model or to the pipeline.
     const rawResponse = (newCalls || []).map(call => {
