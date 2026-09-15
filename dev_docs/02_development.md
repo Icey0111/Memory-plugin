@@ -596,3 +596,30 @@ same character inside a common word, and a key-to-span ranking by proximity or d
 a term count the frequency cap has already removed. Later exploration scripts drifted in their flat baseline, so
 only ADR-0046's numbers and the v7 reproduction inside them are comparable to the table above.
 
+### Ranking cannot close the last miss; attribution needed a control of its own (2026-09-15)
+
+Two parallel measurements extended the fan-out finding.
+
+**A defensible ordering helps, but it cannot reach `m_speech`.** Ordering each composite key's candidate spans by
+a signal other than the frequency-capped term count - distance from the subject's nearest mention in the row, or
+the descriptor count computed before the cap, or both - buys `s_hair` and precision, but every defensible
+ranking stops at 15/16. The best point is the combination at one span per key: 15/16 reachable at **43 fired spans
+and 58.1%** carrying the needle, against ADR-0046's 14/16 at 38 and 36.8%. Only the degenerate ordering - the one
+sorting by the term count the cap has zeroed - reads 16/16, which is the tie-break already recorded. `m_speech`
+is therefore a vocabulary problem, not a ranking one: the manner phrase ("她话不多，开口往往像刀子一样直")
+contains 口, 100 candidate spans in this story carry that character, and the span covering the needle ranks 17th by
+distance behind 98 incidental ones. The key has to recognise a manner phrase, not a character.
+
+**Attribution was measured against a control, and the speaker field is weak.** For the 16 needles' rows, the
+archived row's speaker maps to the annotated subject in only **2/16** (the two rows where the subject is the
+narrator) and misattributes 14/16; the subject's name occurs in the row in 14/16, its name or an alias in
+**16/16**, and a two-character fragment in 16/16. The named set is never a singleton (**0/16**) - largely because
+the second-person 你 appears in almost every row - and becomes a singleton in 10/16 once 你 is excluded. The rule
+the key layer should use is therefore: name, alias and fragment for recall; the persona excluded from the subject
+set; proximity or descriptor density only as the discriminator that picks one span among the named subjects; the
+speaker field at most as a tie-break.
+
+**A reproducibility caveat.** Two scripts implementing the nominal "keep two spans per key" rule disagree - 15/16
+at 54 spans and 53.7% against 13/16 at 43 and 48.8% - while the ADR-0046 reference reproduces exactly in both
+(14/16 at 38 and 36.8%). Until that reference is re-established, only the reproducing row is comparable.
+
