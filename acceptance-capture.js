@@ -133,6 +133,33 @@ export function installCapture(ctx, options = {}) {
   return boundary;
 }
 
+/**
+ * Is the state the questions are about actually the state on disk?
+ *
+ * A probe question asks what the memory kept, so it is only meaningful once the phase-1 turns have been
+ * summarized and their original rows hidden. Asking while the transcript is still visible measures the
+ * transcript, not the memory, and a run that does it reports a pass for the wrong reason. The acceptance
+ * protocol names this check, so the driver refuses on a failure instead of warning.
+ *
+ * `completeTurns` counts finished floors, `coveredFloors` how many of them the committed summary covers,
+ * `folded` how many rows the fold hid, and `pendingFloors` how many are still waiting for a summary.
+ */
+export function summaryGate(state, { turns = null, requireFold = true } = {}) {
+    const s = state || {};
+    const completeTurns = Number(s.completeTurns) || 0;
+    const coveredFloors = Number(s.coveredFloors) || 0;
+    const folded = Number(s.folded) || 0;
+    const pendingFloors = Number(s.pendingFloors) || 0;
+    const wanted = Number(turns) || completeTurns;
+    const problems = [];
+    if (completeTurns < wanted) problems.push('阶段一只有 ' + completeTurns + '/' + wanted + ' 个完整楼层');
+    if (coveredFloors < completeTurns) problems.push('摘要只覆盖 ' + coveredFloors + '/' + completeTurns + ' 个楼层');
+    if (pendingFloors > 0) problems.push('还有 ' + pendingFloors + ' 个楼层等待总结');
+    if (requireFold && folded <= 0) problems.push('没有任何楼层被折叠隐藏，原文仍在可见区');
+    return { ok: problems.length === 0, completeTurns, coveredFloors, folded, pendingFloors,
+        reason: problems.join('；') };
+}
+
 export function completeTurnsOf(rows) {
   let completeTurns = 0;
   let lastRole = null;

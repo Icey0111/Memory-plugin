@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest } from './acceptance-capture.js';
+import { awaitJson, collectSettled, buildTurnRecord, buildBatchEvidence, splitRequest, summaryGate } from './acceptance-capture.js';
 import { parseTurnsFile, continuityBag, splitDetailsByRetention, choosePositive, buildProbeItems,
   buildProbeQuestion, gradeProbeItem, summarizeDetailSurvival, formatDetailReport, buildDetailEvidence,
   summarizeFactSurvival, formatFactSurvival, freezeTurnsFixture } from './detail-survival.mjs';
@@ -315,6 +315,15 @@ if (detailMode) {
   if (!items.length) {
     console.log('DETAIL-SURVIVAL: 没有可提问的条目（无 dropped、无正控、无负控），跳过阶段二。');
   } else {
+    // No question is asked until phase 1 is summarized and its original rows are hidden: asking earlier
+    // measures the transcript rather than the memory. This is the acceptance protocol's own precondition,
+    // so a failure stops the run instead of being logged as a note.
+    const gate = summaryGate(committed.post || committed, { turns: phase1Last });
+    console.log('DETAIL-SURVIVAL phase-1 gate: ' + (gate.ok ? 'PASS' : 'FAIL')
+      + '（完整楼层 ' + gate.completeTurns + '/' + phase1Last + '，摘要覆盖 ' + gate.coveredFloors
+      + '，已折叠 ' + gate.folded + '，待总结 ' + gate.pendingFloors + '）'
+      + (gate.ok ? '' : '：' + gate.reason));
+    if (!gate.ok) throw new Error('--detail-survival refuses to ask questions: ' + gate.reason);
     const perTurn = parsedTurns.probeMode === 'perTurn';
     const groups = perTurn ? items.map(item => [item]) : [items];
     if (perTurn) {

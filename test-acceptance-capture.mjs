@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
   META_KEY, classifyModelCall, createCaptureBoundary, collectSettled, awaitJson, installCapture, redact,
   stripReasoning, buildTurnRecord, buildBatchEvidence, deepSnapshot, summarizeCall, splitRequest, promptsOf,
-  captureChatRows, resetChatSurface, restoreSnapshot, HOST_SCRIPT_URL,
+  captureChatRows, resetChatSurface, restoreSnapshot, HOST_SCRIPT_URL, summaryGate,
 } from './acceptance-capture.js';
 
 const request = content => ({ messages: [{ role: 'system', content }], max_tokens: 8192 });
@@ -261,6 +261,22 @@ const reply = content => ({ choices: [{ message: { content }, finish_reason: 'st
   const weird = captureChatRows({ chat: [{ is_user: true, mes: 'z', run() { return 1; } }] });
   assert.equal(typeof weird[0].run, 'undefined', 'a non-serialisable row field is dropped, not fatal');
   assert.equal(weird[0].mes, 'z');
+}
+
+// --- 13. the questions wait for the summary: phase 1 summarized and hidden before the first probe ---------
+// A probe asks what the memory kept, so asking while the transcript is still visible measures the transcript.
+// The driver refuses on a failure; this pins what a failure is.
+{
+    const ready = { completeTurns: 20, coveredFloors: 20, folded: 40, pendingFloors: 0 };
+    const gate = summaryGate(ready, { turns: 20 });
+    assert.equal(gate.ok, true, 'a fully summarized and folded phase 1 may be asked about');
+    assert.equal(gate.coveredFloors, 20, 'and the readings come back for the run log');
+    assert.equal(summaryGate({ ...ready, completeTurns: 15 }, { turns: 20 }).ok, false, 'not enough finished floors');
+    assert.ok(summaryGate({ ...ready, coveredFloors: 10 }, { turns: 20 }).reason.includes('摘要只覆盖'),
+        'a summary that covers half of phase 1 is refused');
+    assert.equal(summaryGate({ ...ready, pendingFloors: 1 }, { turns: 20 }).ok, false, 'a waiting batch is refused');
+    assert.ok(summaryGate({ ...ready, folded: 0 }, { turns: 20 }).reason.includes('原文仍在可见区'),
+        'a summary nobody hid the text for is refused');
 }
 
 console.log('PASS acceptance capture: both call kinds record raw bodies and elapsed, and consecutive turns keep separate injected blocks');
