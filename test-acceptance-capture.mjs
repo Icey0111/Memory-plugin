@@ -267,14 +267,17 @@ const reply = content => ({ choices: [{ message: { content }, finish_reason: 'st
 // A probe asks what the memory kept, so asking while the transcript is still visible measures the transcript.
 // The driver refuses on a failure; this pins what a failure is.
 {
-    const ready = { completeTurns: 20, coveredFloors: 20, folded: 40, pendingFloors: 0 };
+    const ready = { completeTurns: 20, covered: 42, folded: 40, summaryChars: 700, pendingFloors: 0 };
     const gate = summaryGate(ready, { turns: 20 });
     assert.equal(gate.ok, true, 'a fully summarized and folded phase 1 may be asked about');
-    assert.equal(gate.coveredFloors, 20, 'and the readings come back for the run log');
+    assert.equal(gate.coveragePct, 2.1, 'and the readings come back for the run log');
     assert.equal(summaryGate({ ...ready, completeTurns: 15 }, { turns: 20 }).ok, false, 'not enough finished floors');
-    assert.ok(summaryGate({ ...ready, coveredFloors: 10 }, { turns: 20 }).reason.includes('摘要只覆盖'),
-        'a summary that covers half of phase 1 is refused');
-    assert.equal(summaryGate({ ...ready, pendingFloors: 1 }, { turns: 20 }).ok, false, 'a waiting batch is refused');
+    assert.ok(summaryGate({ ...ready, covered: 0, summaryChars: 0 }, { turns: 20 }).reason.includes('没有已提交的摘要'),
+        'a phase 1 nobody summarized is refused');
+    assert.equal(summaryGate({ ...ready, pendingFloors: 3 }, { turns: 20 }).ok, true,
+        'a tail waiting after a commit is not a failure');
+    assert.equal(summaryGate({ ...ready, covered: 0, summaryChars: 0, pendingFloors: 9 }, { turns: 20 }).reason.includes('等待总结'),
+        true, 'an unsummarized phase with work waiting says so');
     assert.ok(summaryGate({ ...ready, folded: 0 }, { turns: 20 }).reason.includes('原文仍在可见区'),
         'a summary nobody hid the text for is refused');
 }

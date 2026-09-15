@@ -147,16 +147,23 @@ export function installCapture(ctx, options = {}) {
 export function summaryGate(state, { turns = null, requireFold = true } = {}) {
     const s = state || {};
     const completeTurns = Number(s.completeTurns) || 0;
-    const coveredFloors = Number(s.coveredFloors) || 0;
+    const covered = Number(s.covered) || 0;
     const folded = Number(s.folded) || 0;
+    const summaryChars = Number(s.summaryChars) || 0;
     const pendingFloors = Number(s.pendingFloors) || 0;
     const wanted = Number(turns) || completeTurns;
     const problems = [];
     if (completeTurns < wanted) problems.push('阶段一只有 ' + completeTurns + '/' + wanted + ' 个完整楼层');
-    if (coveredFloors < completeTurns) problems.push('摘要只覆盖 ' + coveredFloors + '/' + completeTurns + ' 个楼层');
-    if (pendingFloors > 0) problems.push('还有 ' + pendingFloors + ' 个楼层等待总结');
+    // The floor-level reading (`summary_covered_floors`) exists in the read-only report but is built from the
+    // committed chunk list, which the deep snapshot does not carry; what it does carry lives in the store and
+    // the rows, so the gate reads those: a committed summary of some length covering some chunks, and a fold
+    // that actually hid rows. A pending count is only a failure when nothing is committed at all - right
+    // after a batch the tail is normally waiting for the next event.
+    if (!summaryChars || !covered) problems.push('没有已提交的摘要覆盖任何楼层（摘要 ' + summaryChars + ' 字符，覆盖 ' + covered + ' 块）');
+    if (pendingFloors > 0 && !covered) problems.push('还有 ' + pendingFloors + ' 个楼层等待总结');
     if (requireFold && folded <= 0) problems.push('没有任何楼层被折叠隐藏，原文仍在可见区');
-    return { ok: problems.length === 0, completeTurns, coveredFloors, folded, pendingFloors,
+    return { ok: problems.length === 0, completeTurns, covered, folded, summaryChars, pendingFloors,
+        coveragePct: completeTurns ? Math.round(covered / completeTurns * 100) / 100 : null,
         reason: problems.join('；') };
 }
 

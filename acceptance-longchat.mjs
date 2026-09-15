@@ -320,8 +320,8 @@ if (detailMode) {
     // so a failure stops the run instead of being logged as a note.
     const gate = summaryGate(committed.post || committed, { turns: phase1Last });
     console.log('DETAIL-SURVIVAL phase-1 gate: ' + (gate.ok ? 'PASS' : 'FAIL')
-      + '（完整楼层 ' + gate.completeTurns + '/' + phase1Last + '，摘要覆盖 ' + gate.coveredFloors
-      + '，已折叠 ' + gate.folded + '，待总结 ' + gate.pendingFloors + '）'
+      + '（完整楼层 ' + gate.completeTurns + '/' + phase1Last + '，摘要 ' + gate.summaryChars
+      + ' 字符覆盖 ' + gate.covered + ' 块，已折叠 ' + gate.folded + '，待总结 ' + gate.pendingFloors + '）'
       + (gate.ok ? '' : '：' + gate.reason));
     if (!gate.ok) throw new Error('--detail-survival refuses to ask questions: ' + gate.reason);
     const perTurn = parsedTurns.probeMode === 'perTurn';
