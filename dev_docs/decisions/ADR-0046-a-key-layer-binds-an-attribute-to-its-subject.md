@@ -69,8 +69,11 @@ subject key's canonical span is what reaches a named subject, so the removed ter
   a rank-1 mechanism rather than a tie. An audit the same day bounds that reading: 51.4% of the fired spans carry
   no needle; splitting the query-expansion flag shows the legitimate subject-key route alone carries 13/16 and the
   shipped planner's resolution carries the last three, at 119 fired spans and 37.0%; and on an unrelated chat the
-  same rule reads 2/10 where the shipped retriever reads 6/10. The key form holds in domain; what is unproven is
-  whether the attribute vocabulary can be derived rather than authored per story. See 02_development.md.
+  same rule reads 2/10 where the shipped retriever reads 6/10. The vocabulary question was then tested clean: a
+  mechanical derivation re-run on a third chat recovered 3 of 10 needed words and reached 3/10, against 8 of 9 and
+  6-7/10 where its author had already seen the probes, and moving the occurrence choice to retrieval time did not
+  beat the index-time rule. On this evidence the key layer is not better than the shipped retriever out of domain.
+  See 02_development.md.
 - The instrument reads a private chat and private needles, so it is not committed; its method and its numbers are.
 - **A measurement defect can manufacture a design conclusion.** The first reading of the composite rules was
   taken while the ruler's subject-key route was silently inert - the canonical span set was built from pre-copy
