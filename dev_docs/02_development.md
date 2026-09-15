@@ -477,3 +477,21 @@ a question attribute mapped to the row that answers it, or a nomination that doe
 as the rows already chosen - rather than more candidates at the same weight. The change is reverted and nothing
 shipped.
 
+### A third attempt, and what it settles: the question's own attribute
+
+Mapping the question's attribute to the rows carrying it - the mechanism the two rejections pointed at - was
+implemented: the query's descriptor words (for "瑟拉菲娜的头发是什么颜色？" that is 发) nominate up to two rows
+per character that carry the word near the name, with the quote anchored on the word nearest the name. Measured:
+
+- The strict probe count does not move (9/10), and the block's composition changes: rows 28 and 24 leave the
+  five slots. So it is a cost with no strict benefit - rejected, reverted, nothing shipped.
+- What the run does settle is the *nature* of the remaining miss. The question is already answered at the fact
+  level: two quoted rows carry 粉色 (the introduction row and a later row), and the project's own
+  paraphrase-tolerant matcher reads the probe set **10/10**. The strict needle (粉色的发丝) sits in a row that
+  no query-time signal selects, and selecting it would not add a fact the block lacks.
+
+The reading to keep, then, is not "the row never ranks" but "the strict needle's *wording* lives in a row the
+block need not quote, because the fact is quoted already". A future attempt should not be aimed at that row; it
+should be aimed at a question whose fact is genuinely absent from the block, and there the instruments already in
+place (the ten probes' fact-level reading, the 1,289-turn corpus, and the phase-1 gate) are what measure it.
+
