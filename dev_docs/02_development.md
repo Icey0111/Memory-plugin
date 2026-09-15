@@ -1448,3 +1448,31 @@ fusion ranked low, which `RERANK_ENTITY_EXTRA` exists to seat - now has its rise
 put at twenty can no longer be lifted to the head. None of these probes covers that case; a returning-character
 fixture would.
 
+What the runs already recorded can say about that risk is narrower than the case itself, and it is worth writing
+down because it points the other way. Every build reports the profiles its query named and whether each was
+quoted into the evidence (`profile_terms[].quoted`):
+
+| arm | named profiles | quoted |
+| --- | --- | --- |
+| rise <= 4 (ab-rise-1..3) | 5 (瑟拉菲娜, 石原 x2, Seraphina, 小姑娘) | **5** |
+| drop <= 4 (ab-bound-1..2) | 3 (石原 x2, 瑟拉菲娜) | **3** |
+| unbounded (ab-on-1..3) | 3 (石原 x2, Seraphina) | 3 |
+| unbounded (path1-a, path1-c, 2g) | 满仓, 阿婆, 渔妇 among others | **3 not quoted** |
+
+The only named profiles that failed to reach the evidence anywhere in the twenty-three runs - 满仓 in `path1-a`,
+阿婆 in `path1-c`, 渔妇 in `2g` - are all in the **unbounded** arm, the arm the bound was supposed to be safer
+than. The rise-bound arm quoted every profile its query named.
+
+That is not the test the risk needs. `quoted` is per profile, not per row: it says some row of that profile
+reached the evidence, not that the *introduction* row did, so it does not exercise a character who has been
+absent for many turns and whose only relevant row is the one that introduced him long ago. That case needs a
+purpose-built fixture with a second thread and a probe that names the returning character without naming the
+value it is testing.
+
+**That fixture is not written, and the runs behind this whole log ended here for an operational reason.** Mid-session
+the wider sandbox mode every live step needs - the acceptance driver creates its evidence directory outside the
+repository by design, and the deploy writes the live install - stopped being granted: the request now blocks
+until the command is killed rather than being approved or refused. So no acceptance run and no deploy can start
+until that answerer is back, and the two things this log would do next are exactly those: build the
+returning-character fixture, and measure the window's coverage.
+
