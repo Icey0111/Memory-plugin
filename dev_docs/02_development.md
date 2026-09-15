@@ -1366,3 +1366,43 @@ the two-character run `船底`. One result-level failure stands out and is not e
 both channels - the model replied as the character denying knowledge, which is a probe-framing failure worth its
 own diagnosis.
 
+#### The drop bound: implemented, measured, and not shipped (2026-09-16, runs ab-bound-1..3)
+
+The A/B left one reading to act on: across 22 captures the stage replaced essentially the whole shortlist and the
+fused first candidate lost the head in every single one. The obvious response is to bound how far a candidate may
+fall below its fused position - the fusion carries three channels' judgement, and a cross-encoder that overrides
+all of it is discarding a signal rather than adding one.
+
+`rerankHead` now takes `maxDrop`, implemented as a deadline insertion rather than a post-hoc repair: at each
+position the candidate whose fused position plus the bound has run out is placed, and otherwise the best-scoring
+remaining candidate is. Rising stays unbounded, at most one candidate is ever forced, and
+`maxDrop >= shortlist - 1` is exactly the old order. `rerank_cost` reports `max_drop` for the same reason it
+reports `moved`: a near-reversal can change every position and still respect the bound, so "did the bound hold"
+and "how much moved" are different questions.
+
+Three live runs then took `maxDrop = 4` on the same `path2-shiyuan` fixture. **The bound is exact, and it does not
+do the job it was aimed at.**
+
+- `max_drop` is **4 in every one of the 39 recorded captures and never more**, so the mechanism works.
+- `top1_changed` is still true in 35 of those 39. A bound of four stops the fused first candidate being *buried*;
+  it does not stop it *losing the head*, which only takes one place.
+- The opening instruction row comes back. In `ab-bound-1` the probe evidence quoted `raw_2` in **three of its four
+  probes** (`21:raw_2/f1 | 22:raw_2/f1 | 23:raw_2/f1`), against one of 44 probes across the thirteen unbounded
+  runs. Bounding the fall is the wrong lever for the instruction-slot problem, because clearing that row out of
+  the head needs a *large* demotion.
+- The answer level cannot separate the arms: `ab-bound-2` recovered all three dropped details (`d-arm`,
+  `d-tool`, `d-manner`), `ab-bound-1` recovered none of its one, and `ab-bound-3` is **invalid** - its second batch
+  never committed, so `foldedRows` is 21 and three probes were answered from a transcript that still showed the
+  needles. The instrument classified them `visible-in-prompt`, which is how the run was caught, and it is excluded
+  here: three recoveries in ten probes for the bounded stage against two in thirteen for each of the other arms.
+
+So the shipped default stays unbounded and the parameter stays for the next measurement. The variant that keeps
+both properties is the complementary one - bound how far a candidate may **rise** (a release-time insertion in the
+same shape), which leaves the composition of the head to the fusion while still allowing the instruction row to be
+demoted. That is the next thing to measure, not another threshold on this side.
+
+Two instrument notes from the batch. `ab-bound-3` exposes a gate weakness: a run whose second batch never
+committed still passed the "phase 1 is summarized and its original rows are hidden" precondition, and only the
+per-outcome `visible-in-prompt` classification caught it - the gate should refuse on the fold state as well. And
+`ab-bound-2`'s `d-manner` is credited through the three-character run `指节敲`.
+

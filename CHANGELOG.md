@@ -12,7 +12,8 @@ belongs in Git commits and pull requests.
   candidate sources before and after the reorder; a failed call records `moved: 0` rather than leaving the
   reader to infer it from the error. Ten live runs recorded `rerank_used` and its cost and nothing about the
   order, so none of them could say whether a configured reranker had reordered the prompt at all. The metric is
-  a pure function of the two orders, so it adds no provider cost.
+  a pure function of the two orders, so it adds no provider cost. `max_drop` reports the furthest any candidate
+  fell from its fused position.
 
 ### Fixed
 

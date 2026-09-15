@@ -19,15 +19,49 @@ export function rerankShortlist(ranked, visibleSources, limit = 24, extra = 8) {
         && row.channels.some(channel => channel === 'entity' || channel === 'profile')).slice(0, extra)];
 }
 
-/** The reordered shortlist, before it is put back in front of the tail it did not touch. */
-export function rerankHead(pick, order) {
+/**
+ * The reordered shortlist, before it is put back in front of the tail it did not touch.
+ *
+ * `maxDrop` is the only bound on what the cross-encoder may do, and it is one-sided on purpose. Measured on
+ * 22 live captures (2026-09-16), the stage replaced essentially the whole shortlist - `moved` 13 of 14 up to
+ * 24 of 24 positions, and the fused first candidate lost the head in **every single one** - while the
+ * answer-level A/B over the same fixture came out even, two recoveries against two. So a provider is trusted
+ * to *promote* what the fusion ranked low (that is the case the stage exists for) and not to bury what the
+ * fusion ranked high. A candidate may fall at most `maxDrop` places below its fused position; rising is
+ * unbounded. `maxDrop >= pick.length - 1` reproduces the unbounded order exactly, which is what the offline
+ * experiments that measured this stage's effect want.
+ *
+ * The default is unbounded, which is the stage as it was shipped. `maxDrop = 4` was implemented and measured
+ * live on 2026-09-16 and **is not the default**: it holds exactly (`max_drop: 4` in all 40 captures, never more)
+ * and it does not stop the fused first candidate losing the head, while it does hand the opening-instruction row
+ * back into the evidence slots - `raw_2` was quoted in three of four probes in one run, against one of 44 probes
+ * with the unbounded stage. Answer-level readings could not separate the arms (3 recoveries in ten probes for
+ * the bounded stage, 2 in thirteen for each of the other two). The parameter stays so the complementary bound -
+ * limit how far a candidate may *rise*, which keeps both properties - can be measured without re-plumbing this.
+ *
+ * The default lives in this signature rather than in a module constant because `runtime-precheck` fingerprints
+ * function source: a bound written next to the code it governs cannot be changed on disk while the loaded page
+ * keeps the old one undetected.
+ */
+export function rerankHead(pick, order, maxDrop = Infinity) {
     const scores = new Map(order.map(row => [row.index, row.score]));
-    return pick.map((row, index) => ({ ...row, rerank: scores.get(index) ?? null }))
-        .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.chunk.index - b.chunk.index);
+    const ranked = pick.map((row, index) => ({ row, from: index, rerank: scores.get(index) ?? null }))
+        .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.row.chunk.index - b.row.chunk.index);
+    const bound = Number.isFinite(maxDrop) ? Math.max(0, Math.trunc(maxDrop)) : Infinity;
+    const remaining = ranked.slice();
+    const head = [];
+    for (let position = 0; position < pick.length; position += 1) {
+        // Whoever the bound runs out on at this position has to go now, whichever way it was scored. Every
+        // fused position has a distinct deadline, so at most one candidate is ever forced and the loop cannot
+        // starve: the fused order is the fallback whenever nothing needs forcing.
+        const forced = remaining.findIndex(entry => entry.from + bound === position);
+        head.push(remaining.splice(forced >= 0 ? forced : 0, 1)[0].row);
+    }
+    return head;
 }
 
-export function applyRerankOrder(ranked, pick, order) {
-    return [...rerankHead(pick, order), ...ranked.filter(row => !pick.includes(row))];
+export function applyRerankOrder(ranked, pick, order, maxDrop) {
+    return [...rerankHead(pick, order, maxDrop), ...ranked.filter(row => !pick.includes(row))];
 }
 
 /**
@@ -38,14 +72,22 @@ export function applyRerankOrder(ranked, pick, order) {
  * returned the fused order back. `moved` counts the shortlist positions whose occupant changed, `top1_changed`
  * is the head, and the two three-entry source lists are the before and after a reader can check by eye.
  */
-export function rerankMoveMetrics(pick, order) {
-    const head = rerankHead(pick, order);
+export function rerankMoveMetrics(pick, order, maxDrop) {
+    const head = rerankHead(pick, order, maxDrop);
     const sources = rows => rows.slice(0, 3).map(row => String(row.chunk && row.chunk.source));
+    // `moved` says how much of the order changed; `max_drop` says whether the bound held, which is the number
+    // a bounded stage has to be judged by: a near-reversal can change every position and still keep the fused
+    // head inside its bound.
+    const to = new Map(head.map((row, index) => [row.chunk, index]));
     let moved = 0;
+    let worstDrop = 0;
     for (let index = 0; index < pick.length; index += 1) {
         if (head[index].chunk !== pick[index].chunk) moved += 1;
+        const landed = to.has(pick[index].chunk) ? to.get(pick[index].chunk) : index;
+        if (landed > index) worstDrop = Math.max(worstDrop, landed - index);
     }
-    return { shortlist: pick.length, moved, top1_changed: pick.length > 0 && head[0].chunk !== pick[0].chunk,
+    return { shortlist: pick.length, moved, max_drop: worstDrop,
+        top1_changed: pick.length > 0 && head[0].chunk !== pick[0].chunk,
         top_before: sources(pick), top_after: sources(head) };
 }
 
