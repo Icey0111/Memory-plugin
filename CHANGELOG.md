@@ -7,6 +7,18 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- The opening greeting is hidden with the first committed summary batch instead of staying visible inside the
+  hidden block. A chat's first row is the character's greeting, which no user turn contains; coverage is a prefix
+  that starts there, so leaving it visible made the hidden rows begin at floor 1. The host draws one "context
+  starts here" line (SillyTavern/TauriTavern's `.lastInContext`, `chat.length - openai_messages_count`), so on a
+  live chat with a committed ten-turn batch the line landed on the last hidden row instead of the first visible
+  one: the faded block appeared to be in context and the visible greeting above the line appeared hidden. The
+  greeting now folds under the same every-chunk-covered rule as any other row, and only once a complete turn is
+  covered, so a coverage claim that names nothing but the greeting hides nothing (ADR-0047); it still does not
+  count toward the ten-turn cadence. Measured: `node run-tests.mjs` 50/50 and `node check-syntax.mjs` 99 files;
+  the natural track's fold already excluded the greeting, so the 1,296-turn corpus reading is unchanged by
+  construction.
+
 - A quoted window no longer slides off every region the channel that picked the span voted for. Window placement
   scores candidate windows by how many of the question's own words they carry, which is a proxy for where the
   answer is; a move that left no channel region inside quoted a different part of the row than the one the slot

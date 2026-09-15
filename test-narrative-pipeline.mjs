@@ -123,6 +123,26 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.equal(validSummary(scrambled, chunks), false, 'coverage has to be the exact prefix it claims');
 }
 
+// --- 3b. the opening greeting is hidden with the batch, never on a claim that covers nothing else -
+{
+    const host = makeHost(2);
+    const { chat, store } = host;
+    chat.unshift({ is_user: false, mes: '角色开场白：壁炉旁。' });
+    const history = store.raw_history ??= { version: 1, sequence: 0, records: {}, active: [] };
+    captureHistory(store, chat);
+    const chunks = chunkHistory(history);
+    const greetingOnly = { version: 1, text: '只覆盖开场白', covered: chunks.slice(0, 1).map(c => c.id) };
+    assert.equal(validSummary(greetingOnly, chunks), true, 'covering the greeting alone is a valid prefix');
+    applyNarrativeFolds(chat, history, chunks, greetingOnly, true);
+    assert.equal(chat[0].is_system, undefined,
+        'a claim that covers no complete turn does not hide the greeting');
+    const firstTurn = { version: 1, text: '覆盖开场白与第一层', covered: chunks.slice(0, 3).map(c => c.id) };
+    applyNarrativeFolds(chat, history, chunks, firstTurn, true);
+    assert.equal(chat[0].is_system, true, 'once a turn is covered the greeting is hidden with it (ADR-0047)');
+    assert.equal(chat[1].is_system, true, 'the covered user floor goes with it');
+    assert.equal(chat[3].is_system, undefined, 'the uncovered floor stays visible');
+}
+
 // --- 4. summary failure, budget overrun, and no room all restore the raw text --------------------
 {
     const host = makeHost(12, { summarize: async () => { throw new Error('provider down'); } });

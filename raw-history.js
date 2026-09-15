@@ -1484,7 +1484,12 @@ export function normalizeKnowledgeEntries(entries = []) {
     });
 }
 
-// Hide committed complete turns only. The greeting is context, not one of the counted turns.
+// Hide committed covered rows. A greeting opens the chat before any user turn, so completeTurnRanges
+// never names it, but the summary's coverage is a prefix that starts there: hiding the counted turns
+// while leaving the greeting visible made the hidden rows start at floor 1, and the host draws its
+// "context starts here" line from a single boundary (ADR-0047). The greeting is hidden under the same
+// rule as any other row - every one of its chunks is covered - and only once a covered turn exists, so
+// a summary that covers nothing but the greeting does not hide it.
 export function applyNarrativeFolds(chat, history, chunks, summary, enabled = true) {
     const valid = enabled && validSummary(summary, chunks);
     const covered = new Set(valid ? summary.covered : []);
@@ -1496,9 +1501,16 @@ export function applyNarrativeFolds(chat, history, chunks, summary, enabled = tr
     }
     const active = history.active.map(id => history.records[id]);
     const sources = new Set();
-    for (const range of completeTurnRanges(chunks)) {
+    const ranges = completeTurnRanges(chunks);
+    for (const range of ranges) {
         const turn = chunks.slice(range.start, range.end);
         if (turn.every(chunk => covered.has(chunk.id))) for (const chunk of turn) sources.add(chunk.source);
+    }
+    if (sources.size) {
+        const leading = chunks.slice(0, ranges[0]?.start ?? 0);
+        for (const chunk of leading) {
+            if (bySource.get(chunk.source)?.every(id => covered.has(id))) sources.add(chunk.source);
+        }
     }
     const foldable = new Map(active.filter(row => sources.has(row.id)
         && bySource.get(row.id)?.every(id => covered.has(id))).map(row => [row.index, row]));

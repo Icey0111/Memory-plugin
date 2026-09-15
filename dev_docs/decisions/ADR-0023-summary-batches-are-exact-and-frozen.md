@@ -3,6 +3,7 @@
 - Status: accepted
 - Date: 2026-09-13
 - Supersedes: the newest-turn hiding exception in ADR-0001
+- Superseded by: ADR-0047 (the greeting-hiding clause only; batching and freezing still stand)
 
 ## Decision
 

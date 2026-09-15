@@ -34,7 +34,7 @@ The extension is native JavaScript ES modules, with no build step. Use Node.js 2
 Default summary cadence is **10 floors**, a floor being one user message and the character's reply -
 twenty dialogue message rows. The setting, the report and the hidden count all use that unit; message rows
 are the derived number.
-A character greeting is not a user turn; an unanswered user message is not completed. Tests of
+A character greeting is not a user turn and does not count toward the cadence; it is hidden with the first covered batch, under the same every-chunk-covered rule (ADR-0047). An unanswered user message is not completed. Tests of
 specific boundaries may explicitly use another interval, but live acceptance must retain 10.
 
 Before a live run, `node runtime-precheck.mjs` must exit 0: the repository, the deployed directory and the

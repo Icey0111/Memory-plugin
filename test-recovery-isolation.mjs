@@ -53,7 +53,7 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) h.ctx.chat.push(...pair
     assert.ok(report.persist_error, 'the write failure is recorded as a persistence problem');
     assert.equal(report.persist_error.stage, 'metadata_write');
     assert.match(report.persist_error.reason, /disk full/);
-    assert.equal(h.ctx.chat.filter(r => r.is_system === true).length, 20, 'the commit and its fold stand');
+    assert.equal(h.ctx.chat.filter(r => r.is_system === true).length, 21, 'the commit and its fold stand');
 }
 
 // --- F-8: the raw original index is its own kind, not the memory index ------------------------------

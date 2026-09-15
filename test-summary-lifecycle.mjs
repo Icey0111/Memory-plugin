@@ -29,9 +29,11 @@ function host() {
         assert.equal(calls, Math.floor((n - 1) / 10), 'a pending user message cannot trigger a summary');
         h.ctx.chat.push(pair(n)[1]); await updateNarrative(h.ctx, h.services);
         assert.equal(calls, Math.floor(n / 10), 'one summary at ten turns, then another at twenty');
-        assert.equal(h.ctx.chat.filter(row => row.is_system).length, Math.floor(n / 10) * 20,
-            'each committed ten-turn batch hides exactly twenty message rows');
-        assert.equal(h.ctx.chat[0].is_system, undefined, 'the greeting is not part of the hidden quota');
+        const batches = Math.floor(n / 10);
+        assert.equal(h.ctx.chat.filter(row => row.is_system).length, batches * 20 + (batches ? 1 : 0),
+            'each committed ten-turn batch hides exactly twenty message rows, plus the greeting once one commits');
+        assert.equal(h.ctx.chat[0].is_system, batches ? true : undefined,
+            'the greeting is hidden with the first covered batch, not counted toward its twenty floors');
     }
     assert.equal(readNarrativeReport(h.ctx).completed_floors, 20);
     assert.equal(h.ctx.chat.length, 41);
@@ -58,7 +60,7 @@ function host() {
     assert.doesNotMatch(captured, /第21轮/);
     assert.equal(h.store().narrative_summary.covered.length, 41);
     assert.equal(h.store().raw_history.active.length, 43);
-    assert.equal(h.ctx.chat.filter(row => row.is_system).length, 40);
+    assert.equal(h.ctx.chat.filter(row => row.is_system).length, 41);
     assert.ok(h.ctx.chat.slice(-2).every(row => !row.is_system), 'messages appended during the call stay visible');
 }
 
@@ -73,7 +75,7 @@ function host() {
     await updateNarrative(h.ctx, h.services);
     assert.equal(prompts.length, 1);
     assert.doesNotMatch(prompts[0], /第11轮|第12轮|第13轮/);
-    assert.equal(h.ctx.chat.filter(row => row.is_system).length, 20);
+    assert.equal(h.ctx.chat.filter(row => row.is_system).length, 21);
     assert.equal(readNarrativeReport(h.ctx).pending_floors, 3);
     await updateNarrative(h.ctx, h.services, { force: true });
     assert.equal(prompts.length, 1);

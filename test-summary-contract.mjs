@@ -44,8 +44,8 @@ const add = (h, n) => h.ctx.chat.push(...pair(n));
     add(h, 10);
     await updateNarrative(h.ctx, h.services);
     assert.equal(calls, 1, 'ten turns summarize');
-    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 20, 'and hide exactly twenty rows');
-    assert.equal(h.ctx.chat[0].is_system, undefined, 'the greeting is never one of them');
+    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 21, 'and hide twenty-one rows: the greeting plus twenty floors');
+    assert.equal(h.ctx.chat[0].is_system, true, 'the greeting is hidden under the same coverage rule (ADR-0047)');
     for (const n of [11, 12, 13]) add(h, n);
     await updateNarrative(h.ctx, h.services, { force: true });
     assert.equal(calls, 1, 'a three-turn backlog does not start a second batch');
@@ -53,7 +53,7 @@ const add = (h, n) => h.ctx.chat.push(...pair(n));
     for (let n = 14; n <= 20; n += 1) add(h, n);
     await updateNarrative(h.ctx, h.services);
     assert.equal(calls, 2, 'the backlog is consumed by the next full batch');
-    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 40);
+    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 41);
 }
 
 // --- 2. a backlog is the earliest N turns, never a larger batch -----------------------------------
@@ -64,7 +64,7 @@ const add = (h, n) => h.ctx.chat.push(...pair(n));
     await updateNarrative(h.ctx, h.services);
     assert.match(prompt, /第10轮/, 'the tenth turn of the backlog is inside the batch');
     assert.doesNotMatch(prompt, /第11轮|第12轮|第13轮/, 'the backlog past it is not');
-    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 20);
+    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 21);
     assert.equal(readNarrativeReport(h.ctx).pending_floors, 3);
 }
 
@@ -94,8 +94,9 @@ const add = (h, n) => h.ctx.chat.push(...pair(n));
         'both survive, in order; equal text is not duplicate text');
     const batch = nextSummaryBatch(undefined, chunkHistory(history), { every: 10 });
     const messages = summaryMessages(history, batch);
-    // The greeting rides with the first batch as context; it is not one of the counted turns and folding
-    // never hides it. Twenty turns plus the greeting is twenty-one entries, not one per retrieval chunk.
+    // The greeting rides with the first batch as context; it is not one of the counted turns, and it is
+    // exactly that coverage which lets folding hide it (ADR-0047). Twenty turns plus the greeting is
+    // twenty-one entries, not one per retrieval chunk.
     assert.equal(messages.length, 21, 'one entry per message row, not one per retrieval chunk');
     assert.equal(new Set(messages.map(row => row.id)).size, 21);
     assert.ok(messages.every(row => row.text === history.records[row.id].text), 'each entry is the original text');

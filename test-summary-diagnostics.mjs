@@ -159,7 +159,7 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
     const h = host();
     fill(h, 20);
     await updateNarrative(h.ctx, h.services);          // batch 1 committed, ten floors hidden
-    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 20);
+    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 21, 'the greeting folds with the first covered batch');
 
     let release; let entered;
     const gate = new Promise(resolve => { entered = resolve; });
@@ -167,7 +167,7 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) add(h, i); };
     const building = buildNarrativeContext(h.ctx, h.services, { contextSize: 32768 });
     await gate;                                         // the assembly is parked inside an await
     await updateNarrative(h.ctx, h.services);           // batch 2 commits and hides ten more floors
-    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 40);
+    assert.equal(h.ctx.chat.filter(r => r.is_system).length, 41);
     release();
     const bundle = await building;
     assert.match(bundle.currentStateBlock, /current as of floor 20/,

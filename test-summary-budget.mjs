@@ -76,14 +76,14 @@ const fill = (h, n) => { for (let i = 1; i <= n; i += 1) h.ctx.chat.push(...pair
     assert.equal(denseReport.summary_ceiling_tokens, 900);
     assert.ok(denseReport.summary_over_target, 'and the excess over the target is recorded, not hidden');
     assert.equal(denseReport.summary_failures, 0);
-    assert.equal(dense.ctx.chat.filter(r => r.is_system).length, 20, 'the dense batch still hides its covered rows');
+    assert.equal(dense.ctx.chat.filter(r => r.is_system).length, 21, 'the dense batch still hides its covered rows and the greeting');
 
     const sparse = host({ settings: { narrative_summary_ceiling_tokens: 900 }, summarize: async () => body(0) });
     fill(sparse, 10);
     await updateNarrative(sparse.ctx, sparse.services);
     assert.ok(sparse.store().narrative_summary, 'the sparse batch commits');
     assert.equal(readNarrativeReport(sparse.ctx).summary_over_target, null, 'and reports no excess');
-    assert.equal(sparse.ctx.chat.filter(r => r.is_system).length, 20, 'equal completed turns, equal coverage');
+    assert.equal(sparse.ctx.chat.filter(r => r.is_system).length, 21, 'equal completed turns, equal coverage');
 }
 
 // --- 4. a body past the ceiling is refused, and the refusal hides nothing --------------------------

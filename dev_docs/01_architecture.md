@@ -104,7 +104,7 @@ elapsed time, estimated input tokens and provider tokens when available, includi
 | Question | Answer | Module |
 | --- | --- | --- |
 | Which text is covered by the summary? | The exact chunk-id prefix the summary reported | raw-history.js, validSummary |
-| May this floor leave the prompt? | Only if its entire complete turn is covered by a committed batch; exclude the greeting | raw-history.js, applyNarrativeFolds |
+| May this floor leave the prompt? | Only if every chunk of it is covered by a committed batch - a complete turn, or the opening greeting covered together with one (ADR-0047) | raw-history.js, applyNarrativeFolds |
 | What if the summary cannot be injected? | Every floor it covered comes back, and the reason is recorded | narrative-runtime.js, buildNarrativeContext |
 | What if the history changed under the summary? | The summary is dropped, the invalidation is reported, and the floors come back | narrative-runtime.js, prepare |
 | How current is the injected state block? | It is the projection of the last accepted summary, and it says so in floors: "current as of floor N; anything later in the transcript wins". The panel reports the committed coverage and the injected coverage separately, and compares their content versions rather than their floor counts (ADR-0024, ADR-0025) | narrative-runtime.js, raw-history.js |
@@ -142,7 +142,7 @@ the chat file keeps (ADR-0004).
 | Id | Statement | Enforced by |
 | --- | --- | --- |
 | N1 | A floor is hidden only while an accepted summary covers every chunk of it | applyNarrativeFolds |
-| N2 | Each accepted batch hides exactly N complete turns, including its last turn; batch-external text and the greeting remain visible (ADR-0023) | nextSummaryBatch, applyNarrativeFolds |
+| N2 | Each accepted batch hides exactly N complete turns, including its last turn, plus the greeting once one turn is covered; batch-external text stays visible (ADR-0023, ADR-0047) | nextSummaryBatch, applyNarrativeFolds |
 | N3 | A summary is injected only while it still matches the current chunk list | validSummary, prepare |
 | N4 | If the summary cannot be injected, its floors are restored in the same call | buildNarrativeContext |
 | N5 | Background work is written only into the chat that started it | services.isCurrent |
