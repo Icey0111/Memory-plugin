@@ -1675,3 +1675,76 @@ fixtures, and the rescue case it was suspected of costing recovered under both a
 free one. `narrative_rerank_max_rise` stays implemented and read as the lever this control needed, and stays out
 of the settings panel: nothing here makes the bound a choice a user should be asked to make.
 
+#### Where a failed detail was lost (2026-09-16, 53 runs, 157 positive probes)
+
+Stage 3 asks which stage lost the fact before anything is changed. The build already records what that needs:
+the ranking it handed the packer (`evidence_candidates`), what the packer did with every candidate
+(`evidence_trace`), the spans it quoted (`sources`), and the run's own chat is in the snapshot beside them. So
+the whole recorded corpus was re-read against those, with no model call: for every positive probe whose reply
+did not convey its detail, the rows of that run's chat that carry the needle were located, and each was followed
+through the record.
+
+157 positive probes, **34 did not convey their detail**:
+
+| loss | probes | what the record says |
+| --- | --- | --- |
+| the prompt held the needle and the reply did not use it | 10 | the needle was inside a quoted span: 3 `retrieved-not-conveyed`, 3 `summary-kept`, 3 refused, 1 instruction-only |
+| the carrier was ranked, but outside the five-entry block | 17 | 15 of these have exactly one row in the whole chat carrying the needle |
+| the carrier was never a candidate | 4 | one such row each; the row is folded, so retrieval is the only route to it and the ranking did not return it |
+| no per-turn snapshot (older runs) | 3 | - |
+
+**Nothing was lost to the stages this log suspected.** Over 96 carrier rows: zero `budget`, zero `too_long`,
+zero chunk misses, zero span misses. The token budget never bound, no window or trim cut the needle out of a
+span that was quoted, and the chunker never separated the needle from its own candidate. Five carrier rows (in
+four probes) were never in the ranking; every other loss is one mechanism: the block holds **five** entries and the carrier was not
+among them.
+
+The packer is greedy (`SHIPPED_PACK_POLICY`), so the block is the first five candidates of the order it is
+given, after dropping repeated text and a second chunk of the same message. Across 218 recorded probes the first
+non-included row is at trace position 6 in **217** of them, and `included` is 5 in 217: the entry count is what
+runs out, never the budget - over 5,099 candidate rows the outcomes are 1,085 included, 3,952 `entry_cap`, 62
+deduplicated, and no `budget` or `too_long` at all.
+
+Where the carriers sit in that order:
+
+| arm | runs | carrier rows | position 1-5 | position 6 or later |
+| --- | --- | --- | --- | --- |
+| rerank off (the fused order is what the packer gets) | 7 | 37 | 6 | **31** |
+| rerank on (the reranked order) | 14 | 54 | 17 | **37** |
+
+A detail that failed is normally a row the fusion ranked somewhere between 8th and 25th. With five entries and
+`maxRise = 4` a row the fusion placed at position 10 or later **cannot** enter the block even if the reranker
+ranks it first, because its earliest release is `from - 4` and the quoted window is positions 0-4: 24 of the 37
+carrier rows measured with the reranker off sit at position 10 or later, so two thirds of them are out of reach
+under the shipped combination for that reason alone.
+
+That is as far as the record goes, and the gap is exact. `evidence_candidates` is the order the packer was
+given - post-rerank - and each row's position in the **fused** order is not recorded anywhere. So "the reranker
+ranked it thirtieth" cannot be told apart from "the reranker ranked it second and the rise bound held it at
+`from - 4`", which is the difference between a ranking problem and a bound problem. One field settles it: the
+fused position of each candidate, which `rerankHead` already computes for its own insertion rule. That is the
+minimal capture this reading asks for; nothing else about the record is missing.
+
+#### What the summary refuses, across the record (2026-09-16, 66 runs, 129 batch captures)
+
+The same pass counted the other half of the contract. Every recorded summary failure, by stage:
+
+| stage | batches left uncommitted | body repairs recorded | repairs that saved the batch |
+| --- | --- | --- | --- |
+| `over_budget` (a body past the ceiling) | 7 | 7 | 2 |
+| `format` (no body at all) | 3, all one older run | 14 | 14 |
+| `transport` | 4 | 0 | - |
+
+No `truncated`, `empty_body`, `input_budget` or `anchor_ops` refusal is recorded anywhere in the corpus.
+The four transport failures are the 402/404 window already written down. The `format` repair works - every one of
+its fourteen recorded repairs committed, and the three batches that stayed uncommitted are three failures in a
+single older run that recorded no repair.
+
+**`over_budget` is the refusal that repeats, and it is what stalls a dense chat.** Seven batches were left
+uncommitted, and the one body repair that exists for this refusal saved two more of them. `ret5-f1` is the case
+with numbers: a 1,210-token body against the 900-token ceiling that the 600-token target derives, and a repair
+that came back 2,254 characters - still over. Nothing is folded when a batch is refused, so the source stays
+visible (correct), the backlog keeps growing, and the next pass asks the same frozen batch again. Every recent
+instance is dense material: twenty-one declared details in twenty floors is more than a 900-token body holds, and
+the repair is a second attempt at the same request rather than more room or a smaller batch.
+
