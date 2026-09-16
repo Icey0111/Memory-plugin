@@ -143,6 +143,9 @@ export function parseRerankResponse(payload, count) {
  */
 export const NATIVE_RERANK_PATH = '/api/v1/services/rerank/text-rerank/text-rerank';
 
+/** Base URLs whose compatible path already answered 404, so the native path is tried first from then on. */
+const NATIVE_PATH_BASES = new Set();
+
 /** That path hangs off the host the base URL names, not off the base URL's own path. */
 export function nativeRerankUrl(baseUrl) {
     const base = resolveOpenAiCompatibleBaseUrl(baseUrl);
@@ -179,16 +182,27 @@ export async function requestRerank({ baseUrl, apiKey, model, query, documents, 
     const headers = { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: 'Bearer ' + key };
     const post = (url, payload) => send(url, { method: 'POST', signal: AbortSignal.timeout(60000),
         headers, body: JSON.stringify(payload) });
-    let response = await post(base + '/rerank', body);
-    let transport = 'compatible';
+    // A provider that serves rerank only on its own path answers the compatible one with 404 **every time**,
+    // and here that 404 is not private: the native shim is the host's own `generate_chat_completion`, so the
+    // host raised "Custom OpenAI endpoint failed with status 404" on every generation while the retry quietly
+    // answered. That is the toast a live install sees while the story keeps being written. Once a base URL has
+    // answered on the native path, go straight there; the probe is remembered per base, not globally.
+    const nativeUrl = nativeRerankUrl(base);
+    const nativeFirst = Boolean(nativeUrl) && NATIVE_PATH_BASES.has(base);
+    let response = nativeFirst
+        ? await post(nativeUrl, buildNativeRerankRequest({ model, query, documents, topN }))
+        : await post(base + '/rerank', body);
+    let transport = nativeFirst ? 'native' : 'compatible';
     // 404 is "no such endpoint", the one status that says the request was addressed to the wrong path. A
     // 401/429/5xx is a refusal at the right one, so those are reported rather than retried somewhere else.
     if (response.status === 404) {
-        const url = nativeRerankUrl(base);
-        if (url) {
-            const retry = await post(url, buildNativeRerankRequest({ model, query, documents, topN }));
-            if (retry.ok) { response = retry; transport = 'native'; }
+        if (nativeUrl && transport === 'compatible') {
+            const retry = await post(nativeUrl, buildNativeRerankRequest({ model, query, documents, topN }));
+            if (retry.ok) { response = retry; transport = 'native'; NATIVE_PATH_BASES.add(base); }
             else if (retry.status !== 404) { response = retry; }
+        } else {
+            // The remembered path refused too, so the memory is wrong rather than the provider: probe again.
+            NATIVE_PATH_BASES.delete(base);
         }
     }
     if (!response.ok) {

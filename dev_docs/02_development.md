@@ -1596,3 +1596,21 @@ The question the control was built for is therefore still open. **The corpus's o
 in the rise-bound arm**, and whether the bound caused them is not settled. A retry-tolerant summary call, or a
 provider that stops returning 404 for one request in three, is the precondition for settling it.
 
+#### The live 404 toast was the reranker's own probe (2026-09-16)
+
+The toast the install showed on every generation - "Failed to generate chat completion: Internal error: Custom
+OpenAI endpoint failed with status 404: Generation request failed" - was not the summary call and not a provider
+fault. It is the rerank stage's **expected** first attempt: Aliyun does not serve `{base}/rerank`, the stage asks
+for it anyway, the 404 triggers the retry that works, and every one of those requests goes through the host's own
+`generate_chat_completion` shim - so the host raised the failure to the UI even though the plugin caught it and
+the story kept being written. "It keeps erroring but the text still comes out" is exactly this: two different
+requests, one of which is designed to 404.
+
+The captured summary calls were a separate, real failure in the same window - `status 402: Insufficient Balance`
+on the DeepSeek endpoint, which is why three of the six control runs never committed a second batch - and that is
+a balance problem, not a code one.
+
+`requestRerank` now remembers per base URL which path answered and tries it first, so the probe happens once
+instead of once per generation; a later 404 on the remembered path clears the memory and probes again. The first
+call in a session is unchanged, and a test pins that the second call goes straight to the path that answered.
+

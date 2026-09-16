@@ -37,6 +37,14 @@ belongs in Git commits and pull requests.
 
 ### Fixed
 
+- A configured reranker no longer makes the host raise a 404 error on every generation. A provider that serves
+  rerank only on its own path answers the OpenAI-compatible `{base}/rerank` with 404 **every time**, and the
+  stage's retry is what makes the call work - but the retry runs through the host's own
+  `generate_chat_completion` shim, so the host surfaced that expected 404 as "Custom OpenAI endpoint failed with
+  status 404" while the story kept being written. The path that answered is now remembered per base URL and
+  tried first, so the probe happens once rather than once per generation; a later 404 on the remembered path
+  clears the memory and probes again.
+
 - The detail-survival acceptance refuses a run whose fold hid only the first summary batch. Two runs had their
   last batch's request never settle, so `folded` was 21 rows for twenty finished floors, the last ten floors
   stayed visible, and three probes were answered from a transcript that still showed the needles. The phase-1

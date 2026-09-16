@@ -865,6 +865,16 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.throws(() => parseNativeRerankResponse({ results: [] }, 1), /output\.results/);
     assert.equal(nativeRerankUrl('https://ws-x.aliyuncs.com/compatible-mode/v1'),
         'https://ws-x.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank');
+    // The probe is remembered per base URL. Without that, a provider which never serves the compatible path
+    // answers 404 on every generation, and because the native shim is the host's own generate_chat_completion
+    // the host raises "Custom OpenAI endpoint failed with status 404" each time while the retry quietly works.
+    const again = [];
+    await requestRerank({ baseUrl: 'https://ws-x.aliyuncs.com/compatible-mode/v1', apiKey: 'k', model: 'qwen3.7-text-rerank',
+        query: 'q', documents: ['甲', '乙'],
+        fetchImpl: async (url, init) => { again.push(url); return { ok: true, status: 200,
+            json: async () => ({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }) }; } });
+    assert.equal(again.length, 1, 'the path that already answered 404 is not probed again');
+    assert.ok(again[0].endsWith('/api/v1/services/rerank/text-rerank/text-rerank'), again[0]);
 
     // Through the pipeline: a failing reranker must leave the fused order, and it must say so.
     const host = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600 } });
