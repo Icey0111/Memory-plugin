@@ -146,6 +146,29 @@ export const NATIVE_RERANK_PATH = '/api/v1/services/rerank/text-rerank/text-rera
 /** Base URLs whose compatible path already answered 404, so the native path is tried first from then on. */
 const NATIVE_PATH_BASES = new Set();
 
+/**
+ * The settings object, so a discovered native path can be remembered across page loads.
+ *
+ * Without this the probe happens once per session, and each one is a real 404 the host raises to the install's
+ * UI - "Custom OpenAI endpoint failed with status 404" - for a call that was designed to fail. `bindRerankSettings`
+ * seeds the memory from `narrative_rerank_native_paths`, and every later discovery is written back to it.
+ */
+let settingsRef = null;
+
+export function bindRerankSettings(settings) {
+    settingsRef = settings && typeof settings === 'object' ? settings : null;
+    const known = settingsRef && Array.isArray(settingsRef.narrative_rerank_native_paths)
+        ? settingsRef.narrative_rerank_native_paths : [];
+    NATIVE_PATH_BASES.clear();
+    for (const base of known) NATIVE_PATH_BASES.add(String(base));
+    return NATIVE_PATH_BASES.size;
+}
+
+function rememberNativePath(base, remember) {
+    if (remember) NATIVE_PATH_BASES.add(base); else NATIVE_PATH_BASES.delete(base);
+    if (settingsRef) settingsRef.narrative_rerank_native_paths = [...NATIVE_PATH_BASES];
+}
+
 /** That path hangs off the host the base URL names, not off the base URL's own path. */
 export function nativeRerankUrl(baseUrl) {
     const base = resolveOpenAiCompatibleBaseUrl(baseUrl);
@@ -198,11 +221,11 @@ export async function requestRerank({ baseUrl, apiKey, model, query, documents, 
     if (response.status === 404) {
         if (nativeUrl && transport === 'compatible') {
             const retry = await post(nativeUrl, buildNativeRerankRequest({ model, query, documents, topN }));
-            if (retry.ok) { response = retry; transport = 'native'; NATIVE_PATH_BASES.add(base); }
+            if (retry.ok) { response = retry; transport = 'native'; rememberNativePath(base, true); }
             else if (retry.status !== 404) { response = retry; }
         } else {
             // The remembered path refused too, so the memory is wrong rather than the provider: probe again.
-            NATIVE_PATH_BASES.delete(base);
+            rememberNativePath(base, false);
         }
     }
     if (!response.ok) {

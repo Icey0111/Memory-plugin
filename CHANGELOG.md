@@ -42,8 +42,9 @@ belongs in Git commits and pull requests.
   stage's retry is what makes the call work - but the retry runs through the host's own
   `generate_chat_completion` shim, so the host surfaced that expected 404 as "Custom OpenAI endpoint failed with
   status 404" while the story kept being written. The path that answered is now remembered per base URL and
-  tried first, so the probe happens once rather than once per generation; a later 404 on the remembered path
-  clears the memory and probes again.
+  tried first, and the discovery is written to `narrative_rerank_native_paths` so it survives a reload: the
+  probe happens once per install rather than once per page load. A later 404 on the remembered path clears the
+  memory and probes again.
 
 - The detail-survival acceptance refuses a run whose fold hid only the first summary batch. Two runs had their
   last batch's request never settle, so `folded` was 21 rows for twenty finished floors, the last ten floors

@@ -18,7 +18,7 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig,
     summarizeEvidenceCandidates, summarizeEvidenceTrace, EVIDENCE_TRACE_LIMIT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
-import { buildRerankRequest, parseRerankResponse, requestRerank, rerankHead, rerankMoveMetrics,
+import { buildRerankRequest, parseRerankResponse, requestRerank, rerankHead, rerankMoveMetrics, bindRerankSettings,
     buildNativeRerankRequest, parseNativeRerankResponse, nativeRerankUrl } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
@@ -875,6 +875,27 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
             json: async () => ({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }) }; } });
     assert.equal(again.length, 1, 'the path that already answered 404 is not probed again');
     assert.ok(again[0].endsWith('/api/v1/services/rerank/text-rerank/text-rerank'), again[0]);
+    // And it is remembered across page loads, so the probe is once per install rather than once per session.
+    // A fresh base URL is used so this does not lean on the memory the case above built.
+    const persisted = {};
+    bindRerankSettings(persisted);
+    const discovering = [];
+    await requestRerank({ baseUrl: 'https://ws-y.aliyuncs.com/compatible-mode/v1', apiKey: 'k', model: 'qwen3.7-text-rerank',
+        query: 'q', documents: ['甲', '乙'],
+        fetchImpl: async (url) => { discovering.push(url); const native = url.includes('/api/v1/');
+            return { ok: native, status: native ? 200 : 404,
+                json: async () => ({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }) }; } });
+    assert.equal(discovering.length, 2, 'the first call probes the compatible path and retries on the native one');
+    assert.deepEqual(persisted.narrative_rerank_native_paths, ['https://ws-y.aliyuncs.com/compatible-mode/v1'],
+        'the discovery is written back to the settings object');
+    assert.equal(bindRerankSettings(persisted), 1, 'and a fresh page seeds it from there');
+    const seeded = [];
+    await requestRerank({ baseUrl: 'https://ws-y.aliyuncs.com/compatible-mode/v1', apiKey: 'k', model: 'qwen3.7-text-rerank',
+        query: 'q', documents: ['甲', '乙'],
+        fetchImpl: async (url) => { seeded.push(url); return { ok: true, status: 200,
+            json: async () => ({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }) }; } });
+    assert.equal(seeded.length, 1, 'a seeded page goes straight to the native path');
+    bindRerankSettings({});
 
     // Through the pipeline: a failing reranker must leave the fused order, and it must say so.
     const host = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600 } });

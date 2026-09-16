@@ -132,6 +132,16 @@ async function invokeNativeJson({ request, body, timeoutMs = null, label }) {
     } catch (error) {
         const message = String(error?.message || error || 'unknown native transport error');
         const timedOut = error?.code === NATIVE_TIMEOUT_MARK || /timed out|timeout|time-out/i.test(message);
+        // Every provider request the plugin makes goes through here, and the host raises its own error for a
+        // failed one - a 404 from a path this provider does not serve reached the install's UI as "Custom
+        // OpenAI endpoint failed with status 404" with nothing saying which call it was. The last few failures
+        // are kept, with the endpoint they were aimed at, so the next one can be attributed instead of guessed.
+        try {
+            const ring = globalThis.__aetheriaNativeFailures || (globalThis.__aetheriaNativeFailures = []);
+            ring.push({ at: Date.now(), label, endpoint: String(request?.args?.request?.url || request?.args?.url || '').slice(0, 200),
+                message: message.slice(0, 200) });
+            if (ring.length > 8) ring.splice(0, ring.length - 8);
+        } catch {}
         throw new Error(`${label}失败：${message}${timedOut ? NATIVE_TIMEOUT_HINT : ''}`);
     } finally {
         if (timer) clearTimeout(timer);

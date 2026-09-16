@@ -7,7 +7,7 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
     summaryLengthVerdict, summarizeEvidenceCandidates, summarizeEvidenceTrace } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
-import { rerankShortlist, applyRerankOrder, rerankMoveMetrics } from './v55-rerank.js';
+import { rerankShortlist, applyRerankOrder, rerankMoveMetrics, bindRerankSettings } from './v55-rerank.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -1261,6 +1261,9 @@ export function installNarrativeRuntime(getContext, createServices) {
     // no summary, no anchors and no diagnostics at all.
     delete settings.__narrative_summary_in_progress;
     delete settings.__quiet_extraction_in_progress;
+    // The rerank transport's memory of which path answers: seeded here so the compatible-path probe happens
+    // once per install instead of once per page load.
+    bindRerankSettings(settings);
     globalThis.aetheriaUnifiedMemoryV54Interceptor = (...args) => {
         const current = getContext();
         return current ? runNarrativeGeneration(current, createServices(current), args) : undefined;
