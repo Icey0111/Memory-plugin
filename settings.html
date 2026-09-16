@@ -1,32 +1,34 @@
 <div id="aum-v54-settings" class="inline-drawer aum-v51-panel">
     <div class="inline-drawer-toggle inline-drawer-header">
-        <b>艾瑟瑞亚统一记忆 v5.5-dev · Iteration 13</b>
+        <b>艾瑟瑞亚统一记忆 v5.5-dev</b>
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
         <p class="aum-v51-muted">
-            独立于预设运行：每次 AI 回复完成后，插件在后台调用当前 SillyTavern LLM 静默抽取
-            EVENT / ACTIVE_STATE / Unified Memory 操作，并立即同步可索引记忆到 Vector Storage。
+            剧情摘要负责续写的逻辑，原文检索负责精确、可核查的细节。摘要每 N 个完整楼层在后台更新；
+            原文始终保留在档案里，供检索引用。未完成总结的楼层继续留在提示词中。
+            摘要长度、锚点、证据与设定预算属于“剧情摘要与原文检索”面板。
         </p>
 
-        <h4>自动记忆</h4>
+        <h4>剧情记忆</h4>
         <label class="checkbox_label"><input id="aum-v54-enabled" type="checkbox"> 启用统一记忆注入</label>
-        <label class="checkbox_label"><input id="aum-v54-auto-extract" type="checkbox"> AI 回复后自动后台抽取记忆</label>
-        <label class="checkbox_label"><input id="aum-v54-structured" type="checkbox"> 优先使用结构化 JSON 输出</label>
-        <label class="checkbox_label"><input id="aum-v54-extraction-notify" type="checkbox"> 显示后台抽取失败通知</label>
-        <label class="checkbox_label"><input id="aum-v54-parse" type="checkbox"> 兼容解析旧 v5/v5.1/v5.2 &lt;memory_ops&gt;（迁移用）</label>
-
+        <label class="checkbox_label"><input id="aum-v54-vector" type="checkbox"> 启用原文向量检索（未配置时自动使用词法）</label>
+        <label class="checkbox_label"><input id="aum-v54-quiet-third-party" type="checkbox"> 允许第三方 quiet 请求注入上下文（插件自身抽取始终清空）</label>
+        <label>Embedding source
+            <select id="aum-v54-source-mode" class="text_pole">
+                <option value="inherit">继承 SillyTavern Vector Storage provider</option>
+                <option value="transformers">强制 Local (Transformers)</option>
+            </select>
+        </label>
         <div class="aum-v51-grid">
-            <label>抽取参考最近消息数<input id="aum-v54-extract-context" class="text_pole" type="number" step="1"></label>
-            <label>下轮等待新记忆(ms)<input id="aum-v54-freshness-wait" class="text_pole" type="number" step="100"></label>
-        </div>
-        <small>
-            抽取在后台异步执行。若下一次主生成来得太快，插件最多等待上面的时间让新记忆落库；超时则继续生成，不永久阻塞聊天。
-        </small>
-
-        <div class="aum-v51-buttons">
-            <button id="aum-v54-extract-latest" class="menu_button">重新抽取最新 AI 回复</button>
-            <button id="aum-v54-backfill" class="menu_button">补建缺失历史记忆</button>
+            <label>Reference 总字符预算<input id="aum-v54-budget" class="text_pole" type="number" step="100"></label>
+            <label>Current State 字符预算<input id="aum-v54-current-state-budget" class="text_pole" type="number" step="100"></label>
+            <label>Reference 注入深度<input id="aum-v54-depth" class="text_pole" type="number" step="1"></label>
+            <label>Current State 注入深度<input id="aum-v54-current-state-depth" class="text_pole" type="number" step="1"></label>
+            <label>回复预留 tokens<input id="aum-v54-reply-reserve" class="text_pole" type="number" step="100"></label>
+            <label>Query messages<input id="aum-v54-query-messages" class="text_pole" type="number" step="1"></label>
+            <label>向量稳定等待(消息)<input id="aum-v54-settle" class="text_pole" type="number" step="1"></label>
+            <label>Active 上限<input id="aum-v54-max-active" class="text_pole" type="number" step="1"></label>
         </div>
 
         <h4>插件设定库 · v5.5 Setting Store / Index</h4>
@@ -62,111 +64,30 @@
         </div>
         <small>相同内容通过 content hash 检测。若目标世界已存在完全相同 Source，默认不会静默重复写入；只有再次确认后才复用该 Source 创建新 Revision。</small>
 
-        <h4>Plugin Setting Index + Retrieval · v5.5 Commit G</h4>
+        <h4>Plugin Setting Index + Retrieval · v5.5</h4>
         <p class="aum-v51-muted">
             当前激活 Baseline + Extension 会投影为带父 Entry 链接的 SettingChunk。生成与后台抽取分别构造 Setting Query；设定与剧情历史继续保持不同检索通道。
         </p>
         <label class="checkbox_label"><input id="aum-v54-setting-index-vector" type="checkbox"> 同时构建设定向量索引</label>
         <label class="checkbox_label"><input id="aum-v54-setting-index-auto" type="checkbox"> 激活范围 / 内容 / Embedding Profile 变化时自动维护设定向量</label>
-        <div class="aum-v51-grid">
-            <label>Setting 分块字符<input id="aum-v54-setting-index-chunk" class="text_pole" type="number" step="20"></label>
-        </div>
-        <small>即使 embedding 不可用，SettingChunk 的本地词法索引仍然可用。Commit G 已加入按 Entry 增量向量更新、Embedding Profile 隔离与安全 staging→verify→switch；失败时保留旧集合并自动词法降级。</small>
+        <label>Setting 分块字符<input id="aum-v54-setting-index-chunk" class="text_pole" type="number" step="20"></label>
         <label class="checkbox_label"><input id="aum-v54-setting-retrieval-enabled" type="checkbox"> 启用相关世界设定检索</label>
         <label class="checkbox_label"><input id="aum-v54-setting-retrieval-dense" type="checkbox"> Setting 检索同时使用 Dense 候选（不可用时自动词法降级）</label>
         <div class="aum-v51-grid">
             <label>Setting 候选 Top-K<input id="aum-v54-setting-retrieval-candidate-k" class="text_pole" type="number" step="1"></label>
-            <label>最终 Setting Entry 数<input id="aum-v54-setting-retrieval-final" class="text_pole" type="number" step="1"></label>
             <label>Setting Dense 阈值<input id="aum-v54-setting-retrieval-threshold" class="text_pole" type="number" step="0.01"></label>
-            <label>Setting RRF K<input id="aum-v54-setting-retrieval-rrf" class="text_pole" type="number" step="1"></label>
-            <label>Generation Setting 粗预算<input id="aum-v54-setting-retrieval-budget" class="text_pole" type="number" step="500"></label>
-            <label>Extractor Setting 预算<input id="aum-v54-setting-extraction-budget" class="text_pole" type="number" step="500"></label>
-            <label>Constant 保留条目数<input id="aum-v54-setting-constant-limit" class="text_pole" type="number" step="1"></label>
         </div>
         <div class="aum-v51-buttons">
             <button id="aum-v54-rebuild-setting-index" class="menu_button">构建 / 重建设定索引</button>
         </div>
 
-        <h4>Semantic Baseline Index</h4>
-        <p class="aum-v51-muted">
-            将当前 Persona、角色卡、绑定/当前激活 World Info 视为“本来就成立”的基线。
-            后台抽取后再经过独立写入层硬过滤，避免把住址、专业、兴趣、固有能力、既有契约等重复写入剧情记忆。
-        </p>
+        <h4>设定与记忆的耦合</h4>
         <label class="checkbox_label"><input id="aum-v54-baseline-gate" type="checkbox"> 启用 Baseline 写入硬过滤</label>
-        <label class="checkbox_label"><input id="aum-v54-baseline-vector" type="checkbox"> 启用 Baseline 语义向量复核</label>
-        <label class="checkbox_label"><input id="aum-v54-baseline-auto" type="checkbox"> Persona / World Info 指纹变化时自动重建 Baseline 向量</label>
-        <label class="checkbox_label"><input id="aum-v54-baseline-active-wi" type="checkbox"> 纳入当前激活 World Info（同时仍读取 Persona/角色绑定世界书）</label>
-        <p class="aum-v51-muted">
-            设定平面与记忆平面是两个独立产品。下面两个开关把两者之间原本隐式的耦合显式化：默认保持既有行为，
-            关闭后可构造“只测记忆通道”的对照实验。
-        </p>
-        <label class="checkbox_label"><input id="aum-v54-setting-veto" type="checkbox"> 允许世界书内容否决一条记忆的写入</label>
         <label class="checkbox_label"><input id="aum-v54-setting-seed" type="checkbox"> 允许当前活跃记忆参与构造世界书检索查询</label>
-        <div class="aum-v51-grid">
-            <label>词法重复阈值<input id="aum-v54-baseline-lexical" class="text_pole" type="number" step="0.01"></label>
-            <label>向量重复阈值<input id="aum-v54-baseline-semantic" class="text_pole" type="number" step="0.01"></label>
-            <label>语义命中最低词法锚<input id="aum-v54-baseline-semantic-floor" class="text_pole" type="number" step="0.01"></label>
-            <label>Baseline 分块字符<input id="aum-v54-baseline-chunk" class="text_pole" type="number" step="20"></label>
-        </div>
-        <small>
-            knowledge / belief / intention / event / world_delta 默认不会被基线重复过滤；“平成新知道世界书中的秘密”仍是合法剧情增量。
-            Baseline 向量只是可重建派生索引，Canonical Memory 仍是剧情记忆事实源。
-        </small>
-        <div class="aum-v51-buttons">
-            <button id="aum-v54-rebuild-baseline" class="menu_button">重建 Semantic Baseline</button>
-        </div>
-
-        <h4>当前真相与召回</h4>
-        <label class="checkbox_label"><input id="aum-v54-inject-state" type="checkbox"> 注入当前有效状态 / active slots</label>
-        <label class="checkbox_label"><input id="aum-v54-vector" type="checkbox"> 启用向量情景召回</label>
-        <label class="checkbox_label"><input id="aum-v54-hybrid" type="checkbox"> 启用 Dense + Lexical 混合召回</label>
-        <label class="checkbox_label"><input id="aum-v54-graph" type="checkbox"> 启用轻量稀有实体/主题图扩散</label>
-        <label class="checkbox_label"><input id="aum-v54-evidence" type="checkbox"> 高重要度记忆附原文证据</label>
-        <label class="checkbox_label"><input id="aum-v54-auto-rebuild" type="checkbox"> 编辑 / swipe / 删除历史后自动重建向量</label>
-
-        <label>Embedding source</label>
-        <select id="aum-v54-source-mode" class="text_pole">
-            <option value="inherit">继承 SillyTavern Vector Storage provider</option>
-            <option value="transformers">强制 Local (Transformers)</option>
-        </select>
-        <small>向量只负责“过去有什么相关”；当前事实由 Canonical Store 的 active slot 查询负责。Commit F 使用两个独立 System extension prompt：Reference 默认 depth 4，Current State 默认 depth 1；不会向真实聊天数组插入伪消息。</small>
-
-        <div class="aum-v51-grid">
-            <label>Query messages<input id="aum-v54-query-messages" class="text_pole" type="number" step="1"></label>
-            <label>Dense 候选 Top-K<input id="aum-v54-candidate-k" class="text_pole" type="number" step="1"></label>
-            <label>Lexical 候选 Top-K<input id="aum-v54-lexical-k" class="text_pole" type="number" step="1"></label>
-            <label>最终召回数<input id="aum-v54-final-count" class="text_pole" type="number" step="1"></label>
-            <label>Dense 相似度阈值<input id="aum-v54-threshold" class="text_pole" type="number" step="0.01"></label>
-            <label>Lexical 权重<input id="aum-v54-lexical-weight" class="text_pole" type="number" step="0.05"></label>
-            <label>RRF K<input id="aum-v54-rrf-k" class="text_pole" type="number" step="1"></label>
-            <label>图扩散 damping<input id="aum-v54-graph-damping" class="text_pole" type="number" step="0.01"></label>
-            <label>MMR λ<input id="aum-v54-mmr-lambda" class="text_pole" type="number" step="0.01"></label>
-            <label>重复召回冷却(消息)<input id="aum-v54-cooldown" class="text_pole" type="number" step="1"></label>
-            <label>向量稳定等待(消息)<input id="aum-v54-settle" class="text_pole" type="number" step="1"></label>
-            <label>Reference 总字符预算<input id="aum-v54-budget" class="text_pole" type="number" step="100"></label>
-            <label>Current State 字符预算<input id="aum-v54-current-state-budget" class="text_pole" type="number" step="100"></label>
-            <label>Reference 注入深度<input id="aum-v54-depth" class="text_pole" type="number" step="1"></label>
-            <label>Current State 注入深度<input id="aum-v54-current-state-depth" class="text_pole" type="number" step="1"></label>
-            <label>回复预留 tokens<input id="aum-v54-reply-reserve" class="text_pole" type="number" step="100"></label>
-            <label class="checkbox_label"><input id="aum-v54-quiet-third-party" type="checkbox"> 允许第三方 quiet 请求注入上下文（插件自身抽取始终清空）</label>
-            <label>Active 上限<input id="aum-v54-max-active" class="text_pole" type="number" step="1"></label>
-            <label>Current State 基线范围<select id="aum-v54-current-state-scope" class="text_pole">
-                <option value="mandatory+broad">不可逆 + 全部活跃记忆（默认）</option>
-                <option value="mandatory-only">仅不可逆变更</option>
-            </select></label>
-            <label>保护最近消息<input id="aum-v54-protect-recent" class="text_pole" type="number" step="1"></label>
-        </div>
-
-        <h4>上下文裁剪（暂不启用）</h4>
-        <label class="checkbox_label aum-v54-disabled-option"><input id="aum-v54-manage-window" type="checkbox" disabled> 插件直接裁剪旧聊天</label>
-        <input id="aum-v54-keep-recent" class="text_pole" type="number" step="1" hidden>
-        <small>
-            v5.4 不直接 splice SillyTavern 的 interceptor chat 数组，因为官方接口将其视为可变聊天数据，存在修改真实历史的风险。
-            在找到无损 host API 前，此功能保持禁用。
-        </small>
 
         <h4>状态</h4>
-        <label class="checkbox_label"><input id="aum-v54-debug" type="checkbox"> Debug 日志 + Recall / Extraction 诊断</label>
+        <label class="checkbox_label"><input id="aum-v54-debug" type="checkbox"> Debug 日志</label>
+        <label class="checkbox_label"><input id="aum-v54-metrics" type="checkbox"> 统计后台调用与 token 估算</label>
         <div id="aum-v54-status" class="aum-v51-status">正在读取状态…</div>
         <details>
             <summary>最新 EVENT</summary>
@@ -177,27 +98,17 @@
             <pre id="aum-v54-last-state" class="aum-v51-diagnostics">无。</pre>
         </details>
         <details>
-            <summary>Extraction / Baseline / Recall 诊断</summary>
+            <summary>诊断</summary>
             <pre id="aum-v54-diagnostics" class="aum-v51-diagnostics">无。</pre>
         </details>
 
         <div class="aum-v51-buttons">
-            <button id="aum-v54-rebuild-memory" class="menu_button">重放 Canonical Memory</button>
-            <button id="aum-v54-rebuild-vectors" class="menu_button">重建向量</button>
-            <button id="aum-v54-rebuild-all" class="menu_button">全部重建</button>
             <button id="aum-v54-export" class="menu_button">导出 JSON</button>
             <button id="aum-v54-clear" class="menu_button danger_button">清空记忆</button>
-        <label class="checkbox_label"><input id="aum-v54-cold-snapshot" type="checkbox"> 冷原文快照（编辑/删除后仍可回查原文）</label>
-        <label class="checkbox_label"><input id="aum-v54-evidence-enabled" type="checkbox"> 允许模型用【查阅记忆】主动回查原文</label>
-        <label class="checkbox_label"><input id="aum-v54-temporal-channel" type="checkbox"> 启用时间/适用范围检索通道</label>
-        <label class="checkbox_label"><input id="aum-v54-metrics" type="checkbox"> 统计后台调用与 token 估算</label>
-        <label>抽取批大小（每 N 轮抽取一次）<input id="aum-v54-extract-batch" class="text_pole" type="number" min="1" max="10" step="1"></label>
-        <label>回链证据字符预算<input id="aum-v54-evidence-chars" class="text_pole" type="number" min="400" max="8000" step="100"></label>
-        <button id="aum-v54-run-selfcheck" class="menu_button">运行检索自检</button>
-        <button id="aum-v54-show-metrics" class="menu_button">显示用量统计</button>
-        <button id="aum-v54-reset-metrics" class="menu_button">重置统计</button>
-        <button id="aum-v54-purge-collections" class="menu_button danger_button">清理 Aetheria 向量集合</button>
-        <pre id="aum-v54-selfcheck" class="aum-v51-diagnostics">未运行。</pre>
+            <button id="aum-v54-show-metrics" class="menu_button">显示用量统计</button>
+            <button id="aum-v54-reset-metrics" class="menu_button">重置统计</button>
+            <button id="aum-v54-purge-collections" class="menu_button danger_button">清理 Aetheria 向量集合</button>
+            <pre id="aum-v54-selfcheck" class="aum-v51-diagnostics">未运行。</pre>
         </div>
     </div>
 </div>

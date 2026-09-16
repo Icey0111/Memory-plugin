@@ -17,6 +17,8 @@
 //      reachable the keys simply stay in the chat file, which is the previous behaviour.
 
 import { normalizeStore } from './memory-core.js';
+import { COMPACT_DROP_FIELDS, encodeRecordMap } from './v55-store-compact.js';
+import { SPINE_KEY } from './v55-spine.js';
 import { setExternallyOwnedKeys, setStoreSerializationFilter, writeMergedChatStore } from './v55-store-integrity.js';
 
 const METADATA_KEY = 'aetheriaUnifiedMemoryV54';
@@ -33,9 +35,23 @@ const WRITE_DEBOUNCE_MS = 900;
  *   vector, baseline      - tiny (a few hundred bytes) and a stripped copy would read as stale and
  *                           trigger a full rebuild before hydration lands;
  *   entity_registry       - losing it fragments entity identity for every later mention;
- *   runtime_identity      - the identity assignment itself is authoritative.
+ *   runtime_identity      - the identity assignment itself is authoritative;
+ *   extractions           - the replay log. It is the one thing the fact set is derived FROM, so it
+ *                           stays canonical and the fact set can always be rebuilt from it.
+ *
+ * memories, slots and hierarchical_summaries are here because they are a projection, not a fact:
+ * \`memories\` and \`slots\` are exactly \`buildCanonicalState(extractions)\`, and the summary tree is no
+ * longer written by any module. Measured on five real chats they were 18-53% of the whole chat file
+ * (99-371 KB of a 464-1069 KB file), which made the retired fact set the largest storage cost in the
+ * project - larger than the original-text archive this design added. The strip only happens after the
+ * external record for that chat has been read or written, so nothing leaves the chat file until a copy
+ * exists elsewhere (see ensureDerivedHydrated).
  */
 export const DERIVED_KEYS = Object.freeze([
+    // The retired fact set: kept readable in memory, kept out of the chat file.
+    'memories',
+    'slots',
+    'hierarchical_summaries',
     'cold_turns',
     'scene_summaries',
     'scene_summary_source',
@@ -51,10 +67,11 @@ export const DERIVED_KEYS = Object.freeze([
     'current_state_authority',
     'last_active_state_diagnostic',
     'v55_inner_bundle',
-    // Iteration 14 S1/S2: the deterministic memory spine. It belongs here (it is an index over
-    // operations that are themselves replayable) and can be, now that the ownership guard no longer
-    // deletes externally-owned keys from the object runtime readers see.
-    'spine',
+    // Iteration 14 S1/S2: the deterministic memory spine, referenced through SPINE_KEY so the name
+    // has exactly one source of truth. It belongs here (it is an index over operations that are
+    // themselves replayable) and can be, now that the ownership guard no longer deletes
+    // externally-owned keys from the object runtime readers see.
+    SPINE_KEY,
 ]);
 
 const DERIVED_SET = new Set(DERIVED_KEYS);
@@ -298,6 +315,16 @@ export function installDerivedSerializationFilter(store, ctx = getContext()) {
                     if (DERIVED_SET.has(key) || key === 'toJSON') continue;
                     out[key] = this[key];
                 }
+                // See v55-store-compact.js: the per-memory wrapper is mostly absent fields and per-record
+                // copies of the store's own identity. This is the only place a chat store is serialised, so
+                // it is the only place that has to know.
+                out.memories = encodeRecordMap(out.memories, this.runtime_identity, { drop: COMPACT_DROP_FIELDS.memories });
+                out.extractions = encodeRecordMap(out.extractions, this.runtime_identity, { drop: COMPACT_DROP_FIELDS.extractions });
+                // The canonical state summary is `buildCanonicalState` over `memories`, which this same file
+                // already carries in full - 14,571 bytes per 50 floors saying what the memory records say.
+                // It is rebuilt on load (index.js getStore). A state written by the LEGACY extractor carries a
+                // different source and is kept: that one is not derivable from anything here.
+                if (out.last_active_state_source === 'canonical-memory') delete out.last_active_state;
                 // Before hydration the chat file owns the derived keys, so it keeps them.
                 if (!ready) {
                     for (const key of DERIVED_KEYS) {

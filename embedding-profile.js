@@ -18,6 +18,10 @@ const COLLECTION_PATTERNS = Object.freeze([
     ['probe', /^aetheria_v5[45]_vector_probe_/],
     ['setting', /^aetheria_v55_setting_/],
     ['baseline', /^aetheria_v54_baseline_/],
+    // The original-text index is a raw-history collection, not the retired fact-memory index. Without this
+    // row it matched the memory pattern below, so a raw query read the memory index state and could take the
+    // memory score policy or be marked stale against a fingerprint it does not share (audit F-8).
+    ['raw', /^aetheria_v54_raw_/],
     ['memory', /^aetheria_v54_/],
 ]);
 

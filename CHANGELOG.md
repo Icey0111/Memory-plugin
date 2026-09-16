@@ -1,649 +1,500 @@
 # Changelog
 
-## 5.5-dev Iteration 13 hotfix 9 — derived state leaves the chat file, and the retrieval stack stops guessing
+This file records user-visible release changes. Detailed implementation history
+belongs in Git commits and pull requests.
 
-Six shortcomings identified by comparing this project against LittleWhiteBox, plus one defect the new
-tests found in the fix itself.
-
-### Derived chat state now lives outside the chat file
-
-The plugin claimed "core memory is portable, indices are rebuildable" but kept every one of them in
-`chat_metadata`. Measured on a real 85-floor chat, the store was 77 KB of a 95 KB file — 74% of the chat
-was plugin state, rewritten on every save, and loadable into a store object the plugin did not own.
-
-`v55-derived-store.js` moves the derived keys out: `cold_turns`, `scene_summaries`,
-`scene_summary_source`, `scene_summary_fingerprint`, `floor_folds`, `summary_history`,
-`provenance_registry`, `last_extraction_debug`, `last_recall_debug`, `last_errors`, `v55_consistency`,
-`v55_finalizer_diagnostics`, `current_state_authority`, `last_active_state_diagnostic` and
-`v55_inner_bundle`. The backend is the TauriTavern host extension store when the host offers one and
-IndexedDB otherwise; the chat file keeps a ~120-byte pointer so a reader can tell an external record
-exists.
-
-Deliberately NOT moved: `memories`, `slots`, `extractions`, `hierarchical_summaries`, `setting_binding`,
-`source_fingerprints` (authoritative and portable), plus `vector`, `baseline` and `entity_registry` — the
-first two are a few hundred bytes and a stripped copy would read as *stale* and trigger a full rebuild
-before hydration landed, and losing the third would fragment entity identity for every later mention.
-
-Two safety rules make it non-destructive:
-- **Never write derived keys before hydration finished.** An unhydrated store looks exactly like an
-  empty one; `queueDerivedWrite()` refuses and counts the refusal instead of overwriting a good record.
-- **Strip from `chat_metadata` only after the external write succeeded.** With no durable backend the
-  projection is a no-op and the chat file stays the owner, exactly as before. (The first version of this
-  feature got that wrong and the new test caught it: without a backend it stripped the keys with nowhere
-  to put them.)
-
-`unfoldAllFloors()` also gained a fallback: because the audit is derived, it now rebuilds it from the
-per-row fold markers when it is missing, so a lost audit cannot leave a chat permanently folded.
-
-### Token accounting is now calibrated, not guessed
-
-Two different estimates lived in one codebase — `chars / 4` in the metrics and `chars / 2` in the context
-assembler — and the first under-reported a Chinese prompt by 46%. `v55-tokenizer.js` fits the provider's
-own `prompt_tokens` over **126 retained requests**:
-
-```text
-tokens = 0.9408 * cjkChars + 0.2441 * otherChars   (-21 for the whole request)
-R2 = 0.9989, MAPE = 1.1%
-```
-
-The constant is applied only when estimating a whole request; fragments use the slopes alone. The
-assembler's host-context guard now converts tokens to characters from the text's own script mix, and a
-new **exact token trim** measures the block that was actually built against the calibrated model instead
-of trusting an a-priori `x2`.
-
-### Real word segmentation
-
-The lexical channel used fixed CJK 2-/3-grams, so a four-character word was four overlapping terms and
-never a unit. `Intl.Segmenter` ships with the host's own ICU data, so real segmentation costs no
-dependency and no download: `灰烬港爆发的灰咳经星辰仪查明…` now yields `灰烬 / 爆发 / 星辰 / 查明 / 古井 /
-污染`. N-grams remain as the recall floor because the ICU dictionary does not know proper nouns
-(`塞拉菲娜` segments per character), and entity matching covers those. Word coverage and phrase adjacency
-are the two features the reranker is built on.
-
-### Recall prefetch and warmup
-
-Recall started inside the generate interceptor, so prompt assembly waited for the full dense round-trip
-while the host sat idle after rendering a message. `startRecallPrefetch()` now runs it on
-`MESSAGE_RECEIVED` / `CHARACTER_MESSAGE_RENDERED`.
-
-The prefetch deliberately **does not commit**: `recalled_count`, `last_recalled_message` and the recall
-cooldown are all mutated by a recall, so committing early would bump counters for a generation that never
-happens and would eat the next turn's cooldown. It parks the ranking; the interceptor commits it only
-when a generation actually consumes it. A stale prefetch is discarded and the live path runs.
-`recallPrefetchStatus()` exposes `armed`, `parked`, `last_lead_ms` and `last_error` so a permanently
-broken prefetch cannot masquerade as a cache miss. `warmupRecallRuntime()` hydrates the credential and
-probes the provider once per chat.
-
-### A local candidate reranker
-
-Fusion scored channels; nothing read the query against the candidate. `v55-rerank.js` adds coverage,
-phrase adjacency, slot match, entity bypass, recency, importance and channel breadth.
-
-Two decisions make it able to actually reorder a fused list, and the first attempt got both wrong:
-- every feature is min-max normalised **across the candidate set** and centred on 0.5, so a feature that
-  is identical for every candidate contributes nothing instead of diluting the ones that discriminate;
-- the fusion score enters as a within-set min-max too, because an RRF sum has no absolute scale.
-
-With raw values, a constant recency term outweighed a 2x coverage difference and a channel-heavy but
-irrelevant memory kept the top spot. The self-check is unchanged at 6/6 (MRR 0.750) because that floor was
-already saturated; `test-v55-rerank.mjs` covers the reordering directly instead.
-
-### Summary tree undo
-
-A rebuild or a bad model pass was one-way. The last three distinct tree states are kept in the derived
-store (`snapshotSummaryTree` / `undoLastSummaryTree`, plus a settings button). Undo unfolds first, then
-restores, then re-folds — so it preserves the invariant that a floor is never hidden without a summary
-standing in for it, rather than restoring a tree and leaving rows folded under the tree that was dropped.
-
-### Verified live, and one open item
-
-Verified in a live TauriTavern session on a 26-floor chat with the real provider: the host extension
-store is selected as the derived backend, hydration and migration both run, the ownership guard no longer
-resurrects externally owned keys, and **the chat file now contains zero derived keys** — its store is down
-to the 16 authoritative entries plus a 108-byte pointer, while `floor_folds` (37 entries),
-`summary_history`, `provenance_registry` and the diagnostics live in the external record. The fold audit
-also self-heals from the per-row markers when it is missing, which is what made the first live probe
-recover 37 hidden floors. The retrieval self-check still reports 6/6 (MRR 0.750) with the reranker in the
-chain, and the metrics panel reports the fitted token model.
-
-**Open item.** `cold_turns` does not appear in the external record in that session even though
-`cold_turn_snapshot_enabled` is true and extraction succeeds (`last_extraction_debug` reaches the record).
-The snapshot is recorded on the extraction store and that store is what `setStore` persists, so the loss
-is somewhere between `recordColdTurn` and `extractDerived`; it is not yet diagnosed. Until it is, treat
-the cold snapshot and the on-demand evidence expansion as degraded on a chat whose derived record was
-created after this change.
-
-### Smaller changes
-
-- `run-tests.mjs` replaces the ~300-line `node a && node b && …` chain: 56 files, per-file timing, a
-  failure tail, `--filter` and `--list`. Children are spawned with **file-backed stdio** rather than
-  pipes, because capturing output through a pipe needs a named pipe and confined environments refuse it.
-- A failed recall prefetch, a failed derived hydration and a rejected derived write are all reported
-  instead of being swallowed.
-- New settings: `rerank_enabled`, `rerank_weight`, `rerank_half_life_turns`.
-- New tests: `test-v55-tokenizer.mjs`, `test-v55-derived-store.mjs`, `test-v55-rerank.mjs`,
-  `test-v55-recall-prefetch.mjs`, plus the summary-undo and coverage-invariant cases in
-  `test-v55-floor-fold.mjs`.
-
-## 5.5-dev Iteration 13 hotfix 8 — summarize every ten floors, then fold them out of the prompt
-
-The memory system now summarizes on a fixed cadence — one Level-1 summary per **ten completed floors** —
-and a floor a Level-1 summary already covers **leaves the model prompt entirely**. The summary stands in
-for it, the original wording stays in the chat file, in the transcript and in the cold snapshot, and the
-whole thing is reversible from the settings panel.
+## Unreleased
 
 ### Added
-- **Floor folding (冷原文 / cold original text).** `v55-floor-fold.js` marks a summarized floor
-  `is_system = true` — SillyTavern's only prompt-visible lever, and the same flag its own `/hide`
-  command uses — plus a plugin-owned marker in `message.extra`. SillyTavern's prompt builder filters
-  `!x.is_system`, so the floor stops reaching the model while remaining in the transcript, collapsed
-  rather than removed (`.mes.aum-v55-folded`).
-- **Fold-aware row classification.** Telling the two uses of `is_system` apart is what makes folding
-  safe: a folded row is still dialogue for extraction, for the dialogue-pair fingerprints, for branch
-  identity and for on-demand evidence expansion, while a host `/hide` is not and was never meant to be
-  remembered. `memory-core.js` now exports `isFoldedRow` / `isHostHiddenRow` / `isDialogueRow` and
-  every reader of chat history in the extension goes through them — `memory-core`, `index.js`,
-  `v55-runtime` (branch id), `v55-consistency`, `v55-finalizer`, `v55-evidence` and
-  `setting-retriever`. Without this the memory system would forget the very floors it had just
-  summarized, and every fingerprint would rebind the moment a floor was folded.
-- **Reversibility and audit.** Folds are recorded in chat metadata under `store.floor_folds` with a
-  per-row content fingerprint, so a shifted or rewritten chat cannot make the plugin unhide the wrong
-  message. `unfoldAllFloors()` restores everything and is wired to a settings button.
-- **Settings.** `summary_fold_hidden_floors` (default on), `summary_fold_keep_recent_floors` (default 1)
-  and `summary_source_max_chars` (default 24000), with UI controls, a fold counter in the status line and
-  a "恢复全部已折叠楼层" button.
-- `test-v55-floor-fold.mjs` covers the fold, idempotency, host-`/hide` separation, unfold, index-shift
-  safety, the tree-reset invariant and the injected summary shape.
-- `test-v55-summary-store-swap.mjs` and the new `writeMergedChatStore` case in
-  `test-v55-store-integrity.mjs` cover a store replacement landing in the middle of a summary model call
-  and a store write running before the ownership guard exists.
-- `test-v55-summary-error-string.mjs` covers every error shape the host and the transport actually emit,
-  and asserts that ordinary narrative text mentioning a number is still accepted.
-- **The summary tree was destroyed every time a chat was loaded.** SillyTavern loads a chat by
-  *assigning a brand-new* `chat_metadata` object, which no plugin can intercept. The ownership guard is
-  therefore not installed yet when the plugin's own store write runs, and `setStore` replaced the store
-  wholesale — taking the summary tree and the floor-fold audit with it. A live reload recreated this
-  exactly: the chat file held `l1=4 / l2=2 / l3=1` and `floor_folds.hidden=77`, the app loaded the same
-  file with `l1=0` and `hidden=0`, and then wrote the empty tree back. Store writes now merge through
-  `writeMergedChatStore()` so the guarantee no longer depends on whether the guard happens to be
-  installed, and `CHAT_CHANGED` re-installs the guard synchronously as well as on the next tick.
-- **A failed provider generation was stored as a summary.** A host generation that fails resolves with a
-  short error string — `"[API 错误]\nToo many requests: … status 429: AGY quota exhausted for requested
-  model"` — rather than throwing. The summarizer accepted it, stored the provider's error text as the
-  level-1/2/3 summary and permanently marked the batch as summarized, so floors were folded with an error
-  message standing in for them. Error-shaped completions are now rejected, the batch stays pending and the
-  failure lands in `last_error`.
-- **The cold原文 snapshot had stopped reaching disk.** Every chat file inspected carried extractions but no
-  `cold_turns` at all, so the evidence backstop introduced in this iteration existed in memory only.
-  `rebuildCanonicalFromChat` writes a store replayed by `replayStoreFromExtractions`, which starts from
-  `createEmptyStore()` and therefore has no `cold_turns` — and it was one of the writes that replaced
-  the store outright. It was collateral of the same ownership defect, and the merged write repairs it:
-  a live extraction now records its floor and the snapshot survives a full page reload.
 
+- The detail-survival acceptance reports whether the evidence quotation contained the detail itself, not only
+  whether a run of it matched. Over the 37 recorded runs, 73 of 82 positive probes had the evidence channel
+  matched but only 53 were the needle itself - 20 were a two- to four-character run - and 12 of the 28 recorded
+  `retrieval-recovered` outcomes rested on one of those. The summary is a derived paraphrase, so the tolerant
+  match stays right for it; the evidence block is a quotation of the original, and `evidenceFull` is that
+  reading. The report prints it beside the recovery count.
 
-### Fixed
-- **A summary tree captured across a model call was orphaned from the store that reached disk.** The
-  ownership guard keeps independently-owned chat state across a Canonical replay by cloning it into the
-  replacement store object. `processSummaryHierarchy` held the tree it had read *before* the model call,
-  so every batch created after a replay landed in an object nothing ever persisted: a live 42-floor run
-  summarized correctly in memory (`l1=4 / l2=2 / l3=1`) and came back from disk with `l1=0`. Each
-  mutation now re-reads the tree from chat metadata, and a batch whose record was lost with the store is
-  simply re-summarized. `test-v55-summary-store-swap.mjs` reproduces the swap mid-call.
-- **An auxiliary key that arrived as an own property holding `undefined` erased owned state.**
-  `mergeAuxiliaryChatState` treated "property present" as authoritative, and `normalizeStore` spreads its
-  input, so a store that merely *omitted* `hierarchical_summaries` could still carry the key as
-  `undefined` and drop both the tree and the floor-fold audit. Only a non-`undefined` incoming value is
-  authoritative now; an explicit `null` or a replacement value still is.
+- A build records where each candidate came from and what the reranker scored it, so a candidate the evidence
+  block left out can be attributed offline instead of guessed at. `evidence_candidates` rows now carry `fused`
+  (the candidate's position in the fusion's own order) and `rerank` (the provider's score, null when the
+  shortlist did not send it). `rerankHead` is a pure function of those two numbers and a bound, so the recorded
+  head can be replayed at another bound without a provider call. Measured need: of 34 probes whose detail was
+  not conveyed, 17 had their only carrier row ranked and outside the five-entry block, and the recorded order
+  alone could not say whether the reranker had put it there or the four-place rise bound had held it down.
+
+- The rerank diagnostics record what the stage changed, not only that it ran. `rerank_cost` now carries
+  `shortlist`, `moved` (shortlist positions whose occupant changed), `top1_changed`, and the first three
+  candidate sources before and after the reorder; a failed call records `moved: 0` rather than leaving the
+  reader to infer it from the error. Ten live runs recorded `rerank_used` and its cost and nothing about the
+  order, so none of them could say whether a configured reranker had reordered the prompt at all. The metric is
+  a pure function of the two orders, so it adds no provider cost. `max_drop` and `max_rise` report the furthest
+  any candidate fell below, and rose above, its fused position.
 
 ### Changed
-- `summary_level1_every_turns` default **1 → 10**: one Level-1 summary per ten completed floors.
-  `summary_max_tokens` default **600 → 2048**, because a reasoning model bills its hidden reasoning
-  against the same budget and 600 truncated the visible summary mid-sentence in a live session.
-- **The injected summary shape had to change to match.** The old `format()` injected three or five newest
-  items per level and dropped every item a higher level had consumed. That is correct when the raw floors
-  are still in the prompt, and wrong once they are folded: a forty-floor chat could collapse to a single
-  skeleton paragraph. Each level now gets a share of the sub-budget and is filled newest-first, and while
-  floors are folded the lower levels stay in even after a higher level consumed them, because they are
-  now the only surviving record of those floors.
-- `summary_max_context_chars` default **6000 → 9000** to fit the extra levels.
 
-### Guarantees
-- Only a floor a Level-1 summary actually covers is folded, and the newest floor is never folded —
-  SillyTavern's swipes and regeneration act on the last message, and its own hide helper refreshes the
-  swipe buttons precisely because hiding the tail breaks them.
-- A summary-tree reset **restores the raw text before it drops the tree**, so no content is ever missing
-  from the prompt with nothing standing in for it.
-- Folding is idempotent and persists through the host's own `saveChat()`; the transcript styling is
-  re-applied after every chat load.
-
-## 5.5-dev Iteration 13 hotfix 7 — the injected memory finally reaches the model
-
-Verified against a live TauriTavern session with the real provider (WebView2 CDP, retained host request
-logs, real Jina embeddings). This session's test chat ran a 12-turn scripted scenario end to end.
+- The cross-encoder rerank stage is unbounded again: a candidate may move as far as the provider's own scores say.
+  The four-place rise bound shipped earlier the same day was removed on measurement. Its stated benefit - keeping
+  the opening instruction row out of the evidence - is not reproducible: with the rise bounded that row is quoted
+  in 7% of probes on `path2-shiyuan` and 24-36% on the dense fixture, against 0% and 18% unbounded. That reversal has a
+  mechanism: a bounded rise fills the head from the fusion's own leaders, and the fusion's leader is often the
+  user's own instruction, which is lexically close to the query, while the cross-encoder - which reads the
+  text - prefers the story rows. The cost is structural: the evidence block holds five entries, so a candidate
+  the fusion placed at position `maxRise + 5` or later cannot enter it whatever the provider scores it. Replaying
+  recorded builds at both bounds attributed 6 of 16 failed probes to the bound, two of them cases where the
+  document the provider scored highest was the one held out, and detail recovery over the dense fixture came out
+  15 of 42 bounded against 10 of 12 at twelve and 15 of 21 unbounded. `narrative_rerank_max_rise` still sets a bound
+  for a measurement, and neither direction is bounded by default.
 
 ### Fixed
-- **No Aetheria block ever reached the model.** The three v5.5 layers (runtime → finalizer → consistency)
-  coordinated by swapping `ctx.setExtensionPrompt` on the context object they were handed. Real
-  SillyTavern builds a **fresh context object on every `getContext()` call**, so the swap only ever
-  mutated a throwaway: nothing was captured, and `v55-consistency` re-emitted the composed block using
-  `position`/`depth` from an empty capture. `Number(undefined)` is `NaN`, SillyTavern matches
-  `position` against its own `extension_prompt_types`, and `NaN` matches nothing — so every block was
-  silently dropped while the plugin kept reporting success. Retained requests proved it: the recorded
-  generation carried neither `PLUGIN REFERENCE DATA` nor `PLUGIN CURRENT STATE`. The legacy runtime now
-  **publishes** its bundle for the outer layers to compose on top of, and every re-emit normalises the
-  prompt arguments to a real numeric position and depth. The same request now carries both blocks, the
-  hierarchical summary, scene locators, scene evidence and the recalled memory ids.
-- **The whole summary tree was wiped and re-summarised on every launch.** `dirty()` treated every
-  history-mutation event as an edit, and the host re-emits those events while it hydrates a chat at
-  startup. It now resets only when a turn that had already been summarised actually disappeared, so an
-  edit/swipe/delete still invalidates the tree while a plain reload does not.
-- **One chat could own two vector collections.** `getCollectionId()` hashed whatever
-  `getCurrentChatId()` returned, and the host reports the same chat with and without its `.jsonl`
-  suffix depending on which path opened it (UI switch vs. `openCharacterChat`/restore). The plugin built
-  a second collection and then reported the first as a stale index with no per-index space_fingerprint.
-  Chat identity is now normalised once and used for the memory collection, the baseline collection and
-  the per-chat registry.
-- **A fresh chat reported a stale Dense index.** `indexLooksBuilt()` counted the provider fingerprint
-  the plugin stamps when it merely *ensures* a collection, so a chat with zero vectorised rows was
-  reported as `stale` with "现有 memory Dense 索引没有 per-index space_fingerprint；拒绝把它当作当前空间
-  使用" — a message about a rebuild that had nothing to rebuild. A memory dense index now counts as built
-  only when it actually holds a vectorised row; a genuine legacy index still carries rows, so it is still
-  detected and rebuilt.
 
-### Added
-- `test-v55-injection-host-fresh-context.mjs` reproduces the real host shape (a new context object per
-  `getContext()`) and asserts the reference/current-state blocks survive with a numeric position and
-  depth. The existing lifecycle test used one stable context object, which is exactly why it never caught
-  the defect.
-- `test-v55-summary-dirty.mjs` asserts that hydration update events keep the tree and that a real edit
-  still invalidates it.
-- The extraction debug record now carries an `attempts` array (phase, budget, value type, length,
-  parsed, starved) so a failed extraction says which provider round-trips ran instead of leaving the same
-  parse error for every cause.
+- A configured reranker no longer makes the host raise a 404 error on every generation. A provider that serves
+  rerank only on its own path answers the OpenAI-compatible `{base}/rerank` with 404 **every time**, and the
+  stage's retry is what makes the call work - but the retry runs through the host's own
+  `generate_chat_completion` shim, so the host surfaced that expected 404 as "Custom OpenAI endpoint failed with
+  status 404" while the story kept being written. The path that answered is now remembered per base URL and
+  tried first, and the discovery is written to `narrative_rerank_native_paths` so it survives a reload: the
+  probe happens once per install rather than once per page load. The write is now asked of the host instead of
+  left to its own debounce - mutating the settings object is not saving it, and on the live install a discovered
+  path was still absent from the settings file fifteen minutes later. A later 404 on the remembered path clears
+  the memory and probes again. Verified across a page reload: after one, twelve floors reranked three times on
+  the native path with no probe and no failure recorded.
 
-## 5.5-dev Iteration 13 hotfix 6 — any parse failure retries, and the retry is observable
+- The detail-survival acceptance refuses a run whose fold hid only the first summary batch. Two runs had their
+  last batch's request never settle, so `folded` was 21 rows for twenty finished floors, the last ten floors
+  stayed visible, and three probes were answered from a transcript that still showed the needles. The phase-1
+  gate passed them because it only asked whether any row had been folded; it now requires the fold to cover the
+  phase (`folded >= 2 x completeTurns`) and reports that a batch never committed. The greeting need not be
+  folded, so a run that leaves it visible still passes.
 
-### Fixed
-- **The doubled retry never ran for a brace-less completion.** `budget-retry` was gated on
-  `looksLikeStarvedJson()`, which requires the completion to start with `{`. A reasoning model that
-  spends the entire budget before emitting its first brace returns prose (or two stray characters), the
-  gate rejected it, and the turn was abandoned with nothing but a parse error. The gate is now simply
-  "did not parse, and there is budget headroom".
-- Live proof with `extraction_response_tokens: 256`: the recorded `attempts` show
-  `structured@256 → budget-retry@512 → plain-json-retry@256`, and with 1024 the first structured attempt
-  succeeded. Across the 12-turn scenario two turns needed the doubled retry and both then parsed cleanly.
+- The cross-encoder rerank stage reaches providers that serve rerank on their own path instead of the
+  OpenAI-compatible `/rerank`. A provider can list a rerank model and still answer `{base}/rerank` with 404:
+  Aliyun's MaaS answers `{origin}/api/v1/services/rerank/text-rerank/text-rerank` for the same key and the same
+  model (`qwen3.7-text-rerank`), with `input`/`parameters` in and `output.results` out. The stage retried
+  nothing, failed open, and recorded `rerank_used: false`, so a configured reranker read as inert - which is how
+  the optional stage was judged here. Only a 404 triggers the retry; a 401/429/5xx is a refusal at the right path
+  and is reported rather than re-addressed. The diagnostic `rerank_cost.transport` names which path answered.
+  Verified end to end against the live provider: 330 ms, 276 provider tokens, and then confirmed inside a
+  generation (2026-09-15/16, runs 2e-2h): `rerank_used: true`, `transport: native`, `rerank_error: null` in all
+  24 captures, 14-24 documents and 2,760-10,454 provider tokens per call - one call per generation, and none at all
+  until at least two candidates the prompt does not already show exist. The same stage now leaves the WebView's `fetch` behind for the host's native HTTP shim, as
+  the embedding path already does: a provider request from the WebView is blocked by CORS, and the live run showed
+  the stage failing with "Failed to fetch" in 34 ms without reaching any provider. The shim reports a provider
+  failure as a thrown error naming the status, so the adapter returns that number as the response status and only a
+  named 404 can trigger the path retry; an unnamed failure is reported as 502 rather than guessed.
+
+- A quoted evidence source now records the candidate's own extent (`spanStart`/`spanEnd`) and the channel
+  regions the window was allowed to follow (`seats`). Measured on the 2026-09-15 runs: ten needle occurrences fell
+  63-207 characters outside the span quoted for the row that carries them, and a full sentence-end extension
+  reaches none of them, so the shape is a window placed at one end of a long row rather than a cut one punctuation
+  short. Without the regions in the record such a miss cannot be attributed, which is what `seats` now fixes.
+
+- A turns file that declares its negative controls under the wrong key is refused instead of read as having
+  none. `parseTurnsFile` takes them from `negativeControls`; a file that used `negatives` parsed clean, reported
+  `negativeControls: 0`, and produced a "0 fabricated" acceptance reading from a probe set that had nothing to
+  fabricate - which is what every run recorded before 2026-09-16 did. The driver stops on parse errors, so the
+  mis-keyed list now fails before any model call.
+
+- The detail-survival acceptance no longer reads a probe answer that the transcript still shows as a fabrication.
+  `detail-survival.needleSources` records, against the phase-1 snapshot, whether a declared needle is still in an
+  unfolded row and whether any model-written row carries it; `summarizeDetailSurvival` reports those as
+  `visible-in-prompt` and `instruction-only` instead of counting them as memory. Re-read against the five recorded
+  2026-09-15 runs this removes run 1's single fabrication and both of its `summary-kept` reads: its second batch had
+  been refused, so rows 21-40 were still in the prompt and the model answered `落雁驿` and `阿箬` from the
+  transcript. The helper reports `known`, so a caller with no transcript keeps the ordinary reading - the first
+  wiring read a missing chat as "the model never wrote it" and mislabelled a real recovery. Every outcome now
+  also carries the exact token the reply matched, how it matched and how much of the needle it covered
+  (`token=臂上(run2, 67%)`), so a tolerant two-character run is visible instead of hidden behind the boolean. A
+  census over the six recorded runs found the floor carries 6 of 24 matches and every one shortens the needle; the
+  candidate rule that forbids dropping a content character was measured and rejected because it removes two true
+  positives, including that run's only retrieval recovery. A frequency filter (ADR-0046's specificity idea) was
+  measured next and rejected as well: the true `卷尺` occurs in 9 of 41 rows while the false `臂上` occurs in 2,
+  and every token occurs only in rows that already carry the full needle. Run length, position and adjacency were
+  rejected the same way - the difference is the referent, not the text. Measured: `node run-tests.mjs` 50/50 and
+  `node check-syntax.mjs` 99 files.
+
+- The opening greeting is hidden with the first committed summary batch instead of staying visible inside the
+  hidden block. A chat's first row is the character's greeting, which no user turn contains; coverage is a prefix
+  that starts there, so leaving it visible made the hidden rows begin at floor 1. The host draws one "context
+  starts here" line (SillyTavern/TauriTavern's `.lastInContext`, `chat.length - openai_messages_count`), so on a
+  live chat with a committed ten-turn batch the line landed on the last hidden row instead of the first visible
+  one: the faded block appeared to be in context and the visible greeting above the line appeared hidden. The
+  greeting now folds under the same every-chunk-covered rule as any other row, and only once a complete turn is
+  covered, so a coverage claim that names nothing but the greeting hides nothing (ADR-0047); it still does not
+  count toward the ten-turn cadence. Measured: `node run-tests.mjs` 50/50 and `node check-syntax.mjs` 99 files;
+  the natural track's fold already excluded the greeting, so the 1,296-turn corpus reading is unchanged by
+  construction.
+
+- A quoted window no longer slides off every region the channel that picked the span voted for. Window placement
+  scores candidate windows by how many of the question's own words they carry, which is a proxy for where the
+  answer is; a move that left no channel region inside quoted a different part of the row than the one the slot
+  was spent on. On a held-out chat the lantern row was quoted from offset 128 while its needle sat at 41, because
+  the question's words pulled the window forward and off the anchor at the head. Measured: the ten-probe labelled
+  gate is unchanged at **9/10**, and the 1,289-turn corpus paired check is **0 turns worse and 4 better**
+  (character-description readings 101 -> 105). The archive-wide variant of the same held-out control loses one
+  probe, which is the honest cost of refusing the move.
+
+- A quoted window opened on the question's own word now reaches back a few characters when that word sits at
+  the window's **head**, so the modifier phrase that answers the question is not cut off: "一个穿灰袍、拄藤杖的
+  老头" now falls inside the quote for "那个老头最显眼的穿着是什么", which takes the labelled probe set from
+  8/10 to **9/10** strict needle readings (10/10 by the tolerant matcher) with the 1,289-turn corpus paired
+  check at **0 turns worse and 3 better**. The reach is deliberately scoped to a word at the window's head: the
+  same reach applied to a window whose answer sits in its last characters destroys that answer, and
+  `test-evidence-window` section 4 is the guard for that direction.
+
+- A quoted original window now follows the region the channel that picked the span actually found, and a
+  character's introduction row is a candidate of its own (ADR-0045, N41). On a real chat the reply had
+  described a character's appearance confidently and wrongly, because the describing paragraph - which comes
+  *before* she is named - was never quoted for a question about her appearance. Window terms are filtered by
+  story frequency (a word the whole story uses cannot move a window), a character's own name is never a window
+  seat, and the descriptor run that defines a description is chosen for density rather than for count in a wide
+  window. A ten-question labelled probe set from that chat went from 2/10 to 8/10 needles inside a quoted
+  window, or **10/10 by the project's own paraphrase-tolerant reading** - both strict misses are the matcher's
+  two-character floor with the answering fact inside the quote (粉色长发 in the quoted introduction row,
+  "灰袍、拄藤杖的老头" at the head of the row-12 window). The channel's ranking score is unchanged, and its pick table
+  was re-measured by hand (43 rows reproduced exactly; 3 moved, none better or worse). A row that mentions
+  another candidate character earlier than the name it would introduce is that character's row and no longer
+  counts as this one's introduction - that qualification removed 9 of 25 introduction candidates, all of them a
+  passing reference inside somebody else's introduction, at the cost of one row that introduces two names. The
+  candidate is granted only for names the knowledge block tracks, and the wider clothing-and-face vocabulary
+  places the window without scoring: scoring with it changed which chunk the channel picks and cost four
+  description readings over 1,258 corpus turns. Over that corpus the recall proxies end at situation-term 85.5%,
+  asked-thing 65.0% and character-described 27.4% (Chinese chats 81.1%), against 85.0% / 64.6% / 26.6% before.
+- The evidence window rule (ADR-0037) was inert in every shipped prompt: the runtime called `packRawEvidence`
+  without `query`, so the term list was empty and the rule returned immediately, while both harnesses that
+  accepted the change passed the query themselves. The runtime passes it now and a runtime-level test through
+  `buildNarrativeContext` fails if it stops (ADR-0037 correction, N38). The first live reading of that run was
+  corrected too: it had been taken from the previous build's diagnostics instead of the probe turn's own
+  `injections.thisTurn`.
+- A batch that never committed is no longer read as a merge (`committed`), and a probe run whose floors were
+  never folded is marked unattributable (`attribution`) instead of counting every answer as fabricated - a
+  forced run had printed five fabrications that were nothing of the kind.
+- The offline dense ruler can no longer measure with vectors it cannot replay. A missing vector used to
+  remove the dense channel for that question while the run still printed a dense header, so a lexical
+  number was read as a dense one; the run now declares every input it will read, refuses to print a table
+  when one cannot be supplied, and exits non-zero. A paired comparison likewise refuses two dumps whose
+  recorded vectors differ, because a difference in the ranking rule cannot be separated from a difference
+  in the embeddings.
+- A host metadata-write failure that lands after a summary committed is recorded as a persistence problem
+  (`persist_error`, stage `metadata_write`) instead of a model failure, and the original-text vector index is
+  classified as `raw` rather than `memory`, so a raw query keeps its own threshold.
+- The Tauri Embedding transport splits one insert into provider requests of at most 20 inputs. A
+  DashScope-compatible qwen3 Embedding route rejects a larger batch, and the caller's 40-chunk insert made the
+  whole original-text index rebuild throw: the index record was deleted and dense recall stayed off with only a
+  diagnostics reason to account for it (ADR-0010).
+- The knowledge-boundary block reports what it injected and what the budget left out, the way the anchor block
+  already did. It used to return only its surviving text, so an accepted boundary could be dropped on every
+  generation with nothing in the trace to show it: the live chat carried four entries at the 200-token default
+  and injected exactly one, and one of the three left out restated the same negation that the anchor budget had
+  already parked. The panel states the counts, the warning names the dropped entry, and the read-only report
+  runs the same selection (`knowledge_injected`, `knowledge_parked`, `knowledge_parked_terms`;
+  `selectKnowledge`).
 
 ### Changed
-- **Summary budget.** `summary_max_tokens` raised to 2048 for this install (and
-  `extraction_response_tokens` to 2048): the same provider was truncating summaries at 600 with
-  `finish_reason: "length"`. After the change every summary in the run finished with `stop`.
 
-## 5.5-dev Iteration 13 hotfix 5 — a starved extraction retries with more budget
+- The settings panel now names the records it parked instead of only counting them (three per list, each cut to
+  a recognisable length), and it states a live statement that has **no subject** apart from one that merely had
+  **no carrier** - the first cannot be resolved by anything, the second was not restated. Both conditions were
+  already in the read-only report and neither was on the screen. The line is built by `anchorPanelText`, a pure
+  function, so what the panel says can be read offline (Issue #2 step 5).
+- A summary body refused for `format` or `over_budget` earns one targeted repair, recorded as `body_repair`
+  with its own cost, checked against the input budget before sending, and re-evaluated against the same checks
+  as the first answer; the request now also states the hard ceiling and its consequence, which it never did.
+  `input_budget` stays an unrepaired local block (ADR-0042).
+- A new install starts at a 60,000-character summary input budget instead of 40,000: the only recorded block
+  needed 43,658 characters for a ten-turn batch whose replies averaged 3,953 (ADR-0043).
+- A trimmed evidence quote follows the question's **words** first and the ranker's n-grams second, so a head
+  window that matches only fragments of the question no longer keeps the answer outside its own quote
+  (ADR-0041).
+- The visible settings now expose only controls with a reader: 42 retired v5.4 controls (extraction,
+  baseline, evidence, temporal-channel and recall tuning) and a self-check button with no handler are gone,
+  and the surrounding text describes the narrative pipeline instead of the retired extraction stack. The
+  narrative panel states a summary over its soft target, a metadata-write failure after a commit, and the
+  parked anchors that were folded into the retrieval query.
+- The summary budget is now a soft target with a separate emergency ceiling
+  (`narrative_summary_ceiling_tokens`; `0` derives it from the target). A summary body over the target
+  but within the ceiling is accepted and recorded as over-target; only a body past the ceiling is
+  refused, and a refusal still hides nothing. Dense batches therefore get more room than a fixed
+  600-token rejection allowed (ADR-0032).
 
-### Fixed
-- **A reasoning model can exhaust the extraction budget before the JSON closes.** With the prompt finally
-  reaching the model, the live session showed `finish_reason: "length"` after 62 characters of JSON
-  because ~2500 characters of hidden reasoning had consumed the rest of a 1024-token budget. The default
-  `extraction_response_tokens` is now 2048, a completion that starts like JSON but does not parse
-  triggers **one retry with a doubled budget** (`mode: "budget-retry"`, capped at 8192), and the
-  parse-error record distinguishes "no JSON at all" from "JSON left unclosed".
-- The same session showed the hierarchical summary clipped at `summary_max_tokens: 600`
-  (`finish_reason: "length"`, reasoning ~1700 characters). Raise that setting for reasoning models; no
-  code change is needed because it is already user-configurable.
+### Added
 
-## 5.5-dev Iteration 13 hotfix 4 — extraction now reaches the model
+- `--detail-survival`: a repeatable acceptance mode that reports which of the two channels carried each
+  declared detail - with a paraphrase-tolerant needle matcher, an answer-adjudication row per item, one probe
+  per turn with the phase-1 state restored between them (`perTurn`) and an `independence` reading, and a
+  frozen `<out>/turns.fixture.json` written before the first model call so any run can be re-run as the same
+  fixture (ADR-0033, ADR-0035, ADR-0038, ADR-0040).
+- Every build records the ranking it was given (`evidence_candidates`) and what the packer did with each
+  candidate (`evidence_trace`, including whether an included quote had to be shortened), bounded to 40 rows
+  with counts over the whole record (ADR-0039).
+- `acceptance-capture.js` restores a saved chat through the host's own reset path - reset the surface epoch,
+  redisplay the canonical chat, re-apply the fold classes - because replacing the array leaves stale message
+  roots mounted (ADR-0034).
+- `embedding-cassette.mjs`: the ruler's dense vectors are a transport cassette. Every entry is
+  keyed by the request that produced it - model, base, role, the provider task the plugin derives from them
+  and the exact input text - so a changed retrieval prefix, model, base or task is a miss rather than a
+  silent replay of a vector computed from something else, which the old `c:<hash>` / `q:<question>` keys
+  could not tell apart. `recall-baseline.mjs --cassette-requests <file> --model <m> --base <u>` writes the
+  inputs a run will read and `recall-embed.mjs --requests <file>` embeds exactly those, so a run and its
+  recording cannot drift; a legacy cache is read only under an explicit `--adopt-legacy`, and every report
+  and dump from one carries `provenance legacy-unverified` (N28).
+- `answer-adjudication.mjs`: a graded answer becomes a record instead of a verdict. Each row carries the
+  machine verdict, whether the assembled prompt carried the fact, whether the reply conveys it, and whether
+  the probe itself is broken; the classification (`fixture-defect` / `prompt-insufficient` / `model-error` /
+  `scorer-false-negative` / `confirmed-pass` / `scorer-false-positive`) and the memory credit are derived, so
+  a row cannot disagree with its own evidence. A pass requires sufficient prompt evidence: a correct answer on
+  an empty prompt is recorded as ungrounded and classified against the prompt, not credited to memory. Applied
+  to this session's sixteen graded cells: nine machine misses contained **no model error at all** - one was the
+  grader and eight had no evidence in the prompt - while three machine hits were fixture defects (the fact is
+  on the character card) and two correct answers were ungrounded (N27).
+- The second error direction of the ledger is reported: the quoted evidence rows that only a *retired* statement
+  names (`superseded_evidence`, `superseded_evidence_sources`, `superseded_source_pool`). An anchor operation
+  retires the statement, not the row it was read from, so a row can stay active, stay ranked, and carry the old
+  version of a fact that was explicitly updated. It is labelled a risk indicator rather than a verdict, because
+  the evidence header states that historical states need not be current. Measured on the live chat: 10 retired
+  statements name 7 rows that no live statement cites, all 7 still active, and a quoted span from that pool
+  appears in both product-path turns sampled (N26).
+- Every build resolves each live ledger statement to a carrier: its own injected anchor or boundary line, a
+  quoted original row, or nothing. Folding, the anchor budget and the boundary budget each answer a local
+  question, and each can report success while a statement the ledger still calls live reaches no part of the
+  prompt - measured on the live chat, where one negation was parked as an anchor *and* dropped from the
+  boundary block in the same turn. The count with no carrier is reported, the dropped statement is named, and a
+  warning states it (`required_total`, `required_line`, `required_source`, `required_none`,
+  `required_uncarried`; `ledgerCarriers`, N25). It is a lower bound: the summary prose is not read.
+- The shipped retrieval path is written down once (dev_docs/01_architecture.md) and reported per generation as
+  `retrieval_config`: scorer, fusion `k`, each channel's weight and the packer policy. "Dense was on" reads the
+  same at the shipped 0.1 vote and at 1.0, and the packer's policy was not stated in the trace at all. The
+  submodular packer is named as the ruler-only experiment it is, and the runtime passes `SHIPPED_PACK_POLICY`
+  explicitly instead of inheriting a default, so a change to the experiment cannot change a live prompt (N23).
+- `acceptance-capture.js` and `acceptance-longchat.mjs`: a versioned, reusable long-chat acceptance runner.
+  The capture boundary records the raw request, response and elapsed time of the summary call *and* of its
+  targeted repair - the repair prompt does not carry the summary marker, which is how the 421757c run lost it -
+  and it saves the injected state block for every turn instead of only at batch boundaries. Chat text, raw
+  responses and credentials stay outside the repository; `test-acceptance-capture.mjs` proves the boundary
+  offline with a simulated transport.
+- `runtime-precheck.mjs`: a live preflight that compares the repository, the deployed directory and the
+  function sources actually loaded in the page, and fails closed when they differ. `deploy-live.mjs --check`
+  compares only the disk, and a page loaded before a deploy keeps the previous module.
+- `replay-anchor-evidence.mjs`: replays a captured acceptance run's frozen summary requests and responses
+  through the current parser with no model call, so a protocol change can be checked before paying for
+  another story.
+- Continuity anchors accept several original rows as the source of one fact (`来源 raw_15、raw_17`,
+  comma, semicolon or slash lists). Every token is validated against the batch and every token is kept.
 
-### Fixed
-- **The extraction prompt never reached the provider.** Retained TauriTavern request logs showed the
-  extraction call arriving as `[system] Write Seraphina's next reply… / [user] <character card>` — the
-  supplied `quietPrompt` was absent, so the model answered with roleplay prose or raw reasoning and the
-  JSON parse failed every time. `runQuietExtraction()` now prefers `ctx.generateRaw()`, which delivered
-  the exact prompt and clean JSON against the same host in a direct comparison; `generateQuietPrompt()`
-  remains as the fallback for hosts without `generateRaw`. The summary path already worked for the same
-  reason — it goes through Connection Manager rather than a quiet generation.
-
-## 5.5-dev Iteration 13 hotfix 3 — defects found by running a real conversation in TauriTavern
-
-Driven end to end through a live TauriTavern session (WebView2 CDP): the plugin loaded, registered both
-prompt channels, generated, summarised, ran extraction and metered its calls. Defects showed up that no
-offline suite could see.
-
-### Fixed
-- **The credential hydration poisoned the key.** `ensureTauriVectorApiKeyLoaded()` read the host store
-  with `probe?.value ?? probe` and then stringified the result. A missing entry comes back as
-  `{ found: false }`, so hydration produced the literal string `"[object Object]"`, stored it as the
-  live key, and every Embedding call went out with it — Jina answered `AUTH_INVALID_API_KEY` (401) and
-  the whole vector path silently produced nothing while the panel reported a saved credential. Reading is
-  now an explicit `readStoreEntry()` that unwraps `{ found, value }`, absence stays absent,
-  `setTauriVectorApiKey()` accepts strings only, and `readStoreEntry()` deliberately still lets genuine
-  store failures propagate so a broken store cannot look like an empty collection.
-- **Quiet extraction inherited the chat preset's `max_tokens`.** `runQuietExtraction()` passed only
-  `quietPrompt` and `jsonSchema`, so the host used the preset budget — 300 tokens in this session — and a
-  reasoning model spent all of it on hidden reasoning. The visible completion arrived truncated
-  (`finish_reason: "length"`) and the parser correctly rejected it, so no memory was ever written.
-  Extraction now sets its own budget (`extraction_response_tokens`, default 1024, clamped 128-8192), and a
-  parse failure records `raw_length` plus a truncation hint when the completion contains no JSON at all.
-
-### Validated live
-- The transport brake classified a provider 401 as *reachable* and did not open (`failures: 0`), which is
-  exactly the behaviour the classification was written for.
-- `get_chat_completions_status` never appears in the running module; `bridgeExports` on the live page
-  lists only the embedding transport.
-
-## 5.5-dev Iteration 13 hotfix 2 — mobile credential durability and a bounded, braked Embedding transport
-
-### Fixed
-- **The Aetheria-owned Embedding key did not survive a WebView reload.** Iteration 12 made the key memory-only to keep it out of WebView `localStorage`, which is the right place to keep it *out* of — but "memory only" was too strong a promise on Android, where the WebView is torn down and recreated constantly, so the user was asked to retype the key on essentially every launch while the desktop build behaved. The key now lives in TauriTavern's own extension store (`aetheria-unified-memory-v55/credentials/embedding_api_key`, the documented per-extension persistence outside the WebView), is re-hydrated once per session by `ensureTauriVectorApiKeyLoaded()`, and is deleted with the key itself. It still never touches WebView `localStorage` and still never touches the host Secret Store.
-- **An unreachable provider stalled the turn pipeline for minutes per call.** TauriTavern builds every provider client with `Client::builder().no_proxy()` and a 3-minute connect / 10-minute request budget (`tt-adapter-http/src/pool.rs`) — sized for a human watching a chat stream, not for background vector work that runs inside a turn. Two changes: `requestEmbeddingJsonViaTauriNative()` now abandons its own call after a bounded wait (60s base, +0.5s per input, capped at 150s, overridable) instead of waiting out the host budget, and `v55-private-vector-transport.js` brakes the transport after 3 consecutive *reachability* failures for 120s. A provider that answered with 4xx/5xx is reachable and never opens the brake — that is configuration to fix, not an outage.
+- `recall-baseline.mjs --span-cost`: the other side of the evidence budget's allocation, as a switch. It
+  charges a span its own cost instead of the fair share, which keeps the tail of an anchor that slightly
+  overruns its share and reaches fewer messages when anchors routinely overrun it (`packRawEvidence`
+  `spanCost`, off in the shipped path). Measured: on the labelled English set it is a small win (8/15 to
+  9/15 answers, same 5.00 messages reached); on a real Chinese chat it is a loss (100% to 97% recall over 35
+  auto-labelled unique needles, 891 to 979 tokens per query), and it reaches four messages instead of five on
+  the CJK fixture, because half of that chat's anchors are over the 200-token share. It stays off.
+- `recall-baseline.mjs`: the committed ruler for archive cost and lexical recall, measured on real
+  chats. It also takes a hand-written question set (`--paraphrases`), which is the instrument the
+  dense-retrieval decision waits on. Results and limits are in ADR-0004 and ADR-0006.
+- The ruler reports, per countable question, the lexical and fused entropy and top-1/top-2 margin, the
+  answer's rank, the rule that dropped it and the quoted slot that carried it. `--dump` writes a run to
+  JSON and `--against <dump>` compares two runs as paired questions with an exact McNemar test, and
+  `--scorer`/`--pack` switch the rule under test. A question entry may name its chat, so its needle is
+  checked for uniqueness where it matters - inside that chat - and for containment in one chunk.
+  `--evidence` and `--entries` pin the evidence budget and the slot count, which is how the budget frontier
+  below was measured.
+- Continuity anchors: promises, ownership, secrets, identities and life states are stored separately,
+  fed back to the summarizer verbatim every pass, and re-injected every generation. An anchor the model
+  stops mentioning is kept and flagged; only an explicit resolution removes it.
+- The measurement pass: the paraphrase set grew to 59 questions, oblique-question recall measured 45%
+  (and evidence span precision 15%) on the questions that can be judged, the archive measured 3.8 KB per
+  floor with zero superseded versions, and the resident block was shown to stay inside its budget across
+  ten lossy summary rewrites. Decisions: the dense channel is justified and already exists (ADR-0010),
+  the archive is not pruned (ADR-0011), boundaries stay a record rather than a filter (ADR-0012).
+- Diagnostics now report how many retrieval candidates came from each channel, so the dense half can be
+  A/B'd from the panel, and an unrepeated knowledge boundary is announced like an unrepeated anchor.
+- Knowledge boundaries: who knows what, and who explicitly does not, is its own section of the
+  summary - stored, fed back to the summarizer verbatim, and re-injected every generation with its own
+  budget. It is a record the panel can show and a test can assert, not enforcement.
+- The fact subsystem is retired with it: the extraction pipeline, the prompt assembler, the recall
+  path, the cold-snapshot cache, the length certificate, the quality metrics, the reranker, the
+  retrieval self-check and the baseline builder, plus the 33 test files that pinned them. index.js went
+  from 3444 to 2055 lines; the repository carries 67 source files where it carried 111.
+- The legacy generation runtime is retired rather than gated: the v5.4 interceptor, its prompt
+  assembly, the extraction and recall-prefetch events, the startup reconciliation, and six settings
+  controls that no longer had a handler are gone.
+- Two quiet failures are now counted and announced: a summary job that keeps failing, and an
+  unsummarized tail that keeps growing. Neither breaks the story, and both used to be invisible.
+- Narrative continuity summary: a background pass every N floors writes one compact summary of where
+  the story stands (default budget 600 tokens), replacing the previous summary rather than growing it.
+- Original-text archive and retrieval: every message version is kept, chunked and indexed, and
+  evidence is quoted back on demand with its source id, character span, floor and speaker (default
+  budget 1000 tokens).
+- Settings panel "剧情摘要与原文检索" with live diagnostics, "update the summary now", and
+  "restore the original text".
+- `check-syntax.mjs`: the syntax gate discovers the files it parses instead of using a hand-written list.
 
 ### Changed
-- The Tauri Embedding timeout hint now names the actual constraint: TauriTavern never uses the OS/system proxy, only its own request-proxy setting.
-- The vector panel help text states where the Aetheria-owned key is stored and that it is restored after a restart.
 
-### Validated
-- `npm run check` passes; the full offline suite passes, including new coverage for the bounded wait and budget math (`test-v55-tauri-native-http-bridge.mjs`), durable key persistence/re-hydration/clearing (`test-v55-tauri-vector-backend.mjs`), and the transport brake driven through the real interception path (`test-v55-private-vector-transport.mjs`).
 
-## 5.5-dev Iteration 13 hotfix — TauriTavern host error toasts and store purge
+- The summary prompt states the update/end distinction: an update archives the old value, so the same number
+  must not also be ended in one batch; an end means the whole fact no longer holds. The trailing-label spelling
+  a model produced ("结束 A1 旧状态") still refuses and is fixed by the repair, never by executing a
+  label-stripped end.
 
-### Fixed
-- **Model discovery provoked a host-level error toast.** `v55-api-connections.js` enumerated Embedding models through TauriTavern's `get_chat_completions_status` command. TauriTavern maps every failure of that command through `log_user_visible_error` (`presentation/commands/helpers.rs`), and the native backend-error bridge `emit`s it as a global `后端错误` toast — emitted by Rust, so catching the rejection in the extension could not suppress it. Whenever a provider has no `/models` endpoint (Jina lists chat models, not embedding models), sits behind a proxy, or is slow on a mobile link, the user got a red toast for what is optional decoration. Discovery is now a plain WebView `fetch` only and stays silent on every failure; `buildTauriModelDiscoveryInvoke` / `discoverModelsViaTauriNative` are removed from `v55-tauri-native-http-bridge.js`, and the panel says so in TauriTavern instead of promising a model list.
-- **Purging a collection that was never persisted raised `NotFound`.** `v55-tauri-vector-backend.js` called `extension.store.deleteJson` unconditionally, and TauriTavern answers a missing key with `CommandError::NotFound` → a second unsuppressable `后端错误` toast. `deleteCollection` now probes with the documented non-throwing `tryGetJson` and returns early when the key is absent, and still tolerates a `NotFound` race rather than converting it into a failure.
+- A refused `【锚点变更】` section earns exactly one targeted repair, and the host keeps what the first answer
+  already validated: valid operations, the summary body and the knowledge boundaries are frozen, the repair
+  supplies only replacements for the rejected lines, and kept plus replacement lines are re-parsed as one batch.
+  A repair that answers "无" can no longer erase the valid content. The repair request is budget-checked before
+  it is sent, original and repair costs are recorded apart, unavailable usage is marked unknown, and a repair
+  transport failure keeps both the attempt and the original refusal. Both paths share one final current-state
+  check.
+- An unmistakable anchor operation written without its heading is recovered and reported as `inferred`;
+  uncertain text still refuses the batch.
+- The summary prompt teaches the multi-source shape and adds three ledger checks: extract the needed facts when
+  the ledger is empty, check other live values for a contradiction when updating, and keep character belief and
+  unproven guess distinct from objective fact. None of them mandates an add.
+- The `anchors_same_subject` warning now states that it counts records sharing a label; it is not a
+  contradiction detector.
 
-### Changed
-- Native Embedding timeouts now carry a reachability hint (device network / host proxy / mirror endpoint) instead of surfacing only the raw host text, because a timeout there is a network path problem, not a transport defect.
+- **Anchors change by numbered operation.** The summarizer is shown the live ledger with a short id per
+  line (`- A1 | 类型 | 主体 | 陈述`) and answers with a change list instead of restating everything:
+  `更新 A3 | 来源 raw_77 | 新陈述`, `新增 | 类型 | 主体 | 来源 raw_79 | 陈述`,
+  `结束 A5 | 来源 raw_80 | 原因`. An anchor nobody mentions is left alone, and a subject is a label again -
+  "新增" never replaces a value, so two facts that share a subject both stay. Every reference is checked
+  before the summary and the ledger commit together: an unknown id, a source outside the batch, two
+  changes to one record, a record that moved since the request, or a batch text edited during the call all
+  refuse the batch, leave the original floors visible, and are reported per line with the rule they broke.
+  The panel shows the last batch's operation counts, the refused lines, the live values that share a
+  subject, and the retired records with their sources. The retired window is 40 records and is stated in
+  the panel rather than implied to be complete.
+- Historical retrieval focuses on a pending user request while scene names remain available to the
+  character-description channel. Continuation keeps the recent-scene query. Pure continuation commands
+  remain archived but cannot consume historical evidence slots.
 
-### Validated
-- `npm run check` passes; the full offline suite passes, including the updated `test-v55-tauri-native-http-bridge.mjs` (no host status ABI reachable from the bridge, timeout guidance present) and `test-v55-tauri-vector-backend.mjs` (store mock now implements the documented `{ found, value }` contract and fails like TauriTavern on a missing delete).
-
-## 5.5-dev Iteration 13 — Reliability fixes, time/scope model and the evidence loop
-
-### Added
-- `v55-evidence.js`: cold turn snapshot in chat metadata under `store.cold_turns` (per-fingerprint, character-capped, oldest-first pruning); `expandMemoryEvidence` resolves a memory back to its original wording from the live chat first and the cold snapshot second.
-- `v55-evidence.js` text protocol `【查阅记忆】` / 对象 / 事项 parsed and resolved on demand, and a bounded `[MEMORY EVIDENCE — ORIGINAL TEXT, RESOLVED ON DEMAND]` block emitted by `formatEvidenceBlock`.
-- `v55-metrics.js`: `model_calls` (extraction/summary/other), `embed_calls` / `embed_items`, prompt/completion/embed character counts and estimated tokens (chars / 4), with `formatMetrics` / `resetMetrics`; persisted in extension settings.
-- `v55-selfcheck.js`: six fixed hard cases (数字 / 否定 / 条件 / 承诺 / 偏好变化 / 跨轮) executed through the production fusion path (lexical + temporal + structured RRF + MMR) with recall/precision/MRR from `retrieval-eval.js`.
-- Memory time/scope model in `memory-core.js`: `recorded_at` (when it was said), `effective_from` / `effective_until` (the interval it applies to) and `scope` (the situation it applies in, bounded to 200 chars); `selectTemporalCandidates` as the query-time temporal channel; `fuseHybridCandidates` accepts a labelled `structuredLists` structured-RRF channel; retrieval text includes `scope`.
-- `memory-extractor.js`: `scope` added to the extraction JSON schema, normalizer and prompt.
-- `index.js`: cold snapshot recorded at extraction; temporal channel added to recall and its picks exposed in recall diagnostics; metering wired to quiet extraction and embedding insert/query; `extraction_batch_turns` every-N-turn sampling with a widened recent-context window; `CHAT_DELETED` purges that chat's memory/baseline collections through a plugin vector-collection registry, plus a manual purge action; diagnostics UI controls.
-- `v55-consistency.js`: resolves the previous assistant turn's `【查阅记忆】` block and appends the evidence block to Reference; records `store.last_evidence_resolution`.
-- `v55-summary-runtime.js`: `summary_auto_rebuild_on_history_change` now defaults to `true`; summary calls are metered; a summary skipped because extraction is in flight is retried after 1.5s.
-
-### Fixed
-- **Privacy filter missed XML-escaped text.** `v55-finalizer.js` matched hidden memories against raw prompt lines only, so secrets containing `& < > ' "` stayed in the prompt while being reported hidden; it now matches the raw line and its XML-escaped form.
-- **Vector sync could lose a vector permanently.** `index.js` wrote `memory.vector_hash` before the transport call, so a failed insert left no matching vector and a later sync reset `stale` to false; ordering is now insert → delete → commit hashes, and a failure keeps the old hashes.
-- **Duplicate, un-sanitized scene injection.** `v55-finalizer.js` re-injected scene summary and scene evidence that consistency already injects from the actor-sanitized store; the finalizer injection was removed.
-- **`/api/vector` responses were trusted on HTTP status alone.** `index.js` now validates JSON parse, `ok`/`success`/`error`, the metadata array and inserted/deleted counts, and a dense query failure no longer aborts lexical recall.
-- **Shared prompt key raced across interceptor wrappers.** Three wrappers swapped the shared `ctx.setExtensionPrompt` across an `await`; `v55-consistency.js` now serializes the chain so overlapping generations cannot cross-contaminate.
-- **Tauri extension-store errors were swallowed.** `v55-tauri-vector-backend.js` read/delete failures (blank collection overwrite, false purge success) now propagate.
-- **Extraction contract.** A non-array `operations` payload is rejected; missing `event_summary` / `active_state` are reported as warnings instead of wiping canonical state; dropped operations are counted (`memory-extractor.js` + `index.js`).
-- **Op accounting.** `op_count` / notification counted the injected noop as a committed op and reported success despite apply errors; fixed in `index.js`.
-- **Stale index use in dense Setting mapping.** `setting-retriever.js` now prefers the authoritative hash over a stale array index (hash-first, index fallback).
-- **History budget probe ignored `<evidence>` cost.** `context-assembler.js` now charges the probe for evidence so high-importance evidence memories are not dropped.
-- **Store-integrity install could report false success.** `v55-store-integrity.js` returned true even when the accessor guard could not be installed.
-- **Direct API connection reported unverified success.** `v55-api-connections.js` no longer persists `enabled=true` before the probe and the panel renders a verified flag instead of always showing success.
-- Unified entry ordering (`order` null/undefined) across the list view and the index view via `compareSettingOrder` (`setting-index.js`, `setting-store.js`).
-- Tauri Embedding API key is no longer persisted in WebView localStorage; it is session-only (`v55-tauri-vector-backend.js`).
-- `EXTENSION_PATH` is derived from `import.meta.url` instead of a hardcoded `v5_4` folder.
-- Dead code removed: whole files `v55-summary.js` and `v55-tauri-api-compat.js`; `appendRowsWithBudget`, `buildBaselineHint`, `getWorld`, `assertSettingStoreValid`, `assertSameImmutableRecord`, `embeddingEndpoint`, `MODULE_ID`, unused imports and the stale `baseline_hint_chars` setting.
-
-### Validated
-- `npm run check` passes.
-- 47 offline test suites pass, including new `test-v55-reliability-fixes.mjs`, `test-v55-evidence.mjs`, `test-v55-temporal.mjs` and `test-retrieval-hard-cases.mjs`.
-- `v55-selfcheck.js` fixed hard cases pass 6/6 with `MRR 0.750` recorded as the regression floor.
-
-### Scope boundary
-- No real SillyTavern or Tauri runtime acceptance yet.
-- The cold snapshot is bounded, not an unbounded archive.
-- `scope` is free text; there is no natural-language time parsing.
-- Token counts are estimates (chars / 4).
-
-## 5.5-dev Iteration 12 — Tauri embedding credential isolation
-
-### Fixed
-- Tauri embeddings use an Aetheria-owned key instead of the host secret bridge, so the plugin no longer depends on host Secret Store plaintext exposure for its own embedding requests.
-- URL and store key normalization for the Tauri embedding provider.
-
-### Scope boundary
-- Native Jina `task` forwarding and host Vector Storage reuse on Tauri remain out of scope; the plugin owns the derived vector path.
-
-## 5.5-dev Iteration 11 — TauriTavern plugin-owned vector backend
-
-### Added
-- `v55-tauri-vector-backend.js`: plugin-owned derived vector backend selected only when the Tauri Host ABI is present (`insert` / `query` / `list` / `delete` / `purge`) with Float32 base64 vectors, cached norms, cosine ranking and extension-store persistence.
-- `v55-tauri-native-http-bridge.js`: native HTTP bridge for direct OpenAI-compatible `/embeddings` requests, with `retrieval.passage` for documents and `retrieval.query` for queries.
-- Probe behaviour that validates provider embedding, role distinction, plugin persistence, cosine retrieval and cleanup together, and reports the real provider error instead of TauriTavern's `vector_endpoint_unavailable` 501.
-
-### Safety / semantics
-- Only rebuildable derived vectors are persisted in the Tauri store; Canonical memories are not moved there.
-- Secret boundary: Aetheria does not use the host Secret Store for its own embeddings and does not weaken TauriTavern key-masking policy.
-- The SillyTavern `/api/vector` path and its selected-secret rotation bridge remain unchanged and are used only when the Tauri ABI is absent.
-
-### Scope boundary
-- Iteration 12 then replaced the host secret bridge with an Aetheria-owned key. The first direct embedding request after a full restart may still require re-entering the key when the host still refuses plaintext secret exposure.
-
-## 5.5-dev Iteration 10 — Integration closure and host compatibility
-
-### Added
-- Hierarchical summary runtime (`v55-summary-runtime.js`) with level1/level2/level3 summaries sharing the normal generation lifecycle and budget.
-- Store-ownership contract test; the full-stack lifecycle test imports `index-v55-bootstrap.js`.
-- CI workflow `.github/workflows/iteration10-ci.yml` running syntax checks and the Node test chain.
+- Prompt injection is two blocks again: the continuity summary as the current-state block, and quoted
+  original text plus relevant setting entries as the reference block. The fact set is no longer
+  rendered into the prompt.
+- A floor leaves the prompt only while the accepted summary covers every chunk of it; the newest floor
+  and the unsummarized tail always stay visible.
+- The extension has one generation entry instead of four layered installers.
+- The retired fact set (memories, slots, hierarchical summaries) moved out of the chat file into the
+  derived record. Measured: 53-188 KB less per chat, and it is rebuildable from the replay log, which
+  stays in the chat file. An install with no derived backend keeps everything as before.
+- Original-text retrieval is scored with BM25 (k1 1.2, b 0.75) instead of a presence-only IDF sum, so term
+  frequency saturates and length is normalised. Measured paired on 52 hand-written questions: one question
+  moved and none were won, so recall is unchanged; on the probe set the same 100% recall costs 737
+  evidence tokens a query instead of 904. The change buys cost, not recall, and is reported that way.
+- The dense retrieval channel gets a weak vote instead of an equal one: `rankRawChunks` fused both channels
+  at 1/(60+rank+1), and on 52 hand-written questions that equal vote measured worse than lexical retrieval
+  alone (56% against 60%), because dense alone scores 37%. It raised candidate coverage from 96% to 98% while
+  lowering what survived into the prompt. The dense weight is now 0.1 and the evidence slot floor is 333
+  tokens rather than 400, both measured against the configured embedding backend. End to end on the same set:
+  answer-in-context 56% -> 69%, oblique recall 53% -> 69%, span precision 14% -> 23%, evidence 930 -> 893
+  tokens a query - 7 questions won, none lost, p=0.016 (ADR-0015).
+- A cross-encoder rerank stage for the original-text candidates, off until a model name is set in
+  `narrative_rerank_model`. It reranks the fused shortlist once per generation, reuses the embedding
+  connection's endpoint and key, and is fail-open: a missing model or a failed call leaves the fused order in
+  place and records the reason in the diagnostics. Measured offline on 52 hand-written questions, reranking
+  raises answer-in-context from 69% to 87% with `jina-reranker-v3` (10 questions gained, 1 lost, p=0.012) and
+  to 81% with `jina-reranker-v2-base-multilingual` (7 gained, 1 lost) - and it is 22 evidence tokens cheaper,
+  because the packer spends its budget on better-ranked spans (ADR-0016).
+- `recall-embed.mjs` builds the vector cache the ruler measures the dense channel with, using the same chunk
+  text and retrieval task the plugin embeds with. The key comes from a file or an environment variable and is
+  never written or printed.
+- The evidence slot count is derived from the evidence budget - one slot per 333 tokens, between one and
+  six - instead of being fixed at four. Swept on 52 hand-written questions: a share below about 333 tokens
+  cannot cover a merged message envelope, and a share above about 500 buys nothing, so at 1000 tokens four
+  slots was quoting twice as much junk for the same answers. Two slots at the shipped budget measures 63%
+  answer-in-context against 62%, 886 evidence tokens against 932, and 32% span precision against 15%; a
+  larger budget now buys more slots rather than longer quotations (1600 -> 69%, 2400 -> 75%). ADR-0014.
+- Budgeted submodular evidence packing (arXiv 2607.00725) is implemented behind the ruler's `--pack`
+  switch and is deliberately not the default: it measured 54% answer-in-context against the greedy
+  packer's 62% on the same 52 questions (7 against 3 discordant, p=0.34), trading oblique recall
+  (60% -> 49%) for entity recall (71% -> 86%) at 6% fewer tokens. No ADR: a layer has to win its A/B.
 
 ### Fixed
-- Canonical replay no longer erases module-owned chat state; omitted module-owned fields such as `setting_binding`, `entity_registry` and `hierarchical_summaries` are preserved while rebuildable derivatives are invalidated (`v55-store-integrity.js`).
-- Private knowledge is filtered before derived scene text exists; mixed transaction summaries are rebuilt from visible operations only and hierarchical visibility propagates recursively through source IDs (`v55-privacy.js`).
-- Memory and Baseline indexes carry per-chat embedding-space identity (policy v3); a built legacy index with no per-index fingerprint is not trusted.
-- Independent embedding credentials fail closed, and vector policy failures never resend the raw request.
 
-### Scope boundary
-- Iteration 10 documents that SillyTavern `release` cannot forward a vector `secret_id`, so its serialized rotate/request/restore bridge is the only available isolation; Iteration 11 replaces this on Tauri.
-- No real-browser/SillyTavern end-to-end acceptance was claimed.
+- Anchor operations without bullets or on a section heading's line are no longer silently skipped.
+  Missing/empty required anchor sections refuse summary coverage; explicit no-change answers are reported
+  separately. Long or punctuated labels are accepted, malformed fields still refuse the batch, and new
+  anchor statements retain their full conditions instead of being cut at 240 characters.
 
-## 5.5-dev Iteration 9 — Embedding Space Profile and provider-neutral evaluation
+- Summary cadence is now a strict complete-turn batch: wait for N turns, summarize exactly N, then hide
+  only those complete turns. Backlogs cannot enlarge a batch; input limits cannot cut it mid-message.
+  New messages stay outside an in-flight request. Misaligned legacy coverage is invalidated and unfolded.
+  Manual summary calls obey the same threshold; the input budget is exposed for oversized batches.
+- The summary request is assembled from original messages rather than from retrieval chunks, and it is
+  measured as the exact string that is sent. Measured on the chat that actually failed: 53 chunks became
+  21 messages and 30,300 characters became 23,742 (the overlap was paid again at every cut). A local
+  budget shortfall is now a block - no model call, no hiding, one record however often it is re-checked -
+  and it is no longer counted as an interface failure (ADR-0024).
+- The injected state block counts floors: a first batch of ten turns now reads "current as of floor 10"
+  instead of floor 21, and it updates on the next assembly. The panel reports the committed coverage and
+  the coverage the last injection carried as separate numbers with separate revisions (ADR-0024).
+- A failed summary says which failure it was - transport or provider error, empty body, truncated body,
+  summary over its own budget, or anchors without prose - and keeps the last one, its input cost and the
+  response status after a retry succeeds, marked recovered. Staleness now compares content versions rather
+  than floor counts, "injected" is recorded only once the host has the block, and a summary that commits
+  while a prompt is being assembled re-composes that prompt instead of leaving the rows it hid neither
+  summarized nor visible (ADR-0025).
+- The unsummarized tail is reported as a condition (accumulating, summarizing, failing, blocked, backlog)
+  rather than a size. A tail below the cadence never warns however large it is; the old 4,000-token
+  threshold no longer raises a fault on its own.
+- `narrative_input_chars` defaults to 40000 for new installs, the measured size of a ten-turn batch. An
+  install still on the old 18000 default keeps it and is told, not silently changed.
+- Continuity anchors now hold one live value per subject. A newer statement about the same subject replaces
+  the older one and the replaced entry is kept in a history rather than deleted, so the block can no longer
+  carry both "the knife is in your hand" and "the knife is locked under the well". The summarizer is asked
+  for the subject field, and the injected block is filled evenly across kinds and newest-first inside each
+  kind instead of in the order the model happened to write lines — measured on a live ledger, the old cut
+  kept facts averaging 165 seconds old and dropped ones averaging 1024 seconds old. The default anchor
+  budget rises from 300 to 600 tokens, and whatever still does not fit is reported instead of being
+  summarised as "N omitted" (ADR-0026).
+- A subject written two ways is one subject: identity is normalised (Unicode, whitespace, a dropped `/`
+  suffix), so a fact like "心脏石植入者/制造者" and "心脏石植入者" can no longer survive twice, and the
+  summarizer is shown the canonical spelling. Containment matching was measured and refused — it merged five
+  genuinely different subjects to catch that one duplicate. The fixed kind-priority table is gone as well: it
+  ranked three of the nine kinds one live run produced, so which kind is served first is now decided by
+  recency (ADR-0027).
 
-### Added
-- `embedding-profile.js`: embedding-space identity separate from retrieval policy, with a `space_fingerprint` (provider/model/endpoint/family/role transforms/dimension+normalization hints) and a `retrieval_policy_fingerprint` (calibrated thresholds + Setting multi-view RRF).
-- `v55-vector-policy.js`: Aetheria-owned request policy for Aetheria `/api/vector/*` calls only, applying the document/query transforms and namespacing private physical collections by embedding-space fingerprint.
-- Multi-view Setting dense retrieval: labelled Setting queries retrieve focus, assistant context, entity/location context and active-state/objective views, then combine rankings through weighted RRF; failure falls back to the single-query path.
-- `retrieval-eval.js`: provider-neutral Recall@K, Precision@K, MRR, hit rate, minimum-recall threshold calibration and candidate-vs-baseline deltas.
-- Tests `test-embedding-profile.mjs`, `test-retrieval-eval.mjs` and `test-v55-vector-policy.mjs`, added to the normal test chain.
+- Knowledge boundaries accept bracketed, pipe-delimited and `character/state: fact` forms consistently;
+  old format duplicates are normalized while distinct same-pass assertions remain visible.
+- Recall diagnostics count only the quoted span. User-target coverage is reported separately from
+  query-term coverage; continuation is marked inapplicable. Rerank diagnostics include elapsed time,
+  estimated input tokens and provider usage when returned, including attempted-call cost on failure.
 
-### Safety / semantics
-- A model-space change requires a derived-vector rebuild; a threshold/RRF change does not.
-- Canonical Memory is never deleted on a model change; pre-profile derived vectors are invalidated once because they lack the new representation-space identity.
-- No request rewrite touches non-Aetheria vector collections, and no API secret enters an embedding fingerprint or Canonical Memory.
+- The evidence block no longer quotes the same text twice, and no longer quotes text the prompt is
+  already showing under another row id. A 100-floor run whose user turn was always "继续。" spent all five
+  slots on five copies of that same fifty-character row: 366 tokens of filler and none of the story.
+  Replaying the state a prompt is really built from - the chat ending at the user's row - reproduces it on
+  the lexical path alone, and the same replay at floor 50 packs five story passages for 920 tokens. The
+  live block at floor 51 agreed after deploy (ADR-0022).
+- The settings panel now mounts. `parent.prepend` had been moved into the renderer, where the only
+  `parent` in scope is the browser's `window.parent`; the panel was never attached and every scheduled
+  pass threw, which then replaced the diagnostics with the error. Found by the live acceptance run.
+- The same continuity anchor spelled `- 身份 | ...` and `- [身份] ...` no longer becomes two anchors.
+  Measured on a 40-floor run: 11 real anchors were being stored as 19, and the panel warned that eight of
+  them had "not been repeated".
+- The background summary budgets for a reasoning model: 5,798 of 6,569 completion tokens in one measured
+  call went to reasoning, the body came back empty, and at the old 2,048 default the summary never
+  formed. The default is 8,192 and the empty-body error now names the cause (ADR-0013).
 
-### Scope boundary
-- No real-browser SillyTavern acceptance, native Jina `task` forwarding, universal Cross-Encoder rerank transport or automatic Gold-dataset generation.
-- Jina deliberately remains symmetric through the current ST vLLM bridge because provider-native `task` forwarding is not guaranteed.
+- A summary that no longer matches the history (after an edit, a swipe, a delete or a branch change)
+  is dropped and its floors are restored in the same call, instead of being injected as if current.
+- A background summary that finishes after the user has changed chats is discarded instead of being
+  written into the wrong chat.
+- A diagnostics read creates no stored keys, so it cannot put an empty object back into the chat file.
+- Edited or folded floors can no longer stay hidden with nothing standing in for them.
+- Evidence packing merges overlapping spans instead of discarding the second as a duplicate, gives every
+  entry a share of the budget, and trims a span that does not fit rather than dropping it. Measured on a
+  hand-written question set: oblique-question recall 17% -> 67%, in-words recall unchanged at 93-100%.
 
-## 5.5-dev Iteration 8 — Release-blocking fixes + proposal closure
+### Deprecated
 
-### Fixed
-- **Provenance origin order:** `v55-consistency.js` now stabilizes provenance before stamping runtime identity, so the first-observed branch is not overwritten by the freshly derived branch id (`test-v55-consistency.mjs` failed on Iteration 07 as published).
-- **Prompt cleanup regression:** `v55-finalizer.js` / `v55-consistency.js` no longer re-inject Scene Summary locators after the legacy interceptor cleared both prompt keys for quiet / impersonate / disabled generations. Covered end-to-end by `test-v55-fullstack-cleanup.mjs`.
-- Depth normalization now treats `null` / blank input as "not set" (falls back) while preserving a legal numeric `0`.
-- Removed the dead eager `buildBaselineHint` computation from `ensureSemanticBaseline`.
+- The fact store, the context assembler, the memory spine and the extraction pipeline are retained for
+  old-chat compatibility only. They are inert while the narrative pipeline is on.
 
-### Added
-- Explicit role-private setting schema (`secret` / `visibility` / `known_by`) with actor-filtered generation and extraction retrieval; nothing is inferred from prose or filenames.
-- Condition/exception-aware setting chunking (`splitSettingText`) that keeps a rule's `除非/如果/但是/unless/...` clause with the rule.
-- Baseline write-gate calibration samples plus entity-disjoint guard and additional change markers.
-- Same-name entity disambiguation: explicit `entity_scope` / `entity_keys` keep story entities apart; an explicit discriminator never falls back to a same-name entity.
-- Failed Setting vector refresh reuses the last known-good active profile for the same provider instead of dropping dense recall.
-- Scene evidence expansion (`collectSceneEvidence` / `injectSceneEvidenceBlock`), bounded and labeled derived.
-- Third-party quiet policy setting; the plugin's own extraction is always cleared.
-- Tests: `test-v55-fullstack-cleanup.mjs`, `test-v55-entity-identity.mjs`, `test-v55-scene-evidence.mjs`, `test-setting-secret-visibility.mjs`, `test-setting-chunk-conditions.mjs`, `test-baseline-calibration.mjs`.
+### Removed
 
-## 5.5-dev Iteration 7 — Architectural closure (chat binding, identity, scene summary, budget)
+- The layered summary stack: hierarchical summary runtime, digest, consistency, provenance,
+  finalization, scene boundaries, repetition compression and per-actor fact filtering, together with
+  their settings keys and seventeen test files.
 
-- Chat → World/Revision binding, chat-local entity registry, branch provenance registry, Canonical Current State authority, knowledge visibility filter, scene summary lifecycle, unified Reference + Current State budget, Setting Entry overlay editor, untitled TXT preview.
-- Iteration 7 shipped with one failing integration test and the quiet/disable prompt regression; both are fixed in Iteration 8.
+### Security
 
-## 5.5-dev Iteration 6 — Incremental Setting Vector Lifecycle (Commit G)
-
-### Added
-- Setting Index state schema v2 with per-scope `profiles{embedding_profile_hash}` and atomic `active_profile_hash / active_collection_id` pointers.
-- Entry manifests for every ready Setting vector profile, including per-entry signatures and vector hashes.
-- Per-entry diff semantics: unchanged reuse, added insert, changed insert+verify+targeted old-hash delete, removed targeted delete.
-- Embedding-profile-aware physical collection identities and inactive staging generations for safe full builds.
-- Sample-query verification before a newly built vector profile can become active.
-- Retired collection tracking; old active collections are intentionally retained for later optional GC.
-- Diagnostics for current embedding profile, vector degradation, verification result, last diff, cleanup-pending hashes and retired collections.
-- `test-setting-index-lifecycle.mjs` and `test-setting-index-lifecycle-host.mjs`.
-
-### Safety / lifecycle
-- A one-entry Setting change never purges the active collection. New hashes are inserted and verified before old hashes are removed.
-- Failed incremental insertion/verification best-effort rolls back newly inserted hashes while leaving the old valid vectors intact.
-- New embedding provider/model profiles build in an inactive staging collection, verify, then switch the local active pointer atomically.
-- Failed staging builds do not move the active pointer and never purge the previous active collection; the request falls back to lexical Setting retrieval with `vector_degraded=true`.
-- Legacy state-v1 Setting collections lacked embedding-profile identity, so they are retained as diagnostics/GC metadata but are not silently trusted as active v2 indexes.
-
-### Validated
-- Full `npm run check` and `npm test` pass, including 23 test scripts and the existing 29/29 memory-core assertions.
-- Mock host proves same-profile one-entry change uses targeted insert/delete with no `/api/vector/purge` against the active collection.
-- Mock host proves embedding-model change builds/verifies a new collection, preserves the previous collection, then switches pointer.
-- Mock host proves failed third-profile verification leaves the previous active pointer/vectors unchanged and returns lexical degradation.
-- Real 41-entry Aetheria v5 sample remains 41 Entries / 91 chunks / 2 constant / 0 disabled; tail `uid=27` remains rank 1 and a synthetic same-scope change to only that Entry produces exactly one changed manifest Entry.
-
-### Scope boundary
-- Commit H real SillyTavern final-request and multi-provider System-role/depth acceptance remains unverified.
-- Retired collection garbage collection is intentionally deferred; Commit G prioritizes no-data-loss switching over automatic cleanup.
-- Runtime/module/settings keys intentionally remain v5.4 during staged v5.5 migration.
-
-## 5.5-dev Iteration 5 — Context Assembler + Dual Injection (Commit F)
-
-### Added
-- `context-assembler.js`: pure, host-agnostic central budget/formatting boundary for main-generation context.
-- Dedicated Reference Block containing bounded constant/core Setting, relevant Setting and historical memory sections.
-- Dedicated Current State Block containing only Canonical current-state material from the previous completed turn.
-- Two extension prompt keys: `aetheria_unified_memory_v5_4_reference` (System depth 4 by default) and `aetheria_unified_memory_v5_4_current_state` (System depth 1 by default).
-- New UI controls for Reference budget, Current State budget, Current State depth and reply-reserve hint.
-- Context Assembler diagnostics: selected Setting/memory ids, dropped ids, block sizes, approximate tokens and budget allocation.
-- Cleanup lifecycle for quiet / impersonate / disabled / chat switch, plus legacy single-block key cleanup during staged upgrade.
-
-### Safety / semantics
-- Imported Setting text is explicitly labeled source/reference data rather than dialogue or control instruction. XML-like source markup is escaped.
-- World truth remains distinct from character knowledge.
-- Historical memory is explicitly labeled past/not-necessarily-current.
-- Current state is explicitly labeled as effective for the previous completed turn; newer raw dialogue wins on conflict.
-- Interceptor continues to avoid appending/splicing fake chat messages.
-- Legal depth `0` is preserved for the new Current State depth as well as the existing Reference depth.
-
-### Validated
-- Pure assembler tests verify Reference/current-state separation and central caps.
-- Mock lifecycle covers normal / continue / regenerate / group / quiet / impersonate / disabled.
-- Main runtime Setting retrieval now reaches the Reference prompt while unrelated Setting remains absent.
-- Real 41-entry Aetheria sample still produces 91 chunks; `uid=27` tail rule ranks first and survives through final Reference assembly.
-- Full `npm run check` and `npm test` pass.
-
-### Scope boundary
-- Commit G incremental per-entry Setting Vector lifecycle and safe collection switching remain unimplemented.
-- Commit H still requires inspection of real SillyTavern final requests and provider-specific System handling.
-- Runtime/module/settings keys intentionally remain v5.4 during staged v5.5 migration.
-
-## 5.5-dev Iteration 4 — Relevant Setting Retrieval (Commit E)
-
-### Added
-- `setting-retriever.js`: generation/extraction Setting Query builders plus host-agnostic lexical+dense candidate fusion.
-- Generation Query now combines the latest user message, a small previous-assistant budget, current scene entities, active location, unresolved commitments/objectives and current-state hints.
-- Extraction Query now combines the current user+assistant pair, affected/current entities and active state slots.
-- Separate Setting retrieval runtime path with local lexical candidates, optional dense candidates, RRF fusion, parent-entry expansion, entry-level dedup and rough per-retrieval character caps.
-- Constant settings are exposed through a bounded reserve channel rather than copied once per child chunk or appended without limit.
-- Autonomous extraction now receives only relevant plugin Setting entries plus a small relevant/core Host Baseline reserve instead of the old fixed 12k host-baseline prefix.
-- Plugin-owned active Setting scope now participates in the hard Baseline write gate through `findPossibleMatches(candidateOperation)` semantics. Static state/relation/commitment/ownership restatements can be rejected even when no SillyTavern World Info is bound.
-- Knowledge/event/belief/intention/world_delta exemptions remain intact, so "character learns an existing world secret" is still a valid story delta.
-- Runtime Setting-retrieval diagnostics and UI controls for dense usage, candidate/final counts, threshold, RRF K and generation/extraction rough budgets.
-
-### Fixed
-- Entry-level RRF aggregation no longer rewards large parent entries merely because they contain many weakly matching child chunks. Ranking uses the best child plus only small capped support from the next two chunks.
-
-### Validated
-- Real 41-entry Aetheria v5 worldbook still imports 41 entries and produces 91 SettingChunks with 2 constants / 0 disabled.
-- Generation queries for new-region generation rules, police/A-network privacy, and strategic warfare retrieve the intended entries (`uid=27`, `uid=21`, `uid=26`) at rank 1 in lexical-only acceptance.
-- Lexical-only runtime test proves the extractor receives the relevant imported tail rule, does not dump an unrelated entry, blocks a static duplicate through the plugin baseline gate, and preserves a new `knowledge` operation about that same baseline fact.
-
-### Scope boundary
-- Commit E runs Setting retrieval on the real generation path and feeds relevant Setting context to the autonomous extractor, but the main model still receives the legacy single memory prompt. Commit F will be the first iteration to assemble and inject the dedicated reference block at depth 4 and current-state block at depth 1.
-- Incremental no-purge vector lifecycle remains Commit G.
-- Runtime/module/settings keys intentionally remain v5.4 during staged v5.5 migration.
-
-## 5.5-dev Iteration 3 — Setting Index (Commit D)
-
-### Added
-- `setting-index.js`: resolves active world/revision scope and projects immutable SettingEntry records into deterministic `SettingChunk` rows with parent entry/source/revision links.
-- Structured long-entry chunking repeats parent title/keywords into each child retrieval view without treating those headers as independent source facts.
-- World+active-revision scoped collection ids (`aetheria_v55_setting_*`) that do not contain chat ids, allowing the same plugin world to reuse one setting index across chats.
-- Guaranteed local lexical Setting retrieval path with title/primary/secondary keyword boosts and body-specific ranking.
-- Optional shared Setting Vector projection using the existing SillyTavern Vector Storage provider.
-- Derived global `setting_index_state` under extension settings, separate from per-chat Canonical Memory metadata.
-- Setting Index build/rebuild controls and diagnostics in the extension settings UI.
-- Tests for scope isolation, disabled entries, parent links, tail-chunk retrieval, cross-chat shared vector reuse, and embedding-unavailable lexical fallback.
-
-### Validated
-- Real 41-entry Aetheria v5 worldbook produces 91 SettingChunks at the 420-char default and 91 unique vector hashes.
-- Queries about world expansion, A-network police access, and strategic warfare rank the corresponding late/mid worldbook entries first.
-- Two different chat ids sharing one active world/revision scope reuse the same collection id and do not issue a second vector rebuild in the mock host.
-
-### Scope boundary
-- Commit D builds and maintains the plugin-owned index but does **not** yet inject imported settings into generation or the autonomous extractor. Commit E will connect dialogue queries to relevant-setting retrieval.
-- Full safe staging/no-purge incremental lifecycle remains Commit G; this iteration permits a full rebuild of the target immutable scope collection.
-- Runtime/module/settings keys intentionally remain v5.4 during staged v5.5 migration.
-
-## 5.5-dev Iteration 2 — Import Adapters + Preview (Commit C)
-
-### Added
-- `setting-importer.js`: two-phase `previewImport` / `commitImport` pipeline, deterministic source/entry hashing and explicit duplicate policy.
-- `source-adapters/worldbook-json.js`: verified SillyTavern World Info JSON parsing with uid/key/keysecondary/constant/disable/order preservation and unknown fields stored in `raw_extra`.
-- `source-adapters/titled-text.js`: conservative H1/H2 segmentation; untitled text remains one entry.
-- Settings UI for file preview, world selection/creation, revision label/type, extension baseline binding, optional activation, commit and Setting Store export.
-- Host integration test proving committed imported settings persist through global extension settings rather than chat metadata.
-
-### Validated
-- Real 41-entry Aetheria v5 worldbook imports 41/41 entries, including 2 constant entries, while retaining SillyTavern-specific unknown fields.
-- Duplicate source content is detected by content hash and rejected unless explicitly reused/copied.
-
-### Scope boundary
-- Imported settings are stored but not yet generation-retrieval indexed. Commit D/E will build the shared Setting Index and relevant-setting retrieval path.
-- Runtime/module/settings keys intentionally remain v5.4 during the staged v5.5 migration.
-
-## 5.5-dev Iteration 1 — Foundation (Commits A+B)
-
-### Added
-- Plugin-owned global `Setting Store` persisted under the extension settings namespace, independent of per-chat Canonical Memory metadata.
-- `setting-schema.js`: schema v1 for World / Source / Revision / Entry, normalization, conservative migration, validation and serialization.
-- `setting-store.js`: immutable revision/source insertion, world CRUD, activation pointers, extension-to-baseline compatibility checks and explicit cascade deletion.
-- Tests for cross-chat shared setting persistence, migration, serialization, unknown raw source payload preservation and immutable revision semantics.
-
-### Fixed
-- Legal SillyTavern injection depth `0` is no longer converted to `4`; invalid/negative values fall back safely.
-
-### Scope boundary
-- This is an implementation iteration on top of the v5.4 runtime identity. Import adapters, setting retrieval, shared setting vector indexing and dual prompt injection are not implemented yet.
-- Existing Canonical Memory, baseline gate and recall behavior remain unchanged.
-
-## 5.4.0 — Semantic Baseline Index
-
-### Added
-- `baseline-index.js`: deterministic Persona/Character/World Info chunking, fingerprinting and duplicate evaluation.
-- `baseline-host.js`: conservative SillyTavern context source collection.
-- Independent Baseline vector collection (`aetheria_v54_baseline_*`).
-- Hard post-extraction write gate before Canonical Memory application.
-- Lexical duplicate gate + optional semantic vector gate.
-- Story-delta exemptions for event/knowledge/belief/intention/world_delta and explicit change semantics.
-- Baseline fingerprint/provider fingerprint stale/rebuild lifecycle.
-- Real baseline content supplied to quiet extraction prompt rather than macro placeholders when available.
-- Baseline rejection audit data in extraction transaction/debug metadata.
-- Baseline status and rebuild controls in settings UI.
-- Tests for source scoping, group fallback, deterministic fingerprint, lexical duplicate blocking, semantic paraphrase blocking, knowledge/world-delta preservation, provider/source rebuild.
-
-### Preserved
-- v5.3 autonomous after-AI extraction and branch-safe transaction replay.
-- v5.2 hybrid recall stack.
-- v5.1/v5.2/v5.3 migration compatibility.
-- no direct mutation of SillyTavern chat history.
-
-### Not implemented / deferred
-- destructive semantic cleanup of all pre-v5.4 legacy memories;
-- Cross-Encoder reranking;
-- safe host-level old-message prompt pruning;
-- exhaustive indexing of every globally selected but currently inactive lorebook.
+- Quoted evidence is labelled as quoted history, not instructions.

@@ -1,4 +1,6 @@
-# Local scratch only. Previous revisions, audit snapshots, live-test harnesses and third-party
-# reference checkouts live in remove/ and must never reach the repository: the repository carries
-# exactly one thing, the current revision of the plugin.
+# Local scratch only, and not the preferred location: one-off live runs, captured chat text, raw model
+# responses and credentials live outside the repository, for example in a temporary directory. The reusable
+# acceptance runner is versioned (acceptance-longchat.mjs, acceptance-capture.js); the data it produces is
+# not. The legacy remove/ path holds prior work only and must not grow; /remove/ stays ignored so none of it
+# can reach the repository.
 /remove/
