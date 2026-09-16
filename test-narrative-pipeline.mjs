@@ -18,7 +18,7 @@ import { captureHistory, chunkHistory, rankRawChunks, packRawEvidence, validSumm
     profileTargets, profileRecall, SHIPPED_PACK_POLICY, shippedRetrievalConfig,
     summarizeEvidenceCandidates, summarizeEvidenceTrace, EVIDENCE_TRACE_LIMIT } from './raw-history.js';
 import { baselineTermCounts, tokenizeBaselineText } from './baseline-index.js';
-import { buildRerankRequest, parseRerankResponse, requestRerank, rerankHead, rerankMoveMetrics, bindRerankSettings,
+import { buildRerankRequest, parseRerankResponse, requestRerank, rerankHead, rerankMoveMetrics, rerankOrigin, bindRerankSettings,
     buildNativeRerankRequest, parseNativeRerankResponse, nativeRerankUrl } from './v55-rerank.js';
 import { buildNarrativeContext, updateNarrative, runNarrativeGeneration, narrativeSettings,
     readNarrativeReport, NARRATIVE_PROMPTS } from './narrative-runtime.js';
@@ -981,6 +981,34 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const risen = rerankMoveMetrics(six, reversed, Infinity, 4);
     assert.equal(risen.max_rise, 4, 'the rise bound is reported, not only the drop');
     assert.equal(risen.max_drop, 5, 'and demotion is still unbounded, so the fused head can fall the whole way');
+    // The record has to be enough to attribute a capped candidate offline: `fused` is where the fusion put it,
+    // `rerank` is what the provider scored it, and `rerankHead` is a pure function of those two and a bound.
+    // The need is measured - of 34 probes whose detail was not conveyed, 17 had their only carrier row ranked
+    // and outside the five-entry block, and the recorded order alone cannot say whether the reranker put it
+    // there or the rise bound did.
+    const origin = rerankOrigin(six, six, reversed);
+    assert.deepEqual(six.map(row => origin.fused.get(row.chunk)), [0, 1, 2, 3, 4, 5], 'every candidate\'s fused position is recorded');
+    assert.deepEqual(six.map(row => origin.rerank.get(row.chunk)), [0, 1, 2, 3, 4, 5], 'and the score the provider gave it');
+    const sentTwo = rerankOrigin(six, six.slice(0, 2), [{ index: 1, score: 0.9 }, { index: 0, score: 0.1 }]);
+    assert.equal(sentTwo.rerank.get(six[4].chunk), undefined, 'a candidate the shortlist did not send has no provider score');
+    assert.equal(sentTwo.fused.get(six[4].chunk), 4, 'but where the fusion put it is still known');
+    const replay = maxRise => {
+        const sent = six.map((row, fused) => ({ row, fused, score: origin.rerank.get(row.chunk) }))
+            .filter(entry => entry.score !== undefined).sort((a, b) => a.fused - b.fused);
+        return sourcesOf(rerankHead(sent.map(entry => entry.row),
+            sent.map((entry, index) => ({ index, score: entry.score })), Infinity, maxRise));
+    };
+    assert.deepEqual(replay(4), sourcesOf(rerankHead(six, reversed, Infinity, 4)),
+        'the record replays the head the build produced, at the bound it ran with');
+    assert.deepEqual(replay(Infinity), ['f', 'e', 'd', 'c', 'b', 'a'], 'and at a free bound it is the provider\'s own order');
+    assert.notDeepEqual(replay(4), replay(Infinity), 'so what the bound did is separable from what the ranking did');
+    const tracedRows = summarizeEvidenceCandidates(six, { origin }).rows;
+    assert.deepEqual(tracedRows.map(row => [row.fused, row.rerank]), [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5]],
+        'and the summary carries both fields per candidate');
+    assert.equal(summarizeEvidenceCandidates(six).rows[0].fused, null, 'with no rerank stage they are null, not zero');
+    const recorded = reordered.diagnostics.evidence_candidates.rows;
+    assert.ok(recorded.every(row => Number.isInteger(row.fused)), 'a live build records a fused position for every candidate');
+    assert.ok(recorded.some(row => Number.isFinite(row.rerank)), 'and the score for the ones the shortlist sent');
     assert.equal(used.diagnostics.rerank_cost.moved, 0, 'the working reranker above agreed with the fusion');
     assert.equal(failed.diagnostics.rerank_cost.moved, 0, 'and a failed call records that nothing moved');
     // The rise bound can be overridden by a setting, which is how the two arms of a live comparison are

@@ -69,6 +69,30 @@ export function applyRerankOrder(ranked, pick, order, maxDrop, maxRise) {
 }
 
 /**
+ * Where the stage found each candidate, and what it scored it.
+ *
+ * `fused` is the candidate's position in the order the fusion produced, and `rerank` is the provider's score,
+ * null for a candidate the shortlist did not send. `rerankHead` is a pure function of exactly those two numbers
+ * and a bound, so a build that records them can be replayed at any bound offline - which is the only way to
+ * tell "the reranker ranked it thirtieth" from "the reranker ranked it second and the rise bound held it at
+ * `from - maxRise`". Without them the two are indistinguishable in every recorded run, because
+ * `evidence_candidates` is the order the packer was given, after the reorder. Measured need: of 34 probes
+ * whose detail was not conveyed, 17 had their only carrier row ranked and outside the five-entry block, and the
+ * record could not say which of the two put it there.
+ */
+export function rerankOrigin(ranked, pick, order) {
+    const fused = new Map(ranked.map((row, index) => [row.chunk, index]));
+    const rerank = new Map();
+    if (Array.isArray(order)) {
+        for (const row of order) {
+            const picked = pick[Number(row && row.index)];
+            if (picked) rerank.set(picked.chunk, Number(row.score));
+        }
+    }
+    return { fused, rerank };
+}
+
+/**
  * What the stage changed, so a run can answer "did the reranking do anything" from its own record.
  *
  * Ten live runs recorded `rerank_used` and `rerank_cost` and nothing about the order, so none of them could

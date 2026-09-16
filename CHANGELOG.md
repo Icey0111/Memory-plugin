@@ -14,6 +14,14 @@ belongs in Git commits and pull requests.
   match stays right for it; the evidence block is a quotation of the original, and `evidenceFull` is that
   reading. The report prints it beside the recovery count.
 
+- A build records where each candidate came from and what the reranker scored it, so a candidate the evidence
+  block left out can be attributed offline instead of guessed at. `evidence_candidates` rows now carry `fused`
+  (the candidate's position in the fusion's own order) and `rerank` (the provider's score, null when the
+  shortlist did not send it). `rerankHead` is a pure function of those two numbers and a bound, so the recorded
+  head can be replayed at another bound without a provider call. Measured need: of 34 probes whose detail was
+  not conveyed, 17 had their only carrier row ranked and outside the five-entry block, and the recorded order
+  alone could not say whether the reranker had put it there or the four-place rise bound had held it down.
+
 - The rerank diagnostics record what the stage changed, not only that it ran. `rerank_cost` now carries
   `shortlist`, `moved` (shortlist positions whose occupant changed), `top1_changed`, and the first three
   candidate sources before and after the reorder; a failed call records `moved: 0` rather than leaving the

@@ -7,7 +7,7 @@ import { captureHistory, chunkHistory, rankRawChunks, validSummary, nextSummaryB
     mergeKnowledge, completedUserTurns, entityRecall, profileRecall, askedThingRecall, normalizeKnowledgeEntries,
     summaryLengthVerdict, summarizeEvidenceCandidates, summarizeEvidenceTrace } from './raw-history.js';
 import { planRetrievalQuery } from './retrieval-query.js';
-import { rerankShortlist, applyRerankOrder, rerankMoveMetrics, bindRerankSettings } from './v55-rerank.js';
+import { rerankShortlist, applyRerankOrder, rerankMoveMetrics, rerankOrigin, bindRerankSettings } from './v55-rerank.js';
 import { estimateTokens } from './v55-tokenizer.js';
 import { formatRelevantSettingContext } from './setting-retriever.js';
 import { recordModelCall } from './v55-metrics.js';
@@ -886,6 +886,9 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
         // What changed, not only what it cost: a run that records the call but not the order cannot say
         // whether the stage did anything, and ten live runs read exactly that way.
         return { ranked: applyRerankOrder(ranked, pick, order, undefined, opts.rerankMaxRise), used: true, error: null,
+            // Where each candidate came from and what it scored, so the head this recorded can be replayed at
+            // another bound without a provider call: the bound's contribution is otherwise unmeasurable.
+            origin: rerankOrigin(ranked, pick, order),
             metrics: { ...(order.metrics || cost()), ...rerankMoveMetrics(pick, order, undefined, opts.rerankMaxRise) } };
     } catch (error) {
         // Fail-open: the fused order stands, and the record says so with a number instead of leaving a
@@ -1195,7 +1198,7 @@ export async function buildNarrativeContext(ctx, services, { contextSize = null 
         // evidence_candidates is the order and per-channel signal the packer was given, evidence_trace is
         // what it did with each row (included / budget / too_long / entry_cap / not_selected / same-text /
         // same-message) and whether an included quote had to be shortened to fit.
-        evidence_candidates: summarizeEvidenceCandidates(ranked),
+        evidence_candidates: summarizeEvidenceCandidates(ranked, { origin: reranked.origin || null }),
         evidence_trace: summarizeEvidenceTrace(evidence.trace),
         rerank_model: opts.rerankModel || null, rerank_used: reranked.used, rerank_error: reranked.error,
         rerank_cost: reranked.metrics || null,

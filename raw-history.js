@@ -2212,15 +2212,22 @@ export const EVIDENCE_TRACE_LIMIT = 40;
  * while a 75-character original containing all three of the question's own words was nowhere in the block,
  * and nothing in the store could say whether it had ranked 6th or not at all.
  */
-export function summarizeEvidenceCandidates(ranked, { limit = EVIDENCE_TRACE_LIMIT } = {}) {
+export function summarizeEvidenceCandidates(ranked, { limit = EVIDENCE_TRACE_LIMIT, origin = null } = {}) {
     const round = value => Math.round((Number(value) || 0) * 10000) / 10000;
+    const at = (map, row) => (map && map.get(row.chunk) !== undefined ? map.get(row.chunk) : null);
     return { total: ranked.length,
         rows: ranked.slice(0, limit).map(row => ({ source: row.chunk.source, chunk: row.chunk.id,
             index: row.chunk.index, start: row.chunk.start, end: row.chunk.end,
             score: round(row.score), lexical: round(row.lexical),
             dense: row.vector ? round(row.vector.score) : null,
             entity: row.entity ? round(row.entity.score) : null,
-            channels: [...(row.channels || [])] })) };
+            channels: [...(row.channels || [])],
+            // Position in the fused order and the provider score for this candidate, when the rerank stage ran.
+            // Those two numbers are what `rerankHead` places a candidate from, so a recorded build can
+            // be replayed at another bound offline and a capped candidate attributed to the score or to the
+            // bound. Recording only the reordered list left the two indistinguishable.
+            fused: at(origin && origin.fused, row),
+            rerank: at(origin && origin.rerank, row) })) };
 }
 
 /**

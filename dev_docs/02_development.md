@@ -1718,12 +1718,49 @@ ranks it first, because its earliest release is `from - 4` and the quoted window
 carrier rows measured with the reranker off sit at position 10 or later, so two thirds of them are out of reach
 under the shipped combination for that reason alone.
 
-That is as far as the record goes, and the gap is exact. `evidence_candidates` is the order the packer was
-given - post-rerank - and each row's position in the **fused** order is not recorded anywhere. So "the reranker
-ranked it thirtieth" cannot be told apart from "the reranker ranked it second and the rise bound held it at
-`from - 4`", which is the difference between a ranking problem and a bound problem. One field settles it: the
-fused position of each candidate, which `rerankHead` already computes for its own insertion rule. That is the
-minimal capture this reading asks for; nothing else about the record is missing.
+That was as far as the record went, and the gap was one field. `evidence_candidates` is the order the packer
+was given - post-rerank - and each row's position in the **fused** order was recorded nowhere, so "the reranker
+ranked it thirtieth" could not be told apart from "the reranker ranked it second and the rise bound held it at
+`from - 4`", the difference between a ranking problem and a bound problem. Every candidate row now carries
+both numbers: `fused`, the position the fusion gave it, and `rerank`, the provider's score for it (null when
+the shortlist did not send it). `rerankHead` is a pure function of exactly those two and a bound, so a recorded
+build replays at any bound offline; the test pins that the replay reproduces the head the build produced, before
+the replay is used to ask what another bound would have quoted.
+
+#### What the rise bound costs, measured by replay (2026-09-16, attr-1..3)
+
+Three more runs of the dense fixture with the field recorded - 24 probes, 16 of them not conveyed - were
+replayed at the shipped bound and at a free one. **Every replay reproduced the order the build recorded, 16 of
+16**, which is what makes the numbers below a measurement rather than a guess.
+
+Each row of a failed probe's chat that carries the needle, against the five-entry block:
+
+| what happened to the carrier | carrier rows | failed probes |
+| --- | --- | --- |
+| it was in the block, so the prompt held the needle and the reply did not use it | 7 | 4 |
+| **a free rise bound would have put it in the block; the bound kept it out** | **12** | **6** |
+| the provider's own ranking put it outside the top five even unbounded | 15 | 4 |
+| the fusion put it past the shortlist (positions 23-27), so no provider saw it | 5 | 2 |
+| the row was not a candidate at all | 1 | 0 |
+
+Six of the sixteen failures are the bound's rather than the ranking's, and two of them are worth keeping:
+`d-chipped`'s build had `raw_19` as the provider's **highest-scoring** document (0.935, fused position 14) and
+the four-place release bound kept it out of a five-entry block, and `d-whistle`'s had `raw_15` first (0.959,
+fused 11) and did the same. The bound does not only hold the opening instruction row down.
+
+The same replay forecasts the trade before anyone pays for it, over the same 24 probes:
+
+| rise bound | carrier rows quoted | failed probes that gain a carrier | blocks quoting the opening instruction row |
+| --- | --- | --- | --- |
+| 4 (shipped) | 7 | 4 | 9 of 24 |
+| 8 | 10 | 5 | 8 of 24 |
+| 12 | 12 | 8 | 6 of 24 |
+| free | 17 | 10 | 4 of 24 |
+
+**This is prompt composition, not answers.** A replay says which rows the block would quote and nothing about
+whether a reply would then use them, so it is the ruler for a decision taken with a live arm rather than the
+decision itself. What it already shows is that the trade is roughly one regained carrier per instruction-row
+block given up - over three runs and sixteen failures, which is a number to grow, not a rate to ship.
 
 #### What the summary refuses, across the record (2026-09-16, 66 runs, 129 batch captures)
 
