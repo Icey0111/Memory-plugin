@@ -32,16 +32,18 @@ belongs in Git commits and pull requests.
 
 ### Changed
 
-- The cross-encoder rerank stage may no longer lift a candidate more than four places above where the fusion
-  ranked it; demotion stays unbounded. Measured on 22 live captures, the stage was replacing essentially the
-  whole shortlist and the fused first candidate lost the head in every single one, while the answer-level on/off
-  comparison over the same fixture came out even. Bounding the *fall* was implemented and measured first and is
-  not what ships: it held exactly (`max_drop: 4` in all 39 captures) but it handed the opening-instruction row
-  back into the evidence slots - three of four probes in one run, against one of 44 probes unbounded - because
-  clearing that row out of the head needs a large demotion. Bounding the rise keeps both properties: the fused
-  first candidate kept the head in 14 of 37 captures against none of 22, and the instruction row stayed out.
-  Promotion of a row the fusion ranked far down is now limited, which also limits the situation channel's
-  late-ranked rescue; that interaction is not yet measured.
+- The cross-encoder rerank stage is unbounded again: a candidate may move as far as the provider's own scores say.
+  The four-place rise bound shipped earlier the same day was removed on measurement. Its stated benefit - keeping
+  the opening instruction row out of the evidence - is not reproducible: with the rise bounded that row is quoted
+  in 7% of probes on `path2-shiyuan` and 24-36% on the dense fixture, against 0% and 18% unbounded. That reversal has a
+  mechanism: a bounded rise fills the head from the fusion's own leaders, and the fusion's leader is often the
+  user's own instruction, which is lexically close to the query, while the cross-encoder - which reads the
+  text - prefers the story rows. The cost is structural: the evidence block holds five entries, so a candidate
+  the fusion placed at position `maxRise + 5` or later cannot enter it whatever the provider scores it. Replaying
+  recorded builds at both bounds attributed 6 of 16 failed probes to the bound, two of them cases where the
+  document the provider scored highest was the one held out, and detail recovery over the dense fixture came out
+  15 of 42 bounded against 10 of 12 at twelve and 15 of 21 unbounded. `narrative_rerank_max_rise` still sets a bound
+  for a measurement, and neither direction is bounded by default.
 
 ### Fixed
 

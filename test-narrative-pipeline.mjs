@@ -962,7 +962,8 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     const reversed = six.map((_, index) => ({ index, score: index }));
     const sourcesOf = rows => rows.map(row => row.chunk.source);
     assert.deepEqual(sourcesOf(rerankHead(six, reversed, Infinity, Infinity)), ['f', 'e', 'd', 'c', 'b', 'a']);
-    assert.deepEqual(sourcesOf(rerankHead(six, reversed)), ['e', 'f', 'd', 'c', 'b', 'a'], 'the shipped default bounds the rise at four and leaves the drop alone');
+    assert.deepEqual(sourcesOf(rerankHead(six, reversed)), ['f', 'e', 'd', 'c', 'b', 'a'],
+        'the shipped default bounds neither direction: the rise bound was removed on measurement, 2026-09-16');
     assert.deepEqual(sourcesOf(rerankHead(six, reversed, 1, Infinity)), ['f', 'a', 'b', 'c', 'd', 'e'], 'the fused head may fall one place');
     assert.deepEqual(sourcesOf(rerankHead(six, reversed, 2, Infinity)), ['f', 'e', 'a', 'b', 'c', 'd']);
     assert.deepEqual(sourcesOf(rerankHead(six, reversed, 5, Infinity)), sourcesOf(rerankHead(six, reversed, Infinity, Infinity)),
@@ -1011,9 +1012,9 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
     assert.ok(recorded.some(row => Number.isFinite(row.rerank)), 'and the score for the ones the shortlist sent');
     assert.equal(used.diagnostics.rerank_cost.moved, 0, 'the working reranker above agreed with the fusion');
     assert.equal(failed.diagnostics.rerank_cost.moved, 0, 'and a failed call records that nothing moved');
-    // The rise bound can be overridden by a setting, which is how the two arms of a live comparison are
-    // flipped without a deploy. Unset means the shipped default; a value that is not a finite number at or
-    // above zero is unset too, so a typo cannot silently remove the bound.
+    // The rise bound can be set by a setting, which is how the two arms of a live comparison were flipped
+    // without a deploy. Unset means the shipped default, which is now unbounded; a value that is not a finite
+    // number at or above zero is unset too, so a typo cannot silently install a bound.
     const host2 = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600,
         narrative_rerank_max_rise: 0 } });
     await updateNarrative(host2.ctx, host2.services);
@@ -1021,14 +1022,19 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         rerank: async (query, documents) => documents.map((_, index) => ({ index, score: index })) }) }, { contextSize: 32768 });
     assert.equal(pinned.diagnostics.rerank_cost.max_rise, 0, 'a rise bound of zero leaves the fused order');
     assert.equal(pinned.diagnostics.rerank_cost.moved, 0);
+    const defaultHost = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600 } });
+    await updateNarrative(defaultHost.ctx, defaultHost.services);
+    const pinnedDefault = await buildNarrativeContext(defaultHost.ctx, { ...defaultHost.services,
+        rerank: () => ({ supported: true, model: 'test-rerank',
+            rerank: async (query, documents) => documents.map((_, index) => ({ index, score: index })) }) }, { contextSize: 32768 });
     const typoHost = makeHost(12, { settings: { narrative_rerank_model: 'test-rerank', narrative_evidence_tokens: 600,
         narrative_rerank_max_rise: 'banana' } });
     await updateNarrative(typoHost.ctx, typoHost.services);
     const typo = await buildNarrativeContext(typoHost.ctx, { ...typoHost.services,
         rerank: () => ({ supported: true, model: 'test-rerank',
             rerank: async (query, documents) => documents.map((_, index) => ({ index, score: index })) }) }, { contextSize: 32768 });
-    assert.ok(typo.diagnostics.rerank_cost.max_rise <= 4,
-        'a value that is not a number falls back to the shipped bound, not to unbounded');
+    assert.equal(typo.diagnostics.rerank_cost.max_rise, pinnedDefault.diagnostics.rerank_cost.max_rise,
+        'a value that is not a number falls back to the shipped default, and a typo has no bound of its own');
     const off = await buildNarrativeContext(host.ctx, host.services, { contextSize: 32768 });
     assert.equal(off.diagnostics.rerank_used, false, 'and an install with no model never calls one');
     // A live run spent one rerank call per turn while every floor was still unfolded, which is a call

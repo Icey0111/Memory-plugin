@@ -34,17 +34,27 @@ export function rerankShortlist(ranked, visibleSources, limit = 24, extra = 8) {
  * captures of three runs, never more) but it does not stop the fused first candidate losing the head, and it
  * hands the opening-instruction row back into the evidence slots - `raw_2` was quoted in three of four probes in
  * one run, against one of 44 probes across the thirteen unbounded runs. Clearing that row out of the head needs
- * a *large* demotion, so demotion has to stay unbounded. What can be bounded is the other direction: the head is
- * then still drawn from the fusion's own leaders instead of being filled by whatever the provider liked far down
- * the shortlist. `maxRise = 0` is the fused order exactly; either bound at `pick.length - 1` or more stops
- * bounding that direction, so `(Infinity, Infinity)` is the stage as it was first shipped and is what the offline
- * experiments in dev_docs were measured with.
+ * a *large* demotion, so demotion has to stay unbounded. `maxRise = 0` is the fused order exactly and either
+ * bound at `pick.length - 1` or more stops bounding that direction, so `(Infinity, Infinity)` is the stage
+ * as it was first shipped and is what the offline experiments in dev_docs were measured with.
+ *
+ * **The rise bound was shipped at four and then removed, on measurement (2026-09-16).** Its stated benefit was
+ * the opening instruction row: it is quoted in 7% of probes on `path2-shiyuan` and 24-36% on the dense fixture
+ * when the rise is bounded, against 0% and 18% unbounded - the direction is the opposite of the claim, and it now
+ * has a mechanism. With the rise bounded
+ * the head is filled from the fusion's own leaders, and the fusion's leader is often the user's own instruction,
+ * which is lexically close to the query; the cross-encoder, which reads the text, prefers the story rows.
+ * Its cost is structural: the block holds five entries, so a candidate the fusion placed at position
+ * `maxRise + 5` or later cannot enter it whatever the provider scores it. Replaying recorded builds at both
+ * bounds (three dense runs, 16 of 16 replays reproducing the recorded order) attributed 6 of 16 failed probes to
+ * the bound, and in two of five the document the provider scored **highest** was the one held out. Retrieval over
+ * the dense fixture recovered 15 of 42 probed details bounded against 10 of 12 at twelve and 15 of 21 unbounded.
  *
  * The defaults live in this signature rather than in a module constant because `runtime-precheck` fingerprints
  * function source: a bound written next to the code it governs cannot be changed on disk while the loaded page
  * keeps the old one undetected.
  */
-export function rerankHead(pick, order, maxDrop = Infinity, maxRise = 4) {
+export function rerankHead(pick, order, maxDrop = Infinity, maxRise = Infinity) {
     const scores = new Map(order.map(row => [row.index, row.score]));
     const ranked = pick.map((row, index) => ({ row, from: index, rerank: scores.get(index) ?? null }))
         .sort((a, b) => (b.rerank ?? -Infinity) - (a.rerank ?? -Infinity) || a.row.chunk.index - b.row.chunk.index);

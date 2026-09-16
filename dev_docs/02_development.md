@@ -1670,10 +1670,10 @@ One reading reverses between fixtures and must not be carried as a property of t
 bounded arm was the only one with no `retrieved-not-conveyed`, and on the dense fixture it is the free arm that
 has none. Two fixtures, single-digit samples, opposite signs.
 
-**Decision: `maxRise = 4` stays.** It was chosen for the instruction row, that benefit is visible in both
-fixtures, and the rescue case it was suspected of costing recovered under both arms rather than only under the
-free one. `narrative_rerank_max_rise` stays implemented and read as the lever this control needed, and stays out
-of the settings panel: nothing here makes the bound a choice a user should be asked to make.
+**That decision was reversed later the same day.** The instruction-row benefit this paragraph rests on does not
+survive a per-probe ruler - see "The rise bound is removed" below - and neither does the rescue reading.
+`narrative_rerank_max_rise` stays implemented and read as the lever these measurements needed, and stays out of the
+settings panel: nothing here makes the bound a choice a user should be asked to make.
 
 #### Where a failed detail was lost (2026-09-16, 53 runs, 157 positive probes)
 
@@ -1784,4 +1784,57 @@ that came back 2,254 characters - still over. Nothing is folded when a batch is 
 visible (correct), the backlog keeps growing, and the next pass asks the same frozen batch again. Every recent
 instance is dense material: twenty-one declared details in twenty floors is more than a 900-token body holds, and
 the repair is a second attempt at the same request rather than more room or a smaller batch.
+
+#### The rise bound is removed (2026-09-16, runs b12-1..3, and the whole dense corpus)
+
+The control got its third arm: `narrative_rerank_max_rise = 12`, three runs of the dense fixture, same fixture and
+same instrument as the two arms above. The bound was set for the run and read back from its captures:
+`max_rise` reaches exactly 12 in two of the three runs, so it was binding there, and never exceeds it.
+
+**Its benefit does not reproduce.** The opening instruction row, quoted per probe, over every run this log has:
+
+| arm | probes | ... quoting `raw_2` | `raw_2` sections |
+| --- | --- | --- | --- |
+| rerank off (`path2-shiyuan`) | 13 | 6 (46%) | 6 of 65 |
+| rise <= 4 (`path2-shiyuan`) | 14 | 1 (7%) | 1 of 70 |
+| unbounded (`path2-shiyuan`) | 13 | 0 | 0 of 65 |
+| rise = 4 (dense) | 66 | 24 (36%) | 24 of 330 |
+| rise = 12 (dense) | 21 | 5 (24%) | 5 of 105 |
+| unbounded (dense) | 33 | 6 (18%) | 6 of 165 |
+
+The rerank stage as a whole is what clears that row out - 46% of probes without it against 0-36% with it - and
+**inside** the stage the bound makes it worse, not better, on both fixtures. The mechanism is not mysterious: a
+bounded rise fills the head from the fusion's own leaders, and the fusion's leader is often the user's own
+instruction, which is lexically close to the query, while the cross-encoder - the component measured to raise
+answer-in-context from 69% to 87% - prefers the rows that read like the story.
+
+**Its cost is structural and measured.** The block holds five entries, so a candidate the fusion placed at
+position `maxRise + 5` or later cannot enter it whatever the provider scores it; the replay above attributed 6 of
+16 failed probes to the bound, two of them cases where the provider's **highest-scoring** document was the
+one held out. Per probed detail, over the dense corpus:
+
+| detail | rise = 4 | rise = 12 | unbounded |
+| --- | --- | --- | --- |
+| d-manner | 3 of 6 | 3 of 3 | 2 of 2 |
+| d-hollow | 1 of 7 | 1 of 3 | 1 of 4 |
+| d-polish | 7 of 8 | 1 of 1 | 3 of 3 |
+| d-voice | 0 of 5 | 1 of 1 | 0 of 1 |
+| d-jar | 0 of 2 | - | 1 of 1 |
+| d-free | 0 of 1 | - | 1 of 1 |
+| d-reed | 1 of 2 | - | 2 of 2 |
+| d-belt | 0 of 2 | - | 1 of 3 |
+| total | 15 of 42 | 10 of 12 | 15 of 21 |
+
+The one place the bound looks good is the row that lives in the opening instruction: `d-polish` is declared in
+floor 1's instruction and `raw_2` is the carrier the bound keeps in the head. That is the trade in one
+line - it buys back early details by giving up later ones, and the later ones are what retrieval is for.
+
+The arm-level recovery is the noisy part and is written down as such: at rise = 4 the dense batches came out 6 of
+12 (`ret4-b2`, `b3`) and 3 of 21 (`attr-1..3`) on the same setting, so no single arm's rate is a
+finding. What is not noisy is the direction of the two rulers above, and both point the same way.
+
+**The shipped default is `maxRise = Infinity` again** - the stage as it was first shipped, and what the offline
+experiments in this log were measured with. `narrative_rerank_max_rise` still sets a bound for a measurement,
+`rerankHead`'s parameter and `rerank_cost.max_rise` stay, so the next question about this stage can be asked
+without re-shipping the bound.
 
