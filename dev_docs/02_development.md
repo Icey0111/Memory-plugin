@@ -1578,3 +1578,21 @@ is a *quotation* of the original, and a quotation either contains the detail or 
 driver carries it into the summary, and the report prints 其中原文含完整 needle N 个 next to 检索取回 N 个. The
 classification is unchanged, so the split is visible without re-reading the old numbers as new.
 
+#### The rise-bound control could not be run (2026-09-16, runs ret4-b1..u3)
+
+The control called for above needs the bound to be flippable without a deploy, so `narrative-runtime.js` now
+reads an optional `narrative_rerank_max_rise`: unset means the bound `rerankHead` ships with, and a value that is
+not a finite number at or above zero is treated as unset, because a typo must not silently remove the bound. Six
+runs were taken with it, interleaved 4 / unbounded / 4 / unbounded / 4 / unbounded.
+
+**Three of the six never reached the probes.** The provider answered the summary-batch request with 404
+(`deepseek-v4-flash`; one run recorded eleven failing calls, every one of them), the second batch never
+committed, the fold stayed at the first ten floors, and the tightened gate refused the run instead of spending
+its probe phase on a transcript that still showed the needles. That is the gate fix from earlier the same day
+paying for itself three times over - and it is also why there is no control: two bounded runs and one unbounded
+one are not a comparison.
+
+The question the control was built for is therefore still open. **The corpus's only three retrieval failures sit
+in the rise-bound arm**, and whether the bound caused them is not settled. A retry-tolerant summary call, or a
+provider that stops returning 404 for one request in three, is the precondition for settling it.
+

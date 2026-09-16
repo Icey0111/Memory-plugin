@@ -88,7 +88,17 @@ function options(settings) {
         settingTokens: bound(settings.narrative_setting_tokens, 400, 0, 4000),
         inputChars: bound(settings.narrative_input_chars, 18000, 2000, 100000),
         rerankModel: String(settings.narrative_rerank_model || '').trim(),
-        rerankCandidates: bound(settings.narrative_rerank_candidates, 24, 0, 64) };
+        rerankCandidates: bound(settings.narrative_rerank_candidates, 24, 0, 64),
+        // Optional override of the rise bound `rerankHead` ships with. Unset means "use the shipped default",
+        // which is the only state an install reaches without setting it; a value that is not a finite number
+        // at or above zero is treated as unset rather than as unbounded, because a typo must not silently
+        // remove the bound. It exists so the two arms of a live comparison can be flipped without a deploy.
+        rerankMaxRise: (settings.narrative_rerank_max_rise === undefined
+            || settings.narrative_rerank_max_rise === null
+            || settings.narrative_rerank_max_rise === ''
+            || !Number.isFinite(Number(settings.narrative_rerank_max_rise))
+            || Number(settings.narrative_rerank_max_rise) < 0)
+            ? undefined : Number(settings.narrative_rerank_max_rise) };
 }
 
 function storeOf(ctx) { return ctx.chatMetadata[NARRATIVE_SETTINGS_KEY] ??= {}; }
@@ -875,8 +885,8 @@ async function applyRerank(services, opts, query, ranked, visibleSources) {
         const order = await service.rerank(query, pick.map(row => row.chunk.retrievalText), model);
         // What changed, not only what it cost: a run that records the call but not the order cannot say
         // whether the stage did anything, and ten live runs read exactly that way.
-        return { ranked: applyRerankOrder(ranked, pick, order), used: true, error: null,
-            metrics: { ...(order.metrics || cost()), ...rerankMoveMetrics(pick, order) } };
+        return { ranked: applyRerankOrder(ranked, pick, order, undefined, opts.rerankMaxRise), used: true, error: null,
+            metrics: { ...(order.metrics || cost()), ...rerankMoveMetrics(pick, order, undefined, opts.rerankMaxRise) } };
     } catch (error) {
         // Fail-open: the fused order stands, and the record says so with a number instead of leaving a
         // reader to infer it from the error string.
