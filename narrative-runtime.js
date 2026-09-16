@@ -1263,7 +1263,7 @@ export function installNarrativeRuntime(getContext, createServices) {
     delete settings.__quiet_extraction_in_progress;
     // The rerank transport's memory of which path answers: seeded here so the compatible-path probe happens
     // once per install instead of once per page load.
-    bindRerankSettings(settings);
+    bindRerankSettings(settings, () => ctx.saveSettingsDebounced?.());
     globalThis.aetheriaUnifiedMemoryV54Interceptor = (...args) => {
         const current = getContext();
         return current ? runNarrativeGeneration(current, createServices(current), args) : undefined;

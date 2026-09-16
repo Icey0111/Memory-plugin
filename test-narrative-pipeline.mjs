@@ -895,6 +895,25 @@ function makeHost(floors, { settings = {}, summarize } = {}) {
         fetchImpl: async (url) => { seeded.push(url); return { ok: true, status: 200,
             json: async () => ({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }) }; } });
     assert.equal(seeded.length, 1, 'a seeded page goes straight to the native path');
+    // The host keeps extension settings in memory and writes them on its own debounce, so a discovery that
+    // only mutates the object can be lost before the next page load - which is the one case this memory
+    // exists for. A live install still had no path in its settings file fifteen minutes after the plugin
+    // discovered one. The discovery therefore asks for the write, and only when the memory actually changed.
+    const hooked = {};
+    let saves = 0;
+    bindRerankSettings(hooked, () => { saves += 1; });
+    const learning = async () => requestRerank({ baseUrl: 'https://ws-z.aliyuncs.com/compatible-mode/v1', apiKey: 'k',
+        model: 'qwen3.7-text-rerank', query: 'q', documents: ['甲', '乙'],
+        fetchImpl: async (url) => { const native = String(url).includes('/api/v1/');
+            return { ok: native, status: native ? 200 : 404,
+                json: async () => ({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }) }; } });
+    await learning();
+    assert.equal(saves, 1, 'a discovery asks the host to write the settings down');
+    await requestRerank({ baseUrl: 'https://ws-z.aliyuncs.com/compatible-mode/v1', apiKey: 'k',
+        model: 'qwen3.7-text-rerank', query: 'q', documents: ['甲', '乙'],
+        fetchImpl: async () => ({ ok: true, status: 200,
+            json: async () => ({ output: { results: [{ index: 0, relevance_score: 0.5 }] } }) }) });
+    assert.equal(saves, 1, 'and a call that learns nothing new does not save again');
     bindRerankSettings({});
 
     // Through the pipeline: a failing reranker must leave the fused order, and it must say so.

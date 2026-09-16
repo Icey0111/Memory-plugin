@@ -155,8 +155,20 @@ const NATIVE_PATH_BASES = new Set();
  */
 let settingsRef = null;
 
-export function bindRerankSettings(settings) {
+/**
+ * How the host is asked to write the settings object down.
+ *
+ * The host keeps extension settings in memory and persists them on its own debounce, so mutating the object
+ * is not saving it. Measured on a live install: the plugin discovered the native path during the first
+ * generation of a run, and the settings file still did not carry it fifteen minutes later - the write that
+ * eventually landed came from somewhere else. For a memory whose entire purpose is to survive a page load,
+ * that is a hole, so the discovery asks for the write itself.
+ */
+let saveRef = null;
+
+export function bindRerankSettings(settings, save) {
     settingsRef = settings && typeof settings === 'object' ? settings : null;
+    saveRef = typeof save === 'function' ? save : null;
     const known = settingsRef && Array.isArray(settingsRef.narrative_rerank_native_paths)
         ? settingsRef.narrative_rerank_native_paths : [];
     NATIVE_PATH_BASES.clear();
@@ -165,8 +177,12 @@ export function bindRerankSettings(settings) {
 }
 
 function rememberNativePath(base, remember) {
+    // Nothing to write when the memory already says this, and a save that runs on every generation for
+    // nothing is a different problem than the one this fixes.
+    if (NATIVE_PATH_BASES.has(base) === Boolean(remember)) return;
     if (remember) NATIVE_PATH_BASES.add(base); else NATIVE_PATH_BASES.delete(base);
     if (settingsRef) settingsRef.narrative_rerank_native_paths = [...NATIVE_PATH_BASES];
+    if (saveRef) saveRef();
 }
 
 /** That path hangs off the host the base URL names, not off the base URL's own path. */

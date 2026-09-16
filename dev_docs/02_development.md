@@ -1592,9 +1592,9 @@ its probe phase on a transcript that still showed the needles. That is the gate 
 paying for itself three times over - and it is also why there is no control: two bounded runs and one unbounded
 one are not a comparison.
 
-The question the control was built for is therefore still open. **The corpus's only three retrieval failures sit
-in the rise-bound arm**, and whether the bound caused them is not settled. A retry-tolerant summary call, or a
-provider that stops returning 404 for one request in three, is the precondition for settling it.
+The question the control was built for was therefore still open at that point. **The corpus's only three
+retrieval failures sat in the rise-bound arm**, and whether the bound caused them was not settled. With the
+balance restored the control was taken the same day - see "The rise-bound control ran" below.
 
 #### The live 404 toast was the reranker's own probe (2026-09-16)
 
@@ -1613,4 +1613,65 @@ a balance problem, not a code one.
 `requestRerank` now remembers per base URL which path answered and tries it first, so the probe happens once
 instead of once per generation; a later 404 on the remembered path clears the memory and probes again. The first
 call in a session is unchanged, and a test pins that the second call goes straight to the path that answered.
+
+That memory was per page, so a reload forgot it and the next generation probed again - one toast per page load,
+not one per install. It is now seeded from the settings on install (`bindRerankSettings`) and written back to
+`narrative_rerank_native_paths` when a path answers.
+
+The write could not be assumed. The host persists extension settings on its own debounce, and mutating the
+object does not schedule one: the path the plugin discovered was still **absent from the settings file fifteen
+minutes later**, and the delete of `narrative_rerank_max_rise` below did not reach the file at all until
+`ctx.saveSettingsDebounced()` was called for it. The discovery therefore asks for the write itself, and only
+when the memory actually changed. And the toast is a *request*, so the reading that settles it is a request
+count: a bounded ring of the native shim's own failures (`globalThis.__aetheriaNativeFailures` - last eight,
+with label, endpoint and message) now sits beside the memory it measures.
+
+Across the three runs below and the refused attempt before them - eighty-odd generations - that ring held
+**one** entry, the first discovery, and the settings carried the Aliyun base URL. Then the page was reloaded and
+twelve more floors were played on a fresh chat: three of those generations reranked on the native path (21-22
+documents, 142-245 ms, 5,819-7,823 provider tokens, no error) and the ring stayed **empty**. The probe is once
+per install, and an install no longer raises a 404 toast for a call it designed to fail.
+
+#### The rise-bound control ran (2026-09-16, runs ret5-u1..u3)
+
+The control the earlier section could not take was taken once the balance was restored:
+`narrative_rerank_max_rise = 999`, at or past `pick.length - 1` and therefore free in both directions, on the
+same `path3-return` fixture, three runs, each on its own fresh chat. Every capture in the three runs reports a
+free `max_rise` (9 to 21), so the arm is the one it claims to be. One attempt was lost before its probes: the
+second summary batch was refused `over_budget` twice - a 1,210-token body against the 900-token ceiling the
+600-token target derives, and its one body repair over as well - so the fold stayed on the first ten floors and
+the tightened gate refused the run instead of spending probes on a transcript that still showed the needles.
+
+| arm | runs | detail probes | recovered | verbatim needle | retrieved-not-conveyed | other detail failures | `raw_2` sections quoted |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| rise = 4, shipped (`ret3-a..c`) | 3 | 9 | 6 | not readable | 0 | 2 fabricated, 1 refused | 6 of 90 |
+| rise = 4 (`ret4-b2`, `b3`) | 2 | 12 | 6 | 5 | 3 | 1 fabricated, 2 refused | 8 of 90 |
+| free (`ret5-u1..u3`) | 3 | 16 | 12 | 8 | 0 | 1 fabricated, 2 refused, 1 instruction-only | 3 of 125 |
+
+The `verbatim needle` column is not readable for `ret3` because the instrument that separates a quotation from
+a tolerant run was added after it; `ret4-b2` and `b3` are the bounded arm that can be read that way. Two runs
+from the aborted `ret4` batch also carry a free bound and agree with the three above - `ret4-u2` recovered 3 of
+5 probed details, 2 of them verbatim - while `ret4-u3` is excluded: its captures report `max_rise` 4 beside
+free values, so a mid-run flip is in its record and the run is not one arm.
+
+**The bound is not what failed those three details.** `d-voice` failed in every arm it was probed in -
+fabricated in `ret3-b`, `ret4-b2` and `ret5-u1`, refused in `ret4-b3` - so none of it is a rise-bound effect.
+Removing the bound did bring `d-hollow` back once with the needle itself (`ret5-u1`) and `d-belt` once through
+a partial run (`ret5-u3`), and both failed in the other free runs, so the ceiling was at most a contributing
+factor. The free arm recovered 12 of 16 probed details against 6 of 12 in the instrument-comparable bounded arm,
+and zero `retrieved-not-conveyed` against three.
+
+What the bound still buys is the opening instruction row's place, and on this fixture it buys less than it did on
+`path2-shiyuan`: `raw_2` is quoted in 8 of 90 evidence sections under the bound (`ret4-b2`, `b3`) and 6 of
+90 in `ret3-a..c`, against 3 of 125 with the bound free. The direction matches the `path2` arm (0 of 22
+unbounded); the size does not.
+
+One reading reverses between fixtures and must not be carried as a property of the bound: on `path2-shiyuan` the
+bounded arm was the only one with no `retrieved-not-conveyed`, and on the dense fixture it is the free arm that
+has none. Two fixtures, single-digit samples, opposite signs.
+
+**Decision: `maxRise = 4` stays.** It was chosen for the instruction row, that benefit is visible in both
+fixtures, and the rescue case it was suspected of costing recovered under both arms rather than only under the
+free one. `narrative_rerank_max_rise` stays implemented and read as the lever this control needed, and stays out
+of the settings panel: nothing here makes the bound a choice a user should be asked to make.
 
